@@ -1601,8 +1601,9 @@ class PreviewPanel(QWidget):
         self.graphics_view.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.graphics_view.setResizeAnchor(QGraphicsView.NoAnchor)
         
-        # Enable keyboard focus for PDF navigation
-        self.graphics_view.setFocusPolicy(Qt.StrongFocus)
+        # Disable keyboard focus - preview panel should NOT steal focus from browser
+        # This was causing Space key (Quick View) to open Maya hotbox instead
+        self.graphics_view.setFocusPolicy(Qt.NoFocus)
         
         # Create scene
         self.graphics_scene = QtWidgets.QGraphicsScene()
@@ -2241,19 +2242,22 @@ class PreviewPanel(QWidget):
         
         event_type = event.type()
         
-        # === PDF Navigation with Arrow Keys ===
-        if self.is_showing_pdf and event_type == QEvent.KeyPress:
-            key = event.key()
-            if key == Qt.Key_Left:
-                # Left arrow - previous page
-                if self.current_pdf_page > 0:
-                    self.pdf_previous_page()
-                return True
-            elif key == Qt.Key_Right:
-                # Right arrow - next page
-                if self.current_pdf_page < self.current_pdf_page_count - 1:
-                    self.pdf_next_page()
-                return True
+        # === PDF Navigation with Arrow Keys === DISABLED
+        # PDF has its own navigation buttons in the preview panel
+        # Arrow keys should be used for file navigation in the browser, not PDF page navigation
+        # This was causing conflicts with Quick View activation and file navigation
+        # if self.is_showing_pdf and event_type == QEvent.KeyPress:
+        #     key = event.key()
+        #     if key == Qt.Key_Left:
+        #         # Left arrow - previous page
+        #         if self.current_pdf_page > 0:
+        #             self.pdf_previous_page()
+        #         return True
+        #     elif key == Qt.Key_Right:
+        #         # Right arrow - next page
+        #         if self.current_pdf_page < self.current_pdf_page_count - 1:
+        #             self.pdf_next_page()
+        #         return True
         
         # Handle Ctrl+Wheel for font size adjustment in text mode
         if self.is_showing_text and event_type == QEvent.Wheel:
@@ -2835,6 +2839,11 @@ class PreviewPanel(QWidget):
         # Exit zoom mode when switching files
         self.exit_zoom_mode()
         
+        # Clear previous pixmap to avoid showing wrong image on load failure
+        self.current_pixmap = None
+        self.graphics_scene.clear()
+        self.current_text_item = None
+        
         # Reset mode flags
         self.is_showing_text = False
         self.is_showing_pdf = False
@@ -2898,21 +2907,17 @@ class PreviewPanel(QWidget):
                         # Use imageio (HDR) or OpenEXR (EXR) with exposure control
                         # Higher quality preview: adjustable via settings
                         
-                        # print(f"📂 Loading HDR/EXR: {file_path_str}")
-                        
                         # First, try to load raw float data for fast exposure adjustment
                         # Use max_preview_size setting (default 1024px for speed)
                         rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
                         
                         if rgb_raw is not None:
-                            # print(f"✅ Raw data loaded: {width}x{height}, caching for fast exposure adjustment...")
                             # Cache raw data for fast exposure adjustments!
                             self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
                             
                             # Apply tone mapping with current exposure
                             pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure)
                         else:
-                            # print(f"⚠️ Raw data loading failed, using fallback method...")
                             # Fallback: old method (slower, no caching)
                             pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
                         
@@ -3495,8 +3500,8 @@ class PreviewPanel(QWidget):
             # Position overlays
             self.update_pdf_overlay_positions()
             
-            # Give focus to graphics view for keyboard navigation
-            self.graphics_view.setFocus()
+            # Don't steal focus from file_list - Quick View needs Space key to work
+            # (Previously set focus here for PDF keyboard navigation, but that's now disabled)
             
             # Update title
             self.title_label.setText(f"Preview: {asset.name}")

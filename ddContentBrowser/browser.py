@@ -370,7 +370,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Let Maya handle most styling - only minimal overrides
         # This gives us native Maya look without fighting the system
-        self.setStyleSheet("")
+        # Set Maya-style tooltip colors (dark gray background, white text)
+        self.setStyleSheet("""
+            QToolTip {
+                background-color: #3a3a3a;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                padding: 3px;
+                font-size: 11px;
+            }
+        """)
         
         # UI setup
         self.setup_ui()
@@ -1649,7 +1658,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     def _update_preview_deferred(self):
         """Deferred preview update (doesn't block selection)"""
         assets = self.get_selected_assets()
-        self.preview_panel.update_preview(assets)
+        
+        # Only update preview if panel is visible (performance optimization)
+        if self.preview_panel.isVisible():
+            self.preview_panel.update_preview(assets)
         
         # Update Quick View if open and not pinned
         self.update_quick_view()
@@ -2321,10 +2333,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # === SPACE KEY FOR QUICK VIEW ===
             if event.type() == QtCore.QEvent.KeyPress:
                 if event.key() == Qt.Key_Space:
+                    print(f"\n[Browser] ========== SPACE KEY PRESSED ==========")
+                    print(f"[Browser] Event object: {obj}")
+                    print(f"[Browser] Is file_list: {obj == self.file_list}")
+                    print(f"[Browser] Is viewport: {obj == self.file_list.viewport()}")
+                    
                     # Check if there are selected files
                     selected = self.get_selected_assets()
+                    print(f"[Browser] Selected assets count: {len(selected)}")
+                    
                     if selected:
+                        print(f"[Browser] Selected file: {selected[0].name if selected else 'None'}")
+                        print(f"[Browser] Calling toggle_quick_view()...")
                         self.toggle_quick_view()
+                        print(f"[Browser] toggle_quick_view() finished")
+                        print(f"[Browser] Returning True (event handled)")
                         return True  # Event handled
         
         return super().eventFilter(obj, event)
@@ -2342,11 +2365,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 print("[Browser] Quick View window created")
         
         # Toggle visibility
-        if self.quick_view_window.isVisible():
+        is_visible = self.quick_view_window.isVisible()
+        
+        if is_visible:
             self.quick_view_window.close()
         else:
             # Get selected assets
             assets = self.get_selected_assets()
+            
             if assets:
                 self.quick_view_window.show_preview(assets)
                 self.quick_view_window.show()
@@ -2372,6 +2398,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if self.quick_view_window and self.quick_view_window.isVisible():
             if not self.quick_view_window.pinned:
                 assets = self.get_selected_assets()
+                if DEBUG_MODE:
+                    asset_names = [Path(a.file_path).name for a in assets] if assets else []
+                    print(f"[Browser] update_quick_view: Updating with {len(assets)} asset(s): {asset_names}")
                 if assets:
                     self.quick_view_window.show_preview(assets)
     
@@ -2599,6 +2628,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 open_explorer_action = menu.addAction("📁 Open in Explorer")
                 open_explorer_action.triggered.connect(lambda: self.open_in_explorer(asset.file_path))
                 
+                # Show in Content Browser (only if in collection mode or subfolder mode)
+                if self.file_model.collection_mode or self.file_model.include_subfolders:
+                    show_in_browser_action = menu.addAction("🔍 Show in Content Browser")
+                    show_in_browser_action.triggered.connect(lambda: self.show_in_content_browser(asset.file_path))
+                
                 # Dynamic Copy Path text based on selection count
                 selected_assets = self.get_selected_assets()
                 if len(selected_assets) > 1:
@@ -2677,6 +2711,58 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.status_bar.showMessage(f"Opened in Explorer: {path.name}")
         except Exception as e:
             self.status_bar.showMessage(f"Could not open in Explorer: {e}")
+    
+    def show_in_content_browser(self, file_path):
+        """Navigate to the file's parent directory and select the file in content browser"""
+        from pathlib import Path
+        
+        file_path = Path(file_path)
+        
+        # If it's a folder, just navigate to it
+        if file_path.is_dir():
+            self.navigate_to_path(file_path)
+            self.status_bar.showMessage(f"Navigated to: {file_path.name}")
+            return
+        
+        # For files, navigate to parent directory
+        parent_dir = file_path.parent
+        if not parent_dir.exists():
+            self.status_bar.showMessage(f"Parent directory not found: {parent_dir}")
+            return
+        
+        # Exit collection mode if active
+        if self.file_model.collection_mode:
+            self.on_collection_cleared()
+        
+        # Disable subfolder mode if active
+        if self.include_subfolders_checkbox.isChecked():
+            self.include_subfolders_checkbox.setChecked(False)
+            self.file_model.include_subfolders = False
+        
+        # Navigate to parent directory
+        self.navigate_to_path(parent_dir)
+        
+        # Wait for the model to update, then select the file
+        def select_file():
+            # Find the file in the current view
+            for row in range(self.file_model.rowCount()):
+                index = self.file_model.index(row, 0)
+                asset = self.file_model.data(index, Qt.UserRole)
+                if asset:
+                    asset_path = Path(asset.file_path)
+                    if asset_path == file_path:
+                        # Clear selection and select this item
+                        self.file_list.clearSelection()
+                        self.file_list.setCurrentIndex(index)
+                        self.file_list.scrollTo(index)
+                        self.file_list.setFocus()
+                        self.status_bar.showMessage(f"Found and selected: {file_path.name}")
+                        return
+            
+            self.status_bar.showMessage(f"File shown in directory: {file_path.name}")
+        
+        # Delay selection to ensure view is updated
+        QTimer.singleShot(300, select_file)
     
     def add_folder_to_favorites(self, path):
         """Add folder to favorites"""

@@ -1,25 +1,25 @@
 {
   "recent_paths": [
+    "S:\\Download",
+    "S:\\",
+    "S:\\HDRIHavenLib",
+    "F:\\projects",
+    "F:\\",
+    "C:\\Users\\Danki\\Pictures",
+    "C:\\Users\\Danki\\Pictures\\ART\\Paintings",
+    "D:\\",
+    "D:\\Download",
+    "C:\\Users\\Danki\\Documents",
+    "F:\\projects\\treeTest2023\\images\\tmp",
+    "F:\\projects\\treeTest2023\\images",
+    "F:\\projects\\cameraTrack",
+    "F:\\projects\\cameraTrack\\data",
+    "F:\\projects\\cameraTrack\\images",
+    "F:\\projects\\cameraTrack\\images\\tmp",
+    "F:\\projects\\treeTest2023",
     "F:\\projects\\carLookdev",
     "F:\\projects\\carLookdev\\images",
-    "F:\\projects\\carLookdev\\images\\tmp",
-    "F:\\projects\\carLookdev\\images\\tmp\\deep",
-    "F:\\projects\\carLookdev\\images\\snapshots",
-    "F:\\projects\\carLookdev\\images\\snapshots\\untitled",
-    "F:\\projects\\carLookdev\\images\\snapshots\\porsche",
-    "F:\\projects",
-    "F:\\projects\\pfxPresentation",
-    "F:\\projects\\pfxPresentation\\images",
-    "F:\\projects\\pfxPresentation\\images\\snapshots",
-    "F:\\projects\\pfxPresentation\\images\\tmp",
-    "F:\\projects\\pfxLib",
-    "F:\\",
-    "C:\\Users\\Danki\\Desktop\\soft skills",
-    "C:\\Users\\Danki\\Desktop",
-    "C:\\Users\\Danki\\Desktop\\Comic Book Art",
-    "C:\\Users\\Danki",
-    "C:\\Users\\Danki\\Documents",
-    "S:\\Download"
+    "F:\\projects\\carLookdev\\images\\tmp"
   ],
   "favorites": [
     "D:\\Downloads\\10_Building_Basemesh",
@@ -61,12 +61,12 @@
     ".txt"
   ],
   "show_images": true,
-  "last_path": "F:\\projects\\carLookdev",
-  "window_geometry": "AdnQywADAAAAAAoA////+AAAE/8AAAVvAAALyAAAAMsAABJoAAAFTwAAAAECAAAACgAAAAoAAAAAFwAAE/8AAAVv",
+  "last_path": "S:\\Download",
+  "window_geometry": "AdnQywADAAAAAAAA////+AAACf8AAAVvAAALyAAAAMsAABJoAAAFTwAAAAACAAAACgAAAAAAAAAAFwAACf8AAAVv",
   "view_mode": "grid",
   "preview_panel_visible": true,
-  "splitter_position": "AAAA/wAAAAEAAAADAAACAwAABa0AAAJIAf////8BAAAAAQA=",
-  "grid_thumbnail_size": 160,
+  "splitter_position": "AAAA/wAAAAEAAAADAAACAgAABckAAAInAf////8BAAAAAQA=",
+  "grid_thumbnail_size": 192,
   "list_thumbnail_size": 16,
   "nav_splitter_position": "AAAA/wAAAAEAAAACAAACcAAAAoIB/////wEAAAACAA==",
   "nav_top_tabs_order": [
@@ -78,8 +78,8 @@
     "Advanced Filters"
   ],
   "preview_splitter_position": "AAAA/wAAAAEAAAACAAACxgAAAgIBAAAABAEAAAACAA==",
-  "quick_view_width": 1965,
+  "quick_view_width": 1094,
   "quick_view_height": 1157,
-  "quick_view_x": 326,
-  "quick_view_y": 142
+  "quick_view_x": 914,
+  "quick_view_y": 141
 }

@@ -24,6 +24,9 @@ except ImportError:
     from PySide2.QtGui import QPixmap
     PYSIDE_VERSION = 2
 
+# Import HDR/EXR loading from widgets
+from .widgets import load_hdr_exr_image
+
 # UI Font - will be set by browser at runtime
 UI_FONT = "Segoe UI"
 
@@ -183,10 +186,16 @@ class QuickViewWindow(QDialog):
                 print("[QuickView] No assets to preview")
             return
         
+        if DEBUG_MODE:
+            asset_names = [Path(a.file_path).name for a in assets]
+            print(f"[QuickView] show_preview called with {len(assets)} asset(s): {asset_names}")
+        
         self.current_assets = assets
         
         # Single file or multiple?
         if len(assets) == 1:
+            if DEBUG_MODE:
+                print(f"[QuickView] Calling show_single_file for: {Path(assets[0].file_path).name}")
             self.show_single_file(assets[0])
             self.preview_container.setCurrentWidget(self.single_preview)
         else:
@@ -195,7 +204,8 @@ class QuickViewWindow(QDialog):
             self.preview_container.setCurrentWidget(self.single_preview)  # Use same canvas
         
         if DEBUG_MODE:
-            print(f"[QuickView] Showing preview for {len(assets)} asset(s)")
+            print(f"[QuickView] Finished showing preview for {len(assets)} asset(s)")
+
     
     # Pin functionality removed - will be in right-click context menu later
     
@@ -787,10 +797,26 @@ class QuickViewWindow(QDialog):
                     print(f"[QuickView] Same image already loaded, preserving state: {file_path.name}")
                 return
             
-            # Load image
-            pixmap = QPixmap(str(file_path))
+            # Load image - use HDR/EXR loader for .exr and .hdr files
+            pixmap = None
+            if file_path.suffix.lower() in ['.exr', '.hdr']:
+                if DEBUG_MODE:
+                    print(f"[QuickView] Loading HDR/EXR using load_hdr_exr_image: {file_path.name}")
+                # Use the same HDR/EXR loader as PreviewPanel
+                # NOTE: load_hdr_exr_image returns tuple (pixmap, resolution_str)
+                result = load_hdr_exr_image(str(file_path))
+                if result and result[0]:
+                    pixmap = result[0]  # Extract pixmap from tuple
+                    if DEBUG_MODE:
+                        print(f"[QuickView] HDR/EXR loaded successfully: {pixmap.width()}×{pixmap.height()}")
+                else:
+                    if DEBUG_MODE:
+                        print(f"[QuickView] HDR/EXR load failed or returned None")
+            else:
+                # Standard image formats (JPG, PNG, etc.)
+                pixmap = QPixmap(str(file_path))
             
-            if pixmap.isNull():
+            if pixmap is None or pixmap.isNull():
                 if DEBUG_MODE:
                     print(f"[QuickView] Failed to load image: {file_path.name}")
                 return
@@ -941,9 +967,22 @@ class QuickViewWindow(QDialog):
             for idx, asset in enumerate(image_assets):
                 file_path = Path(asset.file_path)
                 
-                # Load FULL RESOLUTION image (don't pre-scale)
-                pixmap = QPixmap(str(file_path))
-                if pixmap.isNull():
+                # Load FULL RESOLUTION image - use HDR/EXR loader for .exr and .hdr files
+                pixmap = None
+                if file_path.suffix.lower() in ['.exr', '.hdr']:
+                    if DEBUG_MODE:
+                        print(f"[QuickView] Grid loading HDR/EXR: {file_path.name}")
+                    # NOTE: load_hdr_exr_image returns tuple (pixmap, resolution_str)
+                    result = load_hdr_exr_image(str(file_path))
+                    if result and result[0]:
+                        pixmap = result[0]  # Extract pixmap from tuple
+                else:
+                    # Standard image formats
+                    pixmap = QPixmap(str(file_path))
+                
+                if pixmap is None or pixmap.isNull():
+                    if DEBUG_MODE:
+                        print(f"[QuickView] Grid skipping failed load: {file_path.name}")
                     continue
                 
                 # Calculate grid position
