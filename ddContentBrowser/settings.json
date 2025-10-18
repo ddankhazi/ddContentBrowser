@@ -1,0 +1,48 @@
+{
+    "general": {
+        "startup_directory": "",
+        "remember_window_size": true,
+        "window_width": 1200,
+        "window_height": 800,
+        "confirm_delete": true,
+        "auto_refresh": false,
+        "refresh_interval": 5,
+        "ui_font": "Segoe UI"
+    },
+    "thumbnails": {
+        "size": 128,
+        "cache_size_mb": 500,
+        "quality": "medium",
+        "generate_for_3d": true
+    },
+    "preview": {
+        "resolution": 1024,
+        "hdr_cache_size": 5,
+        "default_exposure": 0.0,
+        "auto_fit": true
+    },
+    "filters": {
+        "show_images": true,
+        "show_3d": true,
+        "show_hdr": true,
+        "show_video": true,
+        "custom_extensions": [],
+        "show_hidden": false,
+        "case_sensitive_search": false,
+        "regex_search": false,
+        "max_recursive_files": 10000
+    },
+    "browser_state": {
+        "sort_column": "name",
+        "sort_ascending": true,
+        "filter_file_types": [],
+        "show_folders": true,
+        "filter_min_size": 0,
+        "filter_max_size": 0,
+        "filter_date_from": null,
+        "filter_date_to": null
+    },
+    "advanced_filters": {
+        "saved_presets": []
+    }
+}
