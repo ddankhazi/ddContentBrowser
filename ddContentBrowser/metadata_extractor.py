@@ -19,13 +19,20 @@ DEBUG_MODE = False
 class FileMetadata:
     """Stores metadata for a single file"""
     
-    def __init__(self, file_path: Path):
+    def __init__(self, file_path: Path, extract_full: bool = False):
         self.file_path = file_path
         self.metadata = {}
+        self.full_metadata_extracted = False
+        
+        # Always extract basic metadata (fast, no file opening)
         self.extract_basic_metadata()
+        
+        # Only extract full metadata if explicitly requested
+        if extract_full:
+            self.extract_full_metadata()
     
     def extract_basic_metadata(self):
-        """Extract basic metadata available for all files"""
+        """Extract basic metadata available for all files (NO file opening, very fast)"""
         try:
             stat = self.file_path.stat()
             
@@ -42,6 +49,16 @@ class FileMetadata:
             # Type category
             self.metadata['type_category'] = self._get_type_category()
             
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[MetadataExtractor] Error extracting basic metadata for {self.file_path}: {e}")
+    
+    def extract_full_metadata(self):
+        """Extract format-specific metadata (may open files - slower)"""
+        if self.full_metadata_extracted:
+            return  # Already extracted
+        
+        try:
             # Extract format-specific metadata
             if self.metadata['type_category'] == 'image':
                 self._extract_image_metadata()
@@ -49,6 +66,8 @@ class FileMetadata:
                 self._extract_maya_metadata()
             elif self.metadata['type_category'] == '3d_model':
                 self._extract_3d_metadata()
+            
+            self.full_metadata_extracted = True
             
         except Exception as e:
             if DEBUG_MODE:

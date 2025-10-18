@@ -1,6 +1,13 @@
 {
   "recent_paths": [
+    "C:\\Users\\Danki\\Desktop",
+    "C:\\Users\\Danki",
+    "C:\\Users\\Danki\\Documents",
+    "S:\\Download",
+    "S:\\characterRefrences",
     "C:\\Users\\Danki\\Pictures",
+    "C:\\Users\\Danki\\Pictures\\UbisoftConnect",
+    "C:\\Users\\Danki\\Pictures\\Stellarium",
     "C:\\Users\\Danki\\Pictures\\ART",
     "C:\\Users\\Danki\\Pictures\\ART\\Paintings",
     "C:\\Users\\Danki\\maps",
@@ -12,14 +19,7 @@
     "C:\\Users\\postgres",
     "C:\\Users\\Danki\\Xbox",
     "C:\\Users\\Danki\\Valley",
-    "C:\\Users\\Danki\\Tracing",
-    "C:\\Users\\Danki\\Documents",
-    "C:\\Users\\Danki\\Videos",
-    "S:\\Download",
-    "C:\\Program Files\\Autodesk\\Maya2026\\Examples",
-    "D:\\Downloads\\12_Building_Basemesh",
-    "D:\\work",
-    "D:\\work\\Adobe Substance 3D Painter"
+    "C:\\Users\\Danki\\Tracing"
   ],
   "favorites": [
     "D:\\Downloads\\10_Building_Basemesh",
@@ -61,12 +61,12 @@
     ".txt"
   ],
   "show_images": true,
-  "last_path": "C:\\Users\\Danki\\Pictures",
-  "window_geometry": "AdnQywADAAAAAAEdAAAAiQAACRAAAAVBAAABHQAAAKgAAAkQAAAFQQAAAAAAAAAACgAAAAEdAAAAqAAACRAAAAVB",
+  "last_path": "C:\\Users\\Danki\\Desktop",
+  "window_geometry": "AdnQywADAAAAAAHlAAAAkgAACIUAAASPAAAB5QAAALEAAAiFAAAEjwAAAAAAAAAACgAAAAHlAAAAsQAACIUAAASP",
   "view_mode": "grid",
-  "preview_panel_visible": true,
-  "splitter_position": "AAAA/wAAAAEAAAADAAABYAAABf0AAAKDAf////8BAAAAAQA=",
-  "grid_thumbnail_size": 128,
+  "preview_panel_visible": false,
+  "splitter_position": "AAAA/wAAAAEAAAADAAABMAAABp0AAAIlAf////8BAAAAAQA=",
+  "grid_thumbnail_size": 160,
   "list_thumbnail_size": 24,
   "nav_splitter_position": "AAAA/wAAAAEAAAACAAACcAAAAoIB/////wEAAAACAA==",
   "nav_top_tabs_order": [
@@ -77,5 +77,9 @@
     "Collections",
     "Advanced Filters"
   ],
-  "preview_splitter_position": "AAAA/wAAAAEAAAACAAACxgAAAgIBAAAABAEAAAACAA=="
+  "preview_splitter_position": "AAAA/wAAAAEAAAACAAACxgAAAgIBAAAABAEAAAACAA==",
+  "quick_view_width": 1221,
+  "quick_view_height": 1065,
+  "quick_view_x": 995,
+  "quick_view_y": 175
 }

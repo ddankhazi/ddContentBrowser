@@ -196,6 +196,25 @@ def get_simple_filter_types():
     return types
 
 
+def get_extensions_by_category(category_name):
+    """
+    Get extensions for a specific category from the registry.
+    
+    Args:
+        category_name: Category key (e.g., 'images', 'scripts', 'maya')
+    
+    Returns:
+        List of extensions for that category, or empty list if not found
+    
+    Example:
+        >>> get_extensions_by_category('images')
+        ['.tif', '.tiff', '.jpg', '.jpeg', '.png', '.hdr', '.exr', '.tga']
+    """
+    if category_name in FILE_TYPE_REGISTRY:
+        return FILE_TYPE_REGISTRY[category_name]['extensions']
+    return []
+
+
 # ============================================================================
 # METADATA DATABASE PATH
 # ============================================================================

@@ -143,22 +143,16 @@ class FileSystemModel(QAbstractListModel):
         self.assets = []
         self.current_path = None
         self.filter_text = ""
-        # Base supported formats
-        self.base_formats = [
-            ".ma", ".mb",           # Maya scene files
-            ".obj", ".fbx", ".abc", ".usd", ".vdb",  # 3D formats
-            ".hda",                 # Houdini Digital Assets
-            ".blend",               # Blender files
-            ".sbsar",               # Substance Archive (shader)
-            ".tif", ".tiff", ".jpg", ".jpeg", ".png", ".hdr", ".exr", ".tga",  # Images
-            ".pdf",                 # PDF documents
-            ".mel", ".py", ".txt"   # Scripts and text files
-        ]
+        
+        # Base supported formats - from central FILE_TYPE_REGISTRY
+        from .utils import get_all_supported_extensions, get_extensions_by_category
+        self.base_formats = get_all_supported_extensions()
         self.supported_formats = self.base_formats.copy()
         self.custom_extensions = []  # User-defined custom extensions
         
-        self.image_formats = [".tif", ".tiff", ".jpg", ".jpeg", ".png", ".hdr", ".exr", ".tga"]
-        self.script_formats = [".mel", ".py", ".txt"]
+        # Get specific format categories from registry
+        self.image_formats = get_extensions_by_category('images')
+        self.script_formats = get_extensions_by_category('scripts') + get_extensions_by_category('text')
         
         # Search options
         self.case_sensitive_search = False
@@ -173,6 +167,11 @@ class FileSystemModel(QAbstractListModel):
         self.show_folders = True
         self.show_images = True  # Show image files by default
         self.show_scripts = True  # Show script files by default
+        self.collection_filter = []  # Collection filter (list of file paths)
+        
+        # Collection mode - when active, show collection files instead of directory
+        self.collection_mode = False
+        self.collection_files = []  # List of file paths to display in collection mode
         
         # Sorting
         self.sort_column = "name"  # "name", "size", "date", "type"
@@ -275,6 +274,11 @@ class FileSystemModel(QAbstractListModel):
         Args:
             force: If True, bypass cache and reload from filesystem
         """
+        # Collection mode - load files from collection list instead of directory
+        if self.collection_mode:
+            self._load_collection_files()
+            return
+        
         if not self.current_path or not self.current_path.exists():
             self.assets = []
             return
@@ -617,6 +621,80 @@ class FileSystemModel(QAbstractListModel):
         self.show_scripts = True
         self.refresh()  # Filters are now properly applied to cached assets
         self.endResetModel()
+    
+    def setCollectionFilter(self, file_paths):
+        """Switch to collection mode and show only collection files"""
+        self.beginResetModel()
+        self.collection_mode = True
+        self.collection_files = [str(Path(p).resolve()) for p in file_paths]
+        self.refresh()
+        self.endResetModel()
+    
+    def clearCollectionFilter(self):
+        """Exit collection mode and return to normal directory browsing"""
+        self.beginResetModel()
+        self.collection_mode = False
+        self.collection_files = []
+        self.refresh()
+        self.endResetModel()
+    
+    def _load_collection_files(self):
+        """Load files from collection list (collection mode)"""
+        try:
+            all_assets = []
+            
+            # Load each file from collection
+            for file_path_str in self.collection_files:
+                file_path = Path(file_path_str)
+                
+                # Check if file exists
+                if not file_path.exists():
+                    continue
+                if not file_path.is_file():
+                    continue
+                
+                # Check if extension is supported
+                ext = file_path.suffix.lower()
+                if ext not in self.supported_formats:
+                    continue
+                
+                # Check file type filters
+                if self.filter_file_types and ext not in self.filter_file_types:
+                    continue
+                
+                # Create AssetItem
+                try:
+                    asset = AssetItem(file_path, lazy_load=False)
+                    
+                    # Apply size filter
+                    if self.filter_min_size > 0 and asset.size < self.filter_min_size:
+                        continue
+                    if self.filter_max_size > 0 and asset.size > self.filter_max_size:
+                        continue
+                    
+                    # Apply date filter
+                    if self.filter_date_from and asset.modified < self.filter_date_from:
+                        continue
+                    if self.filter_date_to and asset.modified > self.filter_date_to:
+                        continue
+                    
+                    all_assets.append(asset)
+                    
+                except Exception as e:
+                    if DEBUG_MODE:
+                        print(f"[Collection] Error loading {file_path}: {e}")
+                    continue
+            
+            self.assets = all_assets
+            
+            # Apply sorting
+            self._sort_assets()
+        
+        except Exception as e:
+            print(f"[Collection] Load error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.assets = []
     
     def rowCount(self, parent=QModelIndex()):
         return len(self.assets)

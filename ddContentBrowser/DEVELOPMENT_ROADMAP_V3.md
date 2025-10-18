@@ -347,7 +347,7 @@ def create_megascans_material(textures, options):
 
 ### **Phase 5: Collection System** 📁
 **Duration:** Week 7-8 (1-2 weeks)  
-**Status:** 🔜 Future
+**Status:** ✅ **COMPLETE!** - October 18, 2025
 
 #### Tasks:
 - [ ] **UI Design**
@@ -396,11 +396,300 @@ def create_megascans_material(textures, options):
   - Share collections between artists
   - Batch operations on collection items
 
-**Deliverable:** Virtual folder system with smart collections
+**Deliverable:** Virtual folder system with smart collections ✅
 
 ---
 
-### **Phase 5.5: Floating Preview Window** 🪟
+### **Phase 5.5: Quick View System** ⚡🔍
+**Duration:** Week 8-9 (3-5 days)  
+**Status:** 🔜 **NEXT!** - macOS-style Quick Look
+
+#### Concept:
+macOS-style Quick Look for Maya - press **Space** to instantly preview files in a floating, non-modal window. Browse underneath while keeping the preview visible!
+
+#### Core Features:
+- **⌨️ Keyboard Activation:**
+  - **Space** - Toggle Quick View on/off
+  - **ESC** - Close Quick View
+  - **Arrow Left/Right** - Navigate through files (when focused)
+  - **Arrow Up/Down** - Navigate through files (when focused)
+
+- **🪟 Floating Window:**
+  - Non-modal window (browse underneath stays active)
+  - Always on top (Qt.WindowStaysOnTopHint)
+  - Draggable anywhere (even to second monitor)
+  - Auto-resize based on content
+  - Frameless or minimal titlebar
+
+- **👁️ Preview Types:**
+  - Images: Full preview with zoom/pan
+  - HDR/EXR: Exposure control slider
+  - PDF: Page navigation
+  - Text files: Syntax highlighting
+  - 3D files: Gradient icon (mesh preview later?)
+  - Maya files: Metadata display (poly count later?)
+
+- **📊 Multi-File Support:**
+  - **1 file** → Large preview (800x600px default)
+  - **2-4 files** → 2x2 grid layout
+  - **5+ files** → Scrollable grid (2-3 columns)
+  - Visual indicator for multiple files
+
+- **📌 Pin Feature (Advanced):**
+  - Pin button (📌) in titlebar
+  - Pinned: Preview doesn't update when selecting new files
+  - Useful for:
+    - Keeping reference image visible
+    - Comparing current file with pinned reference
+    - Lock HDR/texture while browsing others
+  - Multiple pin modes:
+    - Pin entire preview (all files locked)
+    - Pin individual items in grid (partial lock)
+  - Visual indicator: Pinned items have pin icon overlay
+
+#### Tasks:
+- [ ] **QuickViewWindow Class**
+  - QDialog with Qt.Tool | Qt.WindowStaysOnTopHint
+  - Non-modal (Qt.NonModal)
+  - Draggable custom titlebar
+  - Auto-resize based on content/file count
+  - Remember position/size in config.json
+
+- [ ] **Preview Rendering**
+  - Reuse PreviewPanel rendering code
+  - Image preview with zoom/pan
+  - HDR/EXR with exposure slider
+  - PDF with page navigation
+  - Text with syntax highlighting
+  - Multi-file grid layout
+
+- [ ] **Keyboard Shortcuts**
+  - Global Space key handler in browser
+  - ESC to close
+  - Arrow keys for navigation (when window focused)
+  - Number keys (1-9) for quick file selection in grid
+
+- [ ] **Navigation Integration**
+  - Connect to browser's file selection
+  - Auto-update preview when selection changes (unless pinned)
+  - Selection changes underneath while Quick View is open
+  - Previous/Next file cycling
+
+- [ ] **Multi-File Grid Layout**
+  - Detect file count and choose layout:
+    - 1 file: Full screen (800x600)
+    - 2 files: 1x2 horizontal
+    - 3-4 files: 2x2 grid
+    - 5+ files: 2-3 column scrollable grid
+  - Thumbnail size adapts to grid
+  - Hover highlights in grid
+  - Click to focus single file (zoom mode)
+
+- [ ] **Pin Feature (Advanced)**
+  - Pin button (📌) in titlebar
+  - Toggle pin state
+  - When pinned:
+    - Store current asset(s)
+    - Ignore selection changes
+    - Visual indicator (pin icon overlay)
+  - Modes:
+    - **Full Pin** - Lock entire preview
+    - **Partial Pin** (grid mode) - Pin specific items
+  - Right-click individual grid items to pin/unpin
+  - Status: "Pinned: filename.ma" in titlebar
+
+- [ ] **Quick Actions (Future)**
+  - Import button (when available)
+  - Reference button (Maya files)
+  - Open button (all files)
+  - Copy path button
+  - Minimize buttons in corner
+
+- [ ] **Window State Persistence**
+  - Save position/size to config.json
+  - Remember last used size
+  - Multi-monitor support
+  - Restore on next activation
+
+#### Technical Implementation:
+
+```python
+# quick_view.py (~400-600 lines)
+
+class QuickViewWindow(QDialog):
+    """macOS-style Quick Look window"""
+    
+    def __init__(self, browser):
+        super().__init__(browser.parent())
+        self.browser = browser
+        self.pinned = False
+        self.pinned_assets = []
+        
+        # Non-modal, always on top
+        self.setModal(False)
+        self.setWindowFlags(
+            Qt.Tool | 
+            Qt.WindowStaysOnTopHint | 
+            Qt.FramelessWindowHint
+        )
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Load state
+        self.restore_state()
+    
+    def setup_ui(self):
+        """Setup Quick View UI"""
+        layout = QVBoxLayout(self)
+        
+        # Custom titlebar
+        titlebar = self.create_titlebar()
+        layout.addWidget(titlebar)
+        
+        # Preview area (adapts to file count)
+        self.preview_container = QStackedWidget()
+        
+        # Single file preview
+        self.single_preview = self.create_single_preview()
+        self.preview_container.addWidget(self.single_preview)
+        
+        # Grid preview (2x2, 3x3, etc.)
+        self.grid_preview = self.create_grid_preview()
+        self.preview_container.addWidget(self.grid_preview)
+        
+        layout.addWidget(self.preview_container)
+        
+        # Status bar
+        self.status_label = QLabel()
+        layout.addWidget(self.status_label)
+    
+    def create_titlebar(self):
+        """Custom draggable titlebar with pin button"""
+        titlebar = QWidget()
+        layout = QHBoxLayout(titlebar)
+        
+        # Title
+        self.title_label = QLabel("Quick View")
+        layout.addWidget(self.title_label)
+        
+        layout.addStretch()
+        
+        # Pin button
+        self.pin_btn = QPushButton("📌")
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setToolTip("Pin preview (keeps current files visible)")
+        self.pin_btn.clicked.connect(self.toggle_pin)
+        layout.addWidget(self.pin_btn)
+        
+        # Close button
+        close_btn = QPushButton("✕")
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+        
+        # Make draggable
+        titlebar.mousePressEvent = self.titlebar_press
+        titlebar.mouseMoveEvent = self.titlebar_move
+        
+        return titlebar
+    
+    def show_preview(self, assets):
+        """Show preview for selected assets"""
+        if self.pinned:
+            return  # Ignore if pinned
+        
+        if not assets:
+            return
+        
+        # Single or multiple files?
+        if len(assets) == 1:
+            self.show_single_file(assets[0])
+            self.preview_container.setCurrentWidget(self.single_preview)
+        else:
+            self.show_grid(assets)
+            self.preview_container.setCurrentWidget(self.grid_preview)
+        
+        # Update title
+        if len(assets) == 1:
+            self.title_label.setText(f"Quick View - {assets[0].name}")
+        else:
+            self.title_label.setText(f"Quick View - {len(assets)} files")
+    
+    def toggle_pin(self):
+        """Toggle pin state"""
+        self.pinned = self.pin_btn.isChecked()
+        
+        if self.pinned:
+            # Store current assets
+            self.pinned_assets = self.current_assets.copy()
+            self.status_label.setText("📌 Pinned")
+        else:
+            # Clear pin
+            self.pinned_assets = []
+            self.status_label.setText("")
+            # Refresh with current selection
+            self.show_preview(self.browser.get_selected_assets())
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts"""
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        elif event.key() == Qt.Key_Space:
+            self.close()
+        elif event.key() == Qt.Key_Left:
+            self.navigate_previous()
+        elif event.key() == Qt.Key_Right:
+            self.navigate_next()
+        else:
+            super().keyPressEvent(event)
+
+
+# Integration in browser.py:
+
+def setup_quick_view(self):
+    """Setup Quick View system"""
+    self.quick_view_window = None
+    
+    # Install global Space key filter
+    self.file_list.installEventFilter(self)
+
+def eventFilter(self, obj, event):
+    """Catch Space key for Quick View"""
+    if obj == self.file_list:
+        if event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space:
+                self.toggle_quick_view()
+                return True
+    return super().eventFilter(obj, event)
+
+def toggle_quick_view(self):
+    """Toggle Quick View window"""
+    if self.quick_view_window is None:
+        self.quick_view_window = QuickViewWindow(self)
+    
+    if self.quick_view_window.isVisible():
+        self.quick_view_window.close()
+    else:
+        # Get selected assets
+        assets = self.get_selected_assets()
+        if assets:
+            self.quick_view_window.show_preview(assets)
+            self.quick_view_window.show()
+```
+
+#### Future Enhancements:
+- **Slideshow Mode** - Auto-advance through images (configurable interval)
+- **Compare Mode** - Side-by-side pinned comparison (split view)
+- **Quick Actions** - Import/Reference/Open buttons in preview
+- **Mesh Preview** - Real 3D preview for Maya files (safe playblast)
+- **Video Preview** - Play video files (.mp4, .mov)
+- **Audio Preview** - Waveform display for audio files
+
+**Deliverable:** macOS Quick Look-style floating preview with pin functionality
+
+---
+
+### **Phase 5.6: Floating Preview Window** 🪟
 **Duration:** Week 8 (3-5 days)  
 **Status:** 🔮 Future (After Collections)
 

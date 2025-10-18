@@ -496,8 +496,8 @@ class ThumbnailSettingsTab(QWidget):
     def update_cache_info(self):
         """Update cache size information"""
         try:
-            # Correct cache directory (same as DiskCache uses)
-            cache_dir = Path.home() / ".dd_browser_thumbnails"
+            # Unified cache directory
+            cache_dir = Path.home() / ".ddContentBrowser" / "thumbnails"
             if cache_dir.exists():
                 total_size = sum(f.stat().st_size for f in cache_dir.rglob('*') if f.is_file())
                 size_mb = total_size / (1024 * 1024)
@@ -514,8 +514,8 @@ class ThumbnailSettingsTab(QWidget):
                                      QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             try:
-                # Correct cache directory (same as DiskCache uses)
-                cache_dir = Path.home() / ".dd_browser_thumbnails"
+                # Unified cache directory
+                cache_dir = Path.home() / ".ddContentBrowser" / "thumbnails"
                 if cache_dir.exists():
                     import shutil
                     shutil.rmtree(cache_dir)
@@ -636,6 +636,26 @@ class FiltersSettingsTab(QWidget):
         self.settings = settings_manager
         self.init_ui()
     
+    def _generate_supported_formats_html(self):
+        """Generate HTML description of supported formats from FILE_TYPE_REGISTRY"""
+        from .utils import FILE_TYPE_REGISTRY
+        
+        # Import & Reference capable formats (importable=True)
+        importable_html = "<b>🔵 Import & Reference to Maya:</b><br>"
+        for cat_name, cat_data in FILE_TYPE_REGISTRY.items():
+            if cat_data['importable']:
+                ext_list = ", ".join(cat_data['extensions'])
+                importable_html += f"• <b>{cat_data['label']}:</b> {ext_list}<br>"
+        
+        # Browse & Preview only formats (importable=False)
+        browse_html = "<b>⚪ Browse & Preview Only:</b><br>"
+        for cat_name, cat_data in FILE_TYPE_REGISTRY.items():
+            if not cat_data['importable']:
+                ext_list = ", ".join(cat_data['extensions'])
+                browse_html += f"• <b>{cat_data['label']}:</b> {ext_list}<br>"
+        
+        return importable_html, browse_html
+    
     def init_ui(self):
         layout = QVBoxLayout(self)
         
@@ -643,24 +663,17 @@ class FiltersSettingsTab(QWidget):
         types_group = QGroupBox("Supported File Types")
         types_layout = QVBoxLayout()
         
+        # Generate HTML from registry
+        import_html, browse_html = self._generate_supported_formats_html()
+        
         # Import & Reference capable formats
-        import_label = QLabel(
-            "<b>🔵 Import & Reference to Maya:</b><br>"
-            "• <b>Scenes:</b> .ma, .mb<br>"
-            "• <b>3D Models:</b> .obj, .fbx, .abc, .usd<br>"
-            "• <b>Textures:</b> .jpg, .jpeg, .png, .tif, .tiff, .tga, .hdr, .exr<br>"
-            "• <b>Scripts:</b> .mel, .py"
-        )
+        import_label = QLabel(import_html)
         import_label.setWordWrap(True)
         import_label.setStyleSheet("QLabel { color: #4CAF50; font-size: 11px; padding: 5px; }")
         types_layout.addWidget(import_label)
         
         # Browse/Preview only formats
-        browse_label = QLabel(
-            "<b>⚪ Browse & Preview Only:</b><br>"
-            "• <b>3D Formats:</b> .vdb, .hda, .blend<br>"
-            "• <b>Documents:</b> .pdf, .txt"
-        )
+        browse_label = QLabel(browse_html)
         browse_label.setWordWrap(True)
         browse_label.setStyleSheet("QLabel { color: #888; font-size: 11px; padding: 5px; }")
         types_layout.addWidget(browse_label)

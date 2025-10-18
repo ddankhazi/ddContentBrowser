@@ -81,14 +81,15 @@ class ThumbnailDiskCache:
     
     def __init__(self, cache_dir=None, max_size_mb=500):
         """
-        Initialize disk cache
+        Initialize disk cache.
         
         Args:
-            cache_dir: Directory to store thumbnails (default: ~/.dd_browser_thumbnails)
-            max_size_mb: Maximum cache size in megabytes
+            cache_dir: Directory to store thumbnails (default: ~/.ddContentBrowser/thumbnails)
+            max_size_mb: Maximum cache size in megabytes (default: 500 MB)
         """
         if cache_dir is None:
-            cache_dir = Path.home() / ".dd_browser_thumbnails"
+            # Unified config directory - all DD Content Browser data in one place
+            cache_dir = Path.home() / ".ddContentBrowser" / "thumbnails"
         
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

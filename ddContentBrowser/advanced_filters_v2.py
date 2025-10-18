@@ -16,13 +16,13 @@ UI_FONT = "Segoe UI"
 
 try:
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                                   QPushButton, QScrollArea, QCheckBox, QFrame)
+                                   QPushButton, QScrollArea, QCheckBox, QFrame, QApplication)
     from PySide6.QtCore import Qt, Signal
     from PySide6.QtGui import QFont
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                                   QPushButton, QScrollArea, QCheckBox, QFrame)
+                                   QPushButton, QScrollArea, QCheckBox, QFrame, QApplication)
     from PySide2.QtCore import Qt, Signal
     from PySide2.QtGui import QFont
     PYSIDE_VERSION = 2
@@ -73,7 +73,7 @@ class FilterCategory(QWidget):
         self.collapse_arrow = QLabel("▾")  # Using U+25BE (down-pointing triangle)
         self.collapse_arrow.setStyleSheet("""
             QLabel {
-                font-size: 11px;
+                font-size: 14px;
                 padding: 0px 3px;
                 background: transparent;
                 font-family: "Segoe UI Symbol", "Arial Unicode MS";
@@ -88,7 +88,7 @@ class FilterCategory(QWidget):
         self.name_label.setStyleSheet("""
             QLabel {
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 12px;
                 background: transparent;
             }
         """)
@@ -175,7 +175,7 @@ class FilterCategory(QWidget):
             # Minimal styling - Maya handles most of it
             checkbox1.setStyleSheet("""
                 QCheckBox {
-                    font-size: 10px;
+                    font-size: 11px;
                     spacing: 4px;
                 }
             """)
@@ -190,7 +190,7 @@ class FilterCategory(QWidget):
                 # Minimal styling - Maya handles most of it
                 checkbox2.setStyleSheet("""
                     QCheckBox {
-                        font-size: 10px;
+                        font-size: 11px;
                         spacing: 4px;
                     }
                 """)
@@ -333,20 +333,52 @@ class AdvancedFiltersPanelV2(QWidget):
         # Store original unfiltered asset list
         self.original_assets = self.file_model.assets.copy()
         
-        # Collect metadata for all assets
-        metadata_list = []
-        folder_count = 0
-        file_count = 0
+        # Count folders
+        folder_count = sum(1 for asset in self.original_assets if asset.is_folder)
+        files_to_process = [asset for asset in self.original_assets if not asset.is_folder]
+        file_count = len(files_to_process)
         
-        for asset in self.original_assets:
-            if asset.is_folder:
-                folder_count += 1
-            else:
-                file_count += 1
-                metadata_dict = self.metadata_cache.get_or_create(asset.file_path).get_metadata()
+        # Process files in parallel using ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import os
+        
+        # Use number of CPU cores (but max 8 to avoid overwhelming the system)
+        max_workers = min(8, os.cpu_count() or 4)
+        
+        metadata_list = []
+        processed_count = 0
+        
+        def process_single_file(asset):
+            """Process a single file and return its metadata"""
+            try:
+                # Extract full metadata (including image dimensions, etc.)
+                file_metadata = self.metadata_cache.get_or_create(asset.file_path)
+                file_metadata.extract_full_metadata()  # Ensure full metadata is extracted
+                metadata_dict = file_metadata.get_metadata()
                 # Add file_path to metadata for tag lookup
                 metadata_dict['file_path'] = str(asset.file_path)
-                metadata_list.append(metadata_dict)
+                return metadata_dict
+            except Exception as e:
+                if DEBUG_MODE:
+                    print(f"[AdvancedFilters] Error processing {asset.file_path}: {e}")
+                return None
+        
+        # Process files in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            futures = {executor.submit(process_single_file, asset): asset for asset in files_to_process}
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    metadata_list.append(result)
+                
+                # Update progress
+                processed_count += 1
+                self.analyze_btn.setText(f"⏳ Analyzing... {processed_count}/{file_count}")
+                # Force UI update
+                QApplication.processEvents()
         
         # Build categories
         self.build_filter_categories(metadata_list, folder_count)
@@ -356,7 +388,8 @@ class AdvancedFiltersPanelV2(QWidget):
         self.analyze_btn.setText("🔄 Analyze Folder")
         
         if DEBUG_MODE:
-            print(f"[AdvancedFilters] Analyzed {file_count} files and {folder_count} folders")
+            print(f"[AdvancedFilters] Analyzed {file_count} files and {folder_count} folders (parallel mode with {max_workers} threads)")
+
     
     def build_filter_categories(self, metadata_list: List[Dict], folder_count: int = 0):
         """Build filter categories from metadata"""

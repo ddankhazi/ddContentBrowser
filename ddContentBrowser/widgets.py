@@ -60,7 +60,7 @@ try:
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                                     QLineEdit, QScrollArea, QFrame, QGroupBox, QCheckBox, 
                                     QSpinBox, QFormLayout, QDateEdit, QDialog, QGraphicsView,
-                                    QApplication, QListView, QCompleter)
+                                    QApplication, QListView, QListWidget, QCompleter)
     from PySide6.QtCore import Signal, Qt, QEvent, QPoint, QSize, QDate, QRect
     from PySide6.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -69,7 +69,7 @@ except ImportError:
     from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                     QLineEdit, QScrollArea, QFrame, QGroupBox, QCheckBox,
                                     QSpinBox, QFormLayout, QDateEdit, QDialog, QGraphicsView,
-                                    QApplication, QListView, QCompleter)
+                                    QApplication, QListView, QListWidget, QCompleter)
     from PySide2.QtCore import Signal, Qt, QEvent, QPoint, QSize, QDate, QRect
     from PySide2.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont
     from PySide2 import QtCore, QtGui, QtWidgets
@@ -418,6 +418,51 @@ class BreadcrumbWidget(QWidget):
             # Force layout update
             self.updateGeometry()
             self.layout.update()
+    
+    def set_collection_mode(self, collection_name):
+        """Set breadcrumb to collection mode - shows collection name instead of path"""
+        # Clear existing buttons
+        while self.breadcrumb_layout.count() > 1:  # Keep the stretch
+            item = self.breadcrumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Create collection icon + name button (using gray triangle icon)
+        collection_btn = QPushButton(f"▸ {collection_name}")
+        collection_btn.setFlat(True)
+        collection_btn.setMaximumHeight(24)
+        collection_btn.setStyleSheet(f"""
+            QPushButton {{
+                border: none;
+                padding: 2px 8px;
+                background: transparent;
+                text-align: left;
+                font-size: 12px;
+                font-family: {UI_FONT};
+                color: #b0b0b0;
+                font-weight: bold;
+            }}
+        """)
+        collection_btn.setEnabled(False)  # Not clickable
+        
+        # Insert at the END (before stretch)
+        self.breadcrumb_layout.insertWidget(self.breadcrumb_layout.count() - 1, collection_btn)
+        
+        # Apply blue background style
+        self.breadcrumb_container.setStyleSheet("""
+            QWidget {
+                background-color: #2a4a6a;
+                border-radius: 3px;
+            }
+        """)
+    
+    def clear_collection_mode(self):
+        """Clear collection mode and restore normal path breadcrumb"""
+        # Reset background style
+        self.breadcrumb_container.setStyleSheet("QWidget { background-color: #3c3c3c; }")
+        
+        # Restore normal breadcrumbs
+        self.update_breadcrumbs()
 
 
 class EnhancedSearchBar(QWidget):
@@ -1194,14 +1239,17 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                 c = 2.43
                 d = 0.59
                 e = 0.14
-                rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+                
+                # Suppress numpy warnings for HDR tonemapping (overflow/divide by zero are expected)
+                with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                    rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
                 
                 # Gamma correction (2.2 for sRGB)
-                gamma = 1.0 / 2.2
                 rgb_tonemapped = np.power(rgb_tonemapped, gamma)
                 
                 # Convert to 8-bit
-                rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+                with np.errstate(invalid='ignore'):
+                    rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
                 
                 # Create QImage
                 bytes_per_line = width * 3
@@ -1513,13 +1561,13 @@ class PreviewPanel(QWidget):
         
         # Create splitter between preview and info tabs
         self.preview_splitter = QtWidgets.QSplitter(Qt.Vertical)
-        self.preview_splitter.setHandleWidth(4)
+        self.preview_splitter.setHandleWidth(3)
         self.preview_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #555;
             }
             QSplitter::handle:hover {
-                background-color: #4b7daa;
+                background-color: #777;
             }
         """)
         
@@ -5676,6 +5724,7 @@ class MayaStyleListView(QListView):
         self.middle_button_pressed = False
         self.drag_start_position = None
         self.drag_started = False
+        self.drag_to_collection = False  # Flag to distinguish drag-to-collection from batch import
         # Scroll speed reduction factor (lower = slower scrolling)
         self.scroll_speed_factor = 3.0  # 30% of normal speed
     
@@ -5720,30 +5769,87 @@ class MayaStyleListView(QListView):
     
     def mouseMoveEvent(self, event):
         """Handle mouse move"""
-        if self.middle_button_pressed and self.drag_start_position and not self.drag_started:
-            distance = (event.pos() - self.drag_start_position).manhattanLength()
-            if distance >= 5:
-                self.drag_started = True
-                self.setCursor(Qt.ClosedHandCursor)
+        if self.middle_button_pressed and self.drag_start_position:
+            if not self.drag_started:
+                # Check if we've moved enough to start drag
+                distance = (event.pos() - self.drag_start_position).manhattanLength()
+                if distance >= 5:
+                    self.drag_started = True
+                    self.setCursor(Qt.ClosedHandCursor)
+            
+            if self.drag_started:
+                # Continuously check position to see if we're over collections
+                global_pos = self.mapToGlobal(event.pos())
+                widget_at_cursor = QApplication.widgetAt(global_pos)
                 
-                count = len(self.selectedIndexes())
+                # Check if cursor is over DragDropCollectionListWidget
+                is_over_collections = False
+                check_widget = widget_at_cursor
+                while check_widget:
+                    if isinstance(check_widget, DragDropCollectionListWidget):
+                        is_over_collections = True
+                        break
+                    check_widget = check_widget.parent()
                 
-                if count > 0:
-                    browser = self.parent()
-                    while browser and not hasattr(browser, 'status_bar'):
-                        browser = browser.parent()
-                    if browser and hasattr(browser, 'status_bar'):
-                        browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
-                return
+                # Update cursor based on position
+                if is_over_collections:
+                    if not self.drag_to_collection:
+                        self.drag_to_collection = True
+                        self.setCursor(Qt.DragMoveCursor)
+                        # Start actual Qt drag operation
+                        self.startDrag(Qt.CopyAction)
+                        # After drag completes, reset flags
+                        self.middle_button_pressed = False
+                        self.drag_start_position = None
+                        self.drag_started = False
+                        self.drag_to_collection = False
+                        self.setCursor(Qt.ArrowCursor)
+                        self.unsetCursor()
+                        return
+                else:
+                    if self.drag_to_collection:
+                        # Left collections area
+                        self.drag_to_collection = False
+                        self.setCursor(Qt.ClosedHandCursor)
         
         super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release"""
         if event.button() == Qt.MiddleButton:
-            if self.drag_started:
+            # Check if we're still over the ddContentBrowser window
+            global_pos = self.mapToGlobal(event.pos())
+            widget_at_cursor = QApplication.widgetAt(global_pos)
+            
+            # Find the top-level browser window
+            is_over_browser = False
+            check_widget = widget_at_cursor
+            while check_widget:
+                # Check if this is the main browser window (has 'DDContentBrowser' in title or class name)
+                if hasattr(check_widget, 'windowTitle') and 'DD Content Browser' in str(check_widget.windowTitle()):
+                    is_over_browser = True
+                    break
+                # Also check by class name
+                if check_widget.__class__.__name__ == 'DDContentBrowser':
+                    is_over_browser = True
+                    break
+                check_widget = check_widget.parent()
+            
+            # Only do batch import if:
+            # 1. Drag was started
+            # 2. NOT dragging to collections panel
+            # 3. Mouse is NOT over the browser window (must be outside, e.g., Maya viewport)
+            if self.drag_started and not self.drag_to_collection and not is_over_browser:
                 indexes = self.selectedIndexes()
                 if indexes:
+                    # Show status message before importing
+                    count = len(indexes)
+                    browser = self.parent()
+                    while browser and not hasattr(browser, 'status_bar'):
+                        browser = browser.parent()
+                    if browser and hasattr(browser, 'status_bar'):
+                        browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                    
                     self.batch_import_files(indexes)
                 else:
                     # No items selected - show warning
@@ -5752,10 +5858,15 @@ class MayaStyleListView(QListView):
                         browser = browser.parent()
                     if browser and hasattr(browser, 'status_bar'):
                         browser.status_bar.showMessage("No files selected for batch import", 2000)
+            elif self.drag_started and not self.drag_to_collection and is_over_browser:
+                # Dragged within browser but not to collections - cancel silently
+                pass
             
+            # Reset all flags
             self.middle_button_pressed = False
             self.drag_start_position = None
             self.drag_started = False
+            self.drag_to_collection = False
             self.setCursor(Qt.ArrowCursor)
             self.unsetCursor()
             event.accept()
@@ -5779,15 +5890,37 @@ class MayaStyleListView(QListView):
                 self.middle_button_pressed = False
                 self.drag_start_position = None
                 self.drag_started = False
+                self.drag_to_collection = False
                 
                 browser = self.parent()
                 while browser and not hasattr(browser, 'status_bar'):
                     browser = browser.parent()
                 if browser and hasattr(browser, 'status_bar'):
-                    browser.status_bar.showMessage("Batch import cancelled", 1500)
+                    browser.status_bar.showMessage("Drag cancelled", 1500)
                 return
         
         super().keyPressEvent(event)
+    
+    def startDrag(self, supportedActions):
+        """Start drag operation when dragging to collections panel"""
+        try:
+            from PySide6.QtCore import QMimeData
+            from PySide6.QtGui import QDrag
+        except ImportError:
+            from PySide2.QtCore import QMimeData
+            from PySide2.QtGui import QDrag
+        
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        
+        # Store selected file paths (we'll retrieve them in the drop handler)
+        # No need to actually set mime data - we check the source widget directly
+        mime_data.setText("drag_from_file_list")
+        drag.setMimeData(mime_data)
+        
+        # Execute drag
+        drag.exec_(supportedActions)
     
     def batch_import_files(self, indexes):
         """Batch import files"""
@@ -5888,4 +6021,104 @@ class MayaStyleListView(QListView):
                 browser = browser.parent()
             if browser and hasattr(browser, 'status_bar'):
                 browser.status_bar.showMessage(f"Batch import error: {e}", 3000)
+
+
+class DragDropCollectionListWidget(QListWidget):
+    """Custom QListWidget that accepts middle-button drag from file list"""
+    
+    # Signal emitted when files are dropped onto a collection
+    files_dropped_on_collection = Signal(str, list)  # collection_name, file_paths
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.drop_indicator_item = None
+    
+    def dragEnterEvent(self, event):
+        """Handle drag enter - check if it's coming from our file list"""
+        # Accept drops from within our application
+        if event.source() and isinstance(event.source(), MayaStyleListView):
+            event.acceptProposedAction()
+            return
+        
+        event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """Handle drag move - highlight collection under cursor"""
+        if event.source() and isinstance(event.source(), MayaStyleListView):
+            # Get item under cursor
+            item = self.itemAt(event.pos())
+            
+            # Clear previous highlight
+            if self.drop_indicator_item:
+                font = self.drop_indicator_item.font()
+                font.setBold(False)
+                self.drop_indicator_item.setFont(font)
+            
+            # Highlight current item
+            if item and item.data(Qt.UserRole):  # Has collection name
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                self.drop_indicator_item = item
+                event.acceptProposedAction()
+            else:
+                self.drop_indicator_item = None
+                event.ignore()
+            
+            return
+        
+        event.ignore()
+    
+    def dragLeaveEvent(self, event):
+        """Handle drag leave - clear highlight"""
+        if self.drop_indicator_item:
+            font = self.drop_indicator_item.font()
+            font.setBold(False)
+            self.drop_indicator_item.setFont(font)
+            self.drop_indicator_item = None
+    
+    def dropEvent(self, event):
+        """Handle drop - add files to collection"""
+        # Clear highlight
+        if self.drop_indicator_item:
+            font = self.drop_indicator_item.font()
+            font.setBold(False)
+            self.drop_indicator_item.setFont(font)
+            self.drop_indicator_item = None
+        
+        # Check if dropped on valid collection item
+        item = self.itemAt(event.pos())
+        if not item:
+            event.ignore()
+            return
+        
+        collection_name = item.data(Qt.UserRole)
+        if not collection_name:
+            event.ignore()
+            return
+        
+        # Get file paths from source
+        source = event.source()
+        if not isinstance(source, MayaStyleListView):
+            event.ignore()
+            return
+        
+        # Get selected assets from file list
+        indexes = source.selectedIndexes()
+        file_paths = []
+        
+        for index in indexes:
+            if index.isValid():
+                asset = source.model().data(index, Qt.UserRole)
+                if asset and not asset.is_folder:
+                    file_paths.append(str(asset.file_path))
+        
+        if file_paths:
+            # Emit signal with collection name and file paths
+            self.files_dropped_on_collection.emit(collection_name, file_paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
 

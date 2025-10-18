@@ -349,6 +349,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Track advanced filters state
         self.advanced_filters_active = False
         
+        # Track current collection (for remove from collection feature)
+        self.current_collection_name = None
+        
+        # Quick View window (macOS Quick Look style)
+        self.quick_view_window = None
+        
         # Start thumbnail generator thread
         self.thumbnail_generator.start()
         
@@ -414,12 +420,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Update font in all modules that use UI_FONT
         try:
-            from . import widgets, delegates, cache, models, advanced_filters_v2
+            from . import widgets, delegates, cache, models, advanced_filters_v2, quick_view
             widgets.UI_FONT = ui_font
             delegates.UI_FONT = ui_font
             cache.UI_FONT = ui_font
             models.UI_FONT = ui_font
             advanced_filters_v2.UI_FONT = ui_font
+            quick_view.UI_FONT = ui_font
         except Exception as e:
             print(f"Warning: Could not apply UI font: {e}")
     
@@ -433,16 +440,28 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Central widget
         central_widget = QtWidgets.QWidget()
+        central_widget.setContentsMargins(0, 0, 0, 0)  # Remove default margins
         self.setCentralWidget(central_widget)
         
-        # Main layout
+        # Main layout - match Maya spacing
         main_layout = QtWidgets.QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)  # No margins, let widgets handle spacing
+        main_layout.setSpacing(4)  # Tight spacing between menubar and toolbar
         
         # Create toolbar
         self.create_toolbar(main_layout)
         
         # Content area
         self.content_splitter = QtWidgets.QSplitter(Qt.Horizontal)
+        self.content_splitter.setHandleWidth(3)
+        self.content_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #555;
+            }
+            QSplitter::handle:hover {
+                background-color: #777;
+            }
+        """)
         main_layout.addWidget(self.content_splitter)
         
         # Left panel - Navigation
@@ -588,6 +607,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Create vertical splitter for navigation tabs and collection/filter tabs
         self.nav_splitter = QtWidgets.QSplitter(Qt.Vertical)
+        self.nav_splitter.setHandleWidth(3)
+        self.nav_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #555;
+            }
+            QSplitter::handle:hover {
+                background-color: #777;
+            }
+        """)
         
         # Top tab widget - Favourites & Folders
         self.nav_top_tabs = QtWidgets.QTabWidget()
@@ -656,15 +684,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Store tab widgets with identifiers for restoration
         self.nav_tab_widgets = {}
         
-        # Collections tab
-        collections_widget = QtWidgets.QWidget()
-        collections_layout = QtWidgets.QVBoxLayout(collections_widget)
-        collections_layout.setContentsMargins(5, 5, 5, 5)
-        collections_placeholder = QtWidgets.QLabel("Collections\n(Coming soon)")
-        collections_placeholder.setAlignment(Qt.AlignCenter)
-        collections_placeholder.setStyleSheet("color: gray;")
-        collections_layout.addWidget(collections_placeholder)
-        self.nav_tab_widgets["Collections"] = collections_widget
+        # Collections tab - Initialize Collections Manager and Panel
+        from .collections import CollectionManager
+        from .collections_panel import CollectionsPanel
+        
+        self.collection_manager = CollectionManager()  # Auto-loads from ~/.ddContentBrowser/collections.json
+        self.collections_panel = CollectionsPanel(self.collection_manager)
+        
+        # Connect signals
+        self.collections_panel.collection_selected.connect(self.on_collection_selected)
+        self.collections_panel.collection_cleared.connect(self.on_collection_cleared)
+        
+        self.nav_tab_widgets["Collections"] = self.collections_panel
         
         # Advanced Filters tab - will be initialized later in setup_connections
         # (after file_model is created)
@@ -1009,6 +1040,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Initialize Advanced Filters panel now that file_model exists
         self.init_advanced_filters()
         
+        # Install event filter for Quick View (Space key)
+        self.file_list.installEventFilter(self)
+        
         # Restore sort and filter state from last session
         self.restore_browser_state()
     
@@ -1165,7 +1199,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
     
     def navigate_back(self):
-        """Navigate to previous path in history"""
+        """Navigate to previous path in history (or exit collection view if active)"""
+        # If in collection mode, exit it instead of navigating history
+        if self.file_model.collection_mode:
+            self.on_collection_cleared()
+            return
+        
         if self.history_index > 0:
             self.is_navigating_history = True
             self.history_index -= 1
@@ -1194,7 +1233,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def update_navigation_buttons(self):
         """Update back/forward button states"""
-        self.back_btn.setEnabled(self.history_index > 0)
+        # Back button is enabled if in collection mode OR if there's history to go back to
+        self.back_btn.setEnabled(self.file_model.collection_mode or self.history_index > 0)
         self.forward_btn.setEnabled(self.history_index < len(self.history) - 1)
     
     def set_view_mode(self, icon_mode):
@@ -1607,6 +1647,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Deferred preview update (doesn't block selection)"""
         assets = self.get_selected_assets()
         self.preview_panel.update_preview(assets)
+        
+        # Update Quick View if open and not pinned
+        self.update_quick_view()
     
     def on_model_reset(self):
         """Handle model reset (after filter changes) - trigger thumbnail loading"""
@@ -1978,67 +2021,6 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                             asset.modified_time
                         )
     
-    def eventFilter(self, obj, event):
-        """Event filter for handling Ctrl+Scroll zoom in grid view"""
-        # Check if event is from file list or its viewport
-        if obj == self.file_list or obj == self.file_list.viewport():
-            # Check for wheel event with Ctrl modifier
-            # Use Type enum properly for both PySide2 and PySide6
-            try:
-                wheel_type = QtCore.QEvent.Type.Wheel if hasattr(QtCore.QEvent, 'Type') else QtCore.QEvent.Wheel
-            except:
-                wheel_type = QtCore.QEvent.Wheel
-            
-            if event.type() == wheel_type:
-                modifiers = QtWidgets.QApplication.keyboardModifiers()
-                
-                if modifiers == Qt.ControlModifier:
-                    # Zoom works in both grid and list mode
-                    # Get wheel delta (positive = scroll up, negative = scroll down)
-                    delta = event.angleDelta().y()
-                    
-                    # Define size steps based on current view mode
-                    if self.grid_mode_btn.isChecked():
-                        # Grid mode: 32px minimum
-                        sizes = [32, 64, 96, 128, 160, 192, 224, 256]
-                    else:
-                        # List mode: can go down to 16px for very compact view
-                        sizes = [16, 24, 32, 64, 96, 128, 160, 192, 224, 256]
-                    
-                    # Get current ACTUAL thumbnail size (not slider value which might be mid-snap)
-                    current_size = getattr(self, 'thumbnail_size', self.size_slider.value())
-                    
-                    # Find current index
-                    try:
-                        current_index = sizes.index(current_size)
-                    except ValueError:
-                        # If not in list, find closest
-                        current_index = min(range(len(sizes)), key=lambda i: abs(sizes[i] - current_size))
-                    
-                    # Adjust index (scroll up = zoom in, scroll down = zoom out)
-                    if delta > 0:
-                        new_index = min(current_index + 1, len(sizes) - 1)
-                    else:
-                        new_index = max(current_index - 1, 0)
-                    
-                    new_size = sizes[new_index]
-                    
-                    # Update only if changed
-                    if new_size != current_size:
-                        # Block signals to prevent double-snapping
-                        self.size_slider.blockSignals(True)
-                        self.size_slider.setValue(new_size)
-                        self.size_slider.blockSignals(False)
-                        
-                        # Manually trigger the size change
-                        self.on_size_slider_changed(new_size)
-                    
-                    # Accept event to prevent scrolling
-                    return True
-        
-        # Pass event to parent class
-        return super().eventFilter(obj, event)
-    
     def on_splitter_moved(self, pos, index):
         """Save splitter position when moved and update thumbnails for newly visible items"""
         if hasattr(self, 'content_splitter'):
@@ -2271,9 +2253,134 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Error", f"Failed to clear cache: {e}")
     
+    # ========== Quick View System ==========
+    
+    def eventFilter(self, obj, event):
+        """Event filter for handling Ctrl+Scroll zoom AND Space key for Quick View"""
+        # Check if event is from file list or its viewport
+        if obj == self.file_list or obj == self.file_list.viewport():
+            # === CTRL+SCROLL ZOOM ===
+            # Check for wheel event with Ctrl modifier
+            try:
+                wheel_type = QtCore.QEvent.Type.Wheel if hasattr(QtCore.QEvent, 'Type') else QtCore.QEvent.Wheel
+            except:
+                wheel_type = QtCore.QEvent.Wheel
+            
+            if event.type() == wheel_type:
+                modifiers = QtWidgets.QApplication.keyboardModifiers()
+                
+                if modifiers == Qt.ControlModifier:
+                    # Zoom works in both grid and list mode
+                    # Get wheel delta (positive = scroll up, negative = scroll down)
+                    delta = event.angleDelta().y()
+                    
+                    # Define size steps based on current view mode
+                    if self.grid_mode_btn.isChecked():
+                        # Grid mode: 32px minimum
+                        sizes = [32, 64, 96, 128, 160, 192, 224, 256]
+                    else:
+                        # List mode: can go down to 16px for very compact view
+                        sizes = [16, 24, 32, 64, 96, 128, 160, 192, 224, 256]
+                    
+                    # Get current ACTUAL thumbnail size (not slider value which might be mid-snap)
+                    current_size = getattr(self, 'thumbnail_size', self.size_slider.value())
+                    
+                    # Find current index
+                    try:
+                        current_index = sizes.index(current_size)
+                    except ValueError:
+                        # If not in list, find closest
+                        current_index = min(range(len(sizes)), key=lambda i: abs(sizes[i] - current_size))
+                    
+                    # Adjust index (scroll up = zoom in, scroll down = zoom out)
+                    if delta > 0:
+                        new_index = min(current_index + 1, len(sizes) - 1)
+                    else:
+                        new_index = max(current_index - 1, 0)
+                    
+                    new_size = sizes[new_index]
+                    
+                    # Update only if changed
+                    if new_size != current_size:
+                        # Block signals to prevent double-snapping
+                        self.size_slider.blockSignals(True)
+                        self.size_slider.setValue(new_size)
+                        self.size_slider.blockSignals(False)
+                        
+                        # Manually trigger the size change
+                        self.on_size_slider_changed(new_size)
+                        
+                        if DEBUG_MODE:
+                            print(f"[Browser] Ctrl+Scroll zoom to {new_size}px")
+                    
+                    return True  # Event handled, prevent scrolling
+            
+            # === SPACE KEY FOR QUICK VIEW ===
+            if event.type() == QtCore.QEvent.KeyPress:
+                if event.key() == Qt.Key_Space:
+                    # Check if there are selected files
+                    selected = self.get_selected_assets()
+                    if selected:
+                        self.toggle_quick_view()
+                        return True  # Event handled
+        
+        return super().eventFilter(obj, event)
+    
+    def toggle_quick_view(self):
+        """Toggle Quick View window (Space key)"""
+        from .quick_view import QuickViewWindow
+        
+        # Create window if doesn't exist
+        if self.quick_view_window is None:
+            self.quick_view_window = QuickViewWindow(self)
+            self.quick_view_window.closed.connect(self.on_quick_view_closed)
+            
+            if DEBUG_MODE:
+                print("[Browser] Quick View window created")
+        
+        # Toggle visibility
+        if self.quick_view_window.isVisible():
+            self.quick_view_window.close()
+        else:
+            # Get selected assets
+            assets = self.get_selected_assets()
+            if assets:
+                self.quick_view_window.show_preview(assets)
+                self.quick_view_window.show()
+                self.quick_view_window.raise_()
+                
+                # DON'T activate window - keep focus on browser for keyboard navigation
+                # self.quick_view_window.activateWindow()
+                
+                # Ensure browser keeps focus
+                self.activateWindow()
+                self.file_list.setFocus()
+                
+                if DEBUG_MODE:
+                    print(f"[Browser] Quick View opened with {len(assets)} asset(s)")
+    
+    def on_quick_view_closed(self):
+        """Handle Quick View window closed"""
+        if DEBUG_MODE:
+            print("[Browser] Quick View closed")
+    
+    def update_quick_view(self):
+        """Update Quick View if it's visible and not pinned"""
+        if self.quick_view_window and self.quick_view_window.isVisible():
+            if not self.quick_view_window.pinned:
+                assets = self.get_selected_assets()
+                if assets:
+                    self.quick_view_window.show_preview(assets)
+    
+    # ========== Window Close ==========
+    
     def closeEvent(self, event):
         """Save configuration before closing window"""
         global _content_browser_instance
+        
+        # Close Quick View if open
+        if self.quick_view_window and self.quick_view_window.isVisible():
+            self.quick_view_window.close()
         
         # Stop thumbnail generator thread
         if hasattr(self, 'thumbnail_generator'):
@@ -2506,6 +2613,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 copy_filename_action.triggered.connect(self.copy_filename_to_clipboard)
                 
                 menu.addSeparator()
+                
+                # Add to Collection submenu (only for files, not folders)
+                if not asset.is_folder:
+                    self.add_collection_submenu(menu, selected_assets)
+                    
+                    # Remove from Collection (only if in collection mode)
+                    if self.file_model.collection_mode:
+                        remove_action = menu.addAction("➖ Remove from Collection")
+                        remove_action.triggered.connect(lambda: self.remove_files_from_current_collection(selected_assets))
+                    
+                    menu.addSeparator()
                 
                 rename_action = menu.addAction("✏️ Rename")
                 rename_action.triggered.connect(self.rename_selected_file)
@@ -2845,3 +2963,167 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             # Re-navigate to current path to refresh file list
             current_path = self.breadcrumb.current_path
             self.navigate_to_path(current_path)
+    
+    # ========== Collection Filter Methods ==========
+    
+    def on_collection_selected(self, collection_name: str):
+        """Handle collection selection - filter files to show only collection items"""
+        from .collections import ManualCollection
+        
+        collection = self.collection_manager.get_collection(collection_name)
+        if not collection:
+            return
+        
+        if isinstance(collection, ManualCollection):
+            # Get files from collection (only existing files)
+            collection_files = collection.get_existing_files()
+            
+            if not collection_files:
+                self.status_bar.showMessage(f"Collection '{collection_name}' is empty")
+                return
+            
+            # Apply collection filter to file model
+            self.file_model.setCollectionFilter(collection_files)
+            
+            # Store current collection name
+            self.current_collection_name = collection_name
+            
+            # Update breadcrumb to show collection name (not path)
+            self.breadcrumb.set_collection_mode(collection_name)
+            
+            # Update status
+            self.status_bar.showMessage(f"📁 Collection: {collection_name} ({len(collection_files)} files)")
+            
+            # Update navigation buttons (enable back button)
+            self.update_navigation_buttons()
+            
+            # Request thumbnails for visible items
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+            
+            if DEBUG_MODE:
+                print(f"[Browser] Applied collection filter: {collection_name}")
+    
+    def on_collection_cleared(self):
+        """Handle collection filter clear - show all files"""
+        # Clear collection filter
+        self.file_model.clearCollectionFilter()
+        
+        # Clear current collection name
+        self.current_collection_name = None
+        
+        # Reset breadcrumb to normal mode
+        self.breadcrumb.clear_collection_mode()
+        
+        # Hide exit collection view button
+        self.collections_panel.clear_btn.setVisible(False)
+        
+        # Update navigation buttons (may disable back button if no history)
+        self.update_navigation_buttons()
+        
+        # Update status
+        self.status_bar.showMessage("Returned to folder view")
+        
+        # Request thumbnails for visible items
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        
+        if DEBUG_MODE:
+            print("[Browser] Cleared collection filter")
+    
+    def add_collection_submenu(self, parent_menu, selected_assets):
+        """Add 'Add to Collection >' submenu with list of manual collections"""
+        # Get all manual collections
+        manual_collections = self.collection_manager.get_manual_collections()
+        
+        if not manual_collections:
+            # No collections available - show disabled menu item
+            no_collections_action = parent_menu.addAction("📁 Add to Collection >")
+            no_collections_action.setEnabled(False)
+            return
+        
+        # Create submenu
+        collections_submenu = parent_menu.addMenu("📁 Add to Collection")
+        
+        # Add each manual collection as menu item
+        for collection in sorted(manual_collections, key=lambda c: c.name.lower()):
+            collection_action = collections_submenu.addAction(f"▸ {collection.name}")
+            # Use lambda with default argument to capture collection name
+            collection_action.triggered.connect(
+                lambda checked=False, coll_name=collection.name: 
+                self.add_files_to_collection(coll_name, selected_assets)
+            )
+    
+    def add_files_to_collection(self, collection_name, assets):
+        """Add selected files to a collection"""
+        from .collections import ManualCollection
+        
+        collection = self.collection_manager.get_collection(collection_name)
+        if not collection or not isinstance(collection, ManualCollection):
+            return
+        
+        # Get file paths from assets
+        file_paths = [str(asset.file_path) for asset in assets if not asset.is_folder]
+        
+        if not file_paths:
+            return
+        
+        # Add files to collection
+        collection.add_files(file_paths)
+        self.collection_manager.save()
+        
+        # Refresh collections panel to update file count
+        self.collections_panel.refresh_collections_list()
+        
+        # Show feedback
+        file_count = len(file_paths)
+        file_word = "file" if file_count == 1 else "files"
+        self.status_bar.showMessage(f"Added {file_count} {file_word} to collection '{collection_name}'")
+        
+        if DEBUG_MODE:
+            print(f"[Browser] Added {file_count} files to collection '{collection_name}'")
+    
+    def remove_files_from_current_collection(self, assets):
+        """Remove selected files from the currently active collection"""
+        from .collections import ManualCollection
+        
+        if not self.current_collection_name:
+            return
+        
+        collection = self.collection_manager.get_collection(self.current_collection_name)
+        if not collection or not isinstance(collection, ManualCollection):
+            return
+        
+        # Get file paths from assets
+        file_paths = [str(asset.file_path) for asset in assets if not asset.is_folder]
+        
+        if not file_paths:
+            return
+        
+        # Remove files from collection
+        for file_path in file_paths:
+            collection.remove_file(file_path)
+        
+        self.collection_manager.save()
+        
+        # Refresh collections panel to update file count
+        self.collections_panel.refresh_collections_list()
+        
+        # Refresh the collection view to remove the files from display
+        collection_files = collection.get_existing_files()
+        if collection_files:
+            self.file_model.setCollectionFilter(collection_files)
+        else:
+            # Collection is now empty, exit collection mode
+            self.on_collection_cleared()
+            self.status_bar.showMessage(f"Collection '{self.current_collection_name}' is now empty")
+            return
+        
+        # Show feedback
+        file_count = len(file_paths)
+        file_word = "file" if file_count == 1 else "files"
+        self.status_bar.showMessage(f"Removed {file_count} {file_word} from collection '{self.current_collection_name}'")
+        
+        # Request thumbnails for remaining visible items
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        
+        if DEBUG_MODE:
+            print(f"[Browser] Removed {file_count} files from collection '{self.current_collection_name}'")
