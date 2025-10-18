@@ -2185,8 +2185,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if DEBUG_MODE:
                 print(f"[Browser] Search settings: case_sensitive={case_sensitive}, regex={regex_enabled}")
         
-        if DEBUG_MODE:
-            print("[Browser] Settings applied successfully")
+            if DEBUG_MODE:
+                print("[Browser] Settings applied successfully")
         self.status_bar.showMessage("Settings applied", 3000)
     
     def restore_browser_state(self):
@@ -2331,24 +2331,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     return True  # Event handled, prevent scrolling
             
             # === SPACE KEY FOR QUICK VIEW ===
-            if event.type() == QtCore.QEvent.KeyPress:
-                if event.key() == Qt.Key_Space:
-                    print(f"\n[Browser] ========== SPACE KEY PRESSED ==========")
-                    print(f"[Browser] Event object: {obj}")
-                    print(f"[Browser] Is file_list: {obj == self.file_list}")
-                    print(f"[Browser] Is viewport: {obj == self.file_list.viewport()}")
-                    
-                    # Check if there are selected files
-                    selected = self.get_selected_assets()
-                    print(f"[Browser] Selected assets count: {len(selected)}")
-                    
-                    if selected:
-                        print(f"[Browser] Selected file: {selected[0].name if selected else 'None'}")
-                        print(f"[Browser] Calling toggle_quick_view()...")
-                        self.toggle_quick_view()
-                        print(f"[Browser] toggle_quick_view() finished")
-                        print(f"[Browser] Returning True (event handled)")
-                        return True  # Event handled
+            if event.type() == QtCore.QEvent.KeyPress and event.key() == Qt.Key_Space:
+                # If there are selected files, open quick view and consume the event
+                selected = self.get_selected_assets()
+                if selected:
+                    self.toggle_quick_view()
+                    return True
         
         return super().eventFilter(obj, event)
     
@@ -2362,7 +2350,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.quick_view_window.closed.connect(self.on_quick_view_closed)
             
             if DEBUG_MODE:
-                print("[Browser] Quick View window created")
+                if DEBUG_MODE:
+                    print("[Browser] Quick View window created")
         
         # Toggle visibility
         is_visible = self.quick_view_window.isVisible()
@@ -2386,12 +2375,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 self.file_list.setFocus()
                 
                 if DEBUG_MODE:
-                    print(f"[Browser] Quick View opened with {len(assets)} asset(s)")
+                    if DEBUG_MODE:
+                        print(f"[Browser] Quick View opened with {len(assets)} asset(s)")
     
     def on_quick_view_closed(self):
         """Handle Quick View window closed"""
         if DEBUG_MODE:
-            print("[Browser] Quick View closed")
+            if DEBUG_MODE:
+                print("[Browser] Quick View closed")
     
     def update_quick_view(self):
         """Update Quick View if it's visible and not pinned"""
@@ -2400,7 +2391,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 assets = self.get_selected_assets()
                 if DEBUG_MODE:
                     asset_names = [Path(a.file_path).name for a in assets] if assets else []
-                    print(f"[Browser] update_quick_view: Updating with {len(assets)} asset(s): {asset_names}")
+                    if DEBUG_MODE:
+                        print(f"[Browser] update_quick_view: Updating with {len(assets)} asset(s): {asset_names}")
                 if assets:
                     self.quick_view_window.show_preview(assets)
     
@@ -2896,7 +2888,8 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE:
-            print(f"[Browser] Advanced filters changed: {filter_count} filters, {file_count} files")
+            if DEBUG_MODE:
+                print(f"[Browser] Advanced filters changed: {filter_count} filters, {file_count} files")
     
     def on_advanced_filters_cleared(self):
         """Handle advanced filters cleared"""
@@ -2910,7 +2903,8 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE:
-            print("[Browser] Advanced filters cleared")
+            if DEBUG_MODE:
+                print("[Browser] Advanced filters cleared")
     
     def on_advanced_filters_activated(self, is_active):
         """Handle advanced filters activation state change
@@ -3009,7 +3003,8 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
             
             if DEBUG_MODE:
-                print(f"[Browser] Applied collection filter: {collection_name}")
+                if DEBUG_MODE:
+                    print(f"[Browser] Applied collection filter: {collection_name}")
     
     def on_collection_cleared(self):
         """Handle collection filter clear - show all files"""
@@ -3035,7 +3030,8 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE:
-            print("[Browser] Cleared collection filter")
+            if DEBUG_MODE:
+                print("[Browser] Cleared collection filter")
     
     def add_collection_submenu(self, parent_menu, selected_assets):
         """Add 'Add to Collection >' submenu with list of manual collections"""
@@ -3087,7 +3083,8 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         self.status_bar.showMessage(f"Added {file_count} {file_word} to collection '{collection_name}'")
         
         if DEBUG_MODE:
-            print(f"[Browser] Added {file_count} files to collection '{collection_name}'")
+            if DEBUG_MODE:
+                print(f"[Browser] Added {file_count} files to collection '{collection_name}'")
     
     def remove_files_from_current_collection(self, assets):
         """Remove selected files from the currently active collection"""
@@ -3134,4 +3131,5 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE:
-            print(f"[Browser] Removed {file_count} files from collection '{self.current_collection_name}'")
+            if DEBUG_MODE:
+                print(f"[Browser] Removed {file_count} files from collection '{self.current_collection_name}'")
