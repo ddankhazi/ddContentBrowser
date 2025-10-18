@@ -1,25 +1,25 @@
 {
   "recent_paths": [
+    "F:\\projects\\carLookdev",
+    "F:\\projects\\carLookdev\\images",
+    "F:\\projects\\carLookdev\\images\\tmp",
+    "F:\\projects\\carLookdev\\images\\tmp\\deep",
+    "F:\\projects\\carLookdev\\images\\snapshots",
+    "F:\\projects\\carLookdev\\images\\snapshots\\untitled",
+    "F:\\projects\\carLookdev\\images\\snapshots\\porsche",
+    "F:\\projects",
+    "F:\\projects\\pfxPresentation",
+    "F:\\projects\\pfxPresentation\\images",
+    "F:\\projects\\pfxPresentation\\images\\snapshots",
+    "F:\\projects\\pfxPresentation\\images\\tmp",
+    "F:\\projects\\pfxLib",
+    "F:\\",
     "C:\\Users\\Danki\\Desktop\\soft skills",
     "C:\\Users\\Danki\\Desktop",
     "C:\\Users\\Danki\\Desktop\\Comic Book Art",
     "C:\\Users\\Danki",
     "C:\\Users\\Danki\\Documents",
-    "S:\\Download",
-    "S:\\characterRefrences",
-    "C:\\Users\\Danki\\Pictures",
-    "C:\\Users\\Danki\\Pictures\\UbisoftConnect",
-    "C:\\Users\\Danki\\Pictures\\Stellarium",
-    "C:\\Users\\Danki\\Pictures\\ART",
-    "C:\\Users\\Danki\\Pictures\\ART\\Paintings",
-    "C:\\Users\\Danki\\maps",
-    "C:\\Users\\Danki\\localdb",
-    "C:\\Users\\Danki\\Links",
-    "C:\\Users\\Danki\\Games",
-    "C:\\Users",
-    "C:\\Users\\Public",
-    "C:\\Users\\postgres",
-    "C:\\Users\\Danki\\Xbox"
+    "S:\\Download"
   ],
   "favorites": [
     "D:\\Downloads\\10_Building_Basemesh",
@@ -61,12 +61,12 @@
     ".txt"
   ],
   "show_images": true,
-  "last_path": "C:\\Users\\Danki\\Desktop\\soft skills",
-  "window_geometry": "AdnQywADAAAAAAAA////+AAACf8AAAVvAAACVwAAAJcAAAj3AAAFGwAAAAACAAAACgAAAAAAAAAAFwAACf8AAAVv",
+  "last_path": "F:\\projects\\carLookdev",
+  "window_geometry": "AdnQywADAAAAAAoA////+AAAE/8AAAVvAAALyAAAAMsAABJoAAAFTwAAAAECAAAACgAAAAoAAAAAFwAAE/8AAAVv",
   "view_mode": "grid",
   "preview_panel_visible": true,
-  "splitter_position": "AAAA/wAAAAEAAAADAAABiQAABicAAAJIAf////8BAAAAAQA=",
-  "grid_thumbnail_size": 128,
+  "splitter_position": "AAAA/wAAAAEAAAADAAACAwAABa0AAAJIAf////8BAAAAAQA=",
+  "grid_thumbnail_size": 160,
   "list_thumbnail_size": 16,
   "nav_splitter_position": "AAAA/wAAAAEAAAACAAACcAAAAoIB/////wEAAAACAA==",
   "nav_top_tabs_order": [
@@ -80,6 +80,6 @@
   "preview_splitter_position": "AAAA/wAAAAEAAAACAAACxgAAAgIBAAAABAEAAAACAA==",
   "quick_view_width": 1965,
   "quick_view_height": 1157,
-  "quick_view_x": 333,
-  "quick_view_y": 165
+  "quick_view_x": 326,
+  "quick_view_y": 142
 }

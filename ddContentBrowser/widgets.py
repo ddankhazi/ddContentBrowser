@@ -1133,24 +1133,29 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                 
                 # 1. Try standard interleaved RGB or RGBA
                 if "RGB" in channels:
-                    rgb = channels["RGB"].pixels  # Shape: (height, width, 3)
+                    rgb_data = channels["RGB"].pixels  # Shape: (height, width, 3)
+                    if rgb_data is not None:
+                        rgb = rgb_data
                 elif "RGBA" in channels:
-                    rgba = channels["RGBA"].pixels  # Shape: (height, width, 4)
-                    rgb = rgba[:, :, :3]  # Drop alpha, keep RGB only
+                    rgba_data = channels["RGBA"].pixels  # Shape: (height, width, 4)
+                    if rgba_data is not None:
+                        rgb = rgba_data[:, :, :3]  # Drop alpha, keep RGB only
                 
                 # 2. Try separate R, G, B channels
                 elif all(c in channels for c in ["R", "G", "B"]):
                     r = channels["R"].pixels
                     g = channels["G"].pixels
                     b = channels["B"].pixels
-                    rgb = np.stack([r, g, b], axis=2)  # Shape: (height, width, 3)
+                    if r is not None and g is not None and b is not None:
+                        rgb = np.stack([r, g, b], axis=2)  # Shape: (height, width, 3)
                 
                 # 3. Try Beauty pass (common in render layers)
                 elif all(c in channels for c in ["Beauty.R", "Beauty.G", "Beauty.B"]):
                     r = channels["Beauty.R"].pixels
                     g = channels["Beauty.G"].pixels
                     b = channels["Beauty.B"].pixels
-                    rgb = np.stack([r, g, b], axis=2)
+                    if r is not None and g is not None and b is not None:
+                        rgb = np.stack([r, g, b], axis=2)
                 
                 # 4. Try first layer with .R .G .B (generic multi-layer)
                 else:
@@ -1171,9 +1176,9 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                             r = channels[r_name].pixels
                             g = channels[g_name].pixels
                             b = channels[b_name].pixels
-                            rgb = np.stack([r, g, b], axis=2)
-                            print(f"Using layer: {prefix}")
-                            break
+                            if r is not None and g is not None and b is not None:
+                                rgb = np.stack([r, g, b], axis=2)
+                                break
                 
                 # 5. If still no RGB, try single channel (grayscale)
                 if rgb is None:
@@ -1182,14 +1187,14 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                     for ch_name in single_channels:
                         if ch_name in channels:
                             gray = channels[ch_name].pixels
-                            # Convert to RGB by repeating channel
-                            if gray.ndim == 2:
-                                rgb = np.stack([gray, gray, gray], axis=2)
-                            else:
-                                # Already 3D, just use it
-                                rgb = gray
-                            print(f"Using single channel as grayscale: {ch_name}")
-                            break
+                            if gray is not None:
+                                # Convert to RGB by repeating channel
+                                if gray.ndim == 2:
+                                    rgb = np.stack([gray, gray, gray], axis=2)
+                                else:
+                                    # Already 3D, just use it
+                                    rgb = gray
+                                break
                 
                 # 6. Last resort: use ANY available channel as grayscale
                 if rgb is None and len(channels) > 0:
@@ -1197,21 +1202,29 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                     first_channel_name = list(channels.keys())[0]
                     gray = channels[first_channel_name].pixels
                     
-                    # Convert to RGB by repeating channel
-                    if gray.ndim == 2:
-                        rgb = np.stack([gray, gray, gray], axis=2)
-                    elif gray.ndim == 3 and gray.shape[2] == 1:
-                        # Single channel as 3D array
-                        rgb = np.concatenate([gray, gray, gray], axis=2)
-                    else:
-                        rgb = gray
-                    
-                    print(f"[EXR] Using single channel as grayscale: {first_channel_name}")
+                    if gray is not None:
+                        # Convert to RGB by repeating channel
+                        if gray.ndim == 2:
+                            rgb = np.stack([gray, gray, gray], axis=2)
+                        elif gray.ndim == 3 and gray.shape[2] == 1:
+                            # Single channel as 3D array
+                            rgb = np.concatenate([gray, gray, gray], axis=2)
+                        else:
+                            rgb = gray
                 
                 # If still nothing, list available channels and give up
                 if rgb is None:
                     available = ", ".join(sorted(channels.keys())[:10])  # Show first 10
                     raise Exception(f"No usable channels found. Available: {available}")
+                
+                # Final safety check: verify rgb is valid numpy array with data
+                if rgb is None or not isinstance(rgb, np.ndarray) or rgb.size == 0:
+                    raise Exception(f"RGB data is invalid or empty after channel processing")
+                
+                # Check if dtype is numeric (not object or other non-numeric types)
+                # Deep EXR channels can return object arrays which we can't process
+                if rgb.dtype == np.object_ or not np.issubdtype(rgb.dtype, np.number):
+                    raise Exception(f"RGB data has non-numeric dtype: {rgb.dtype} (deep/volumetric EXR not supported)")
                 
                 # Scale if needed
                 if width > max_size or height > max_size:
@@ -1245,6 +1258,7 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                     rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
                 
                 # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
                 rgb_tonemapped = np.power(rgb_tonemapped, gamma)
                 
                 # Convert to 8-bit
@@ -1262,8 +1276,6 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                 
         except Exception as e:
             print(f"OpenEXR loading failed: {e}")
-            import traceback
-            traceback.print_exc()
             # Fall through to Maya MImage fallback
     
     # Fallback: Use Maya MImage for HDR or if OpenEXR not available

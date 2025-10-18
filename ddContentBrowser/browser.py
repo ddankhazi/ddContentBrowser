@@ -53,6 +53,9 @@ class SortHeaderWidget(QtWidgets.QWidget):
     def mousePressEvent(self, event):
         """Handle right-click for filter menu"""
         if event.button() == Qt.RightButton:
+            # Don't show filter menu if advanced filters are active
+            if self.browser.advanced_filters_active:
+                return  # Ignore right-click when advanced filters are active
             # Determine which column was right-clicked
             clicked_column = self.get_clicked_column(event.pos())
             self.show_filter_menu(event.pos(), clicked_column)
@@ -2840,90 +2843,9 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
                 # Update visibility based on basic filters when advanced filters are cleared
                 self.update_filter_visual_feedback()
         
-        # Disable/enable sort/filter toolbar buttons based on advanced filter state
-        if hasattr(self, 'sort_type_btn'):
-            # Disable Type column filter when advanced filters are active
-            self.sort_type_btn.setEnabled(not is_active)
-            if is_active:
-                # Visual feedback: make it look disabled
-                self.sort_type_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2a2a2a;
-                        border: 1px solid #444;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                        color: #666;
-                    }
-                """)
-            else:
-                # Re-enable: restore normal styling
-                self.sort_type_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #3a3a3a;
-                        border: 1px solid #555;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #4a4a4a;
-                    }
-                """)
-        
-        if hasattr(self, 'sort_size_btn'):
-            self.sort_size_btn.setEnabled(not is_active)
-            if is_active:
-                self.sort_size_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2a2a2a;
-                        border: 1px solid #444;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                        color: #666;
-                    }
-                """)
-            else:
-                self.sort_size_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #3a3a3a;
-                        border: 1px solid #555;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #4a4a4a;
-                    }
-                """)
-        
-        if hasattr(self, 'sort_date_btn'):
-            self.sort_date_btn.setEnabled(not is_active)
-            if is_active:
-                self.sort_date_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2a2a2a;
-                        border: 1px solid #444;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                        color: #666;
-                    }
-                """)
-            else:
-                self.sort_date_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #3a3a3a;
-                        border: 1px solid #555;
-                        padding: 3px 8px;
-                        text-align: left;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #4a4a4a;
-                    }
-                """)
+        # Note: Sort buttons remain enabled even when advanced filters are active
+        # Only the right-click filter menu is disabled (handled in SortHeaderWidget.mousePressEvent)
+        # Users can still sort filtered results by clicking the column headers
         
         if DEBUG_MODE:
             print(f"[Browser] Advanced filters {'activated' if is_active else 'deactivated'} - toolbar filters {'disabled' if is_active else 'enabled'}")
