@@ -24,7 +24,7 @@ except ImportError:
     from PySide2.QtGui import QFont, QIcon, QColor
     PYSIDE_VERSION = 2
 
-from .collections import CollectionManager, ManualCollection, SmartCollection
+from .asset_collections import CollectionManager, ManualCollection, SmartCollection
 from .widgets import DragDropCollectionListWidget
 
 # UI Font - Default value (can be overridden by browser at runtime)

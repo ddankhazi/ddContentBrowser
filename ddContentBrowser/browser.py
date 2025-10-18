@@ -685,7 +685,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.nav_tab_widgets = {}
         
         # Collections tab - Initialize Collections Manager and Panel
-        from .collections import CollectionManager
+        from .asset_collections import CollectionManager
         from .collections_panel import CollectionsPanel
         
         self.collection_manager = CollectionManager()  # Auto-loads from ~/.ddContentBrowser/collections.json
@@ -2968,7 +2968,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
     
     def on_collection_selected(self, collection_name: str):
         """Handle collection selection - filter files to show only collection items"""
-        from .collections import ManualCollection
+        from .asset_collections import ManualCollection
         
         collection = self.collection_manager.get_collection(collection_name)
         if not collection:
@@ -3054,7 +3054,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
     
     def add_files_to_collection(self, collection_name, assets):
         """Add selected files to a collection"""
-        from .collections import ManualCollection
+        from .asset_collections import ManualCollection
         
         collection = self.collection_manager.get_collection(collection_name)
         if not collection or not isinstance(collection, ManualCollection):
@@ -3083,7 +3083,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
     
     def remove_files_from_current_collection(self, assets):
         """Remove selected files from the currently active collection"""
-        from .collections import ManualCollection
+        from .asset_collections import ManualCollection
         
         if not self.current_collection_name:
             return
