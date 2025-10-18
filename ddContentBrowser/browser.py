@@ -795,18 +795,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.clear_filters_btn.clicked.connect(self.clear_all_filters)
         self.clear_filters_btn.setStyleSheet("""
             QPushButton {
-                background-color: #4a6fa5;
-                color: white;
-                border: 1px solid #5a7fb5;
-                padding: 4px 8px;
+                background-color: #4b7daa;
+                border: none;
                 border-radius: 3px;
+                padding: 5px;
+                color: white;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #5a7fb5;
+                background-color: #5a8db8;
             }
             QPushButton:pressed {
-                background-color: #3a5f95;
+                background-color: #3a6d9a;
             }
         """)
         search_layout.addWidget(self.clear_filters_btn)

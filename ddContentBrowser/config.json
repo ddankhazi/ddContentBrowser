@@ -1,6 +1,7 @@
 {
   "recent_paths": [
     "C:\\Users\\Danki\\Desktop",
+    "C:\\Users\\Danki\\Desktop\\Comic Book Art",
     "C:\\Users\\Danki",
     "C:\\Users\\Danki\\Documents",
     "S:\\Download",
@@ -18,8 +19,7 @@
     "C:\\Users\\Public",
     "C:\\Users\\postgres",
     "C:\\Users\\Danki\\Xbox",
-    "C:\\Users\\Danki\\Valley",
-    "C:\\Users\\Danki\\Tracing"
+    "C:\\Users\\Danki\\Valley"
   ],
   "favorites": [
     "D:\\Downloads\\10_Building_Basemesh",
@@ -62,12 +62,12 @@
   ],
   "show_images": true,
   "last_path": "C:\\Users\\Danki\\Desktop",
-  "window_geometry": "AdnQywADAAAAAAHlAAAAkgAACIUAAASPAAAB5QAAALEAAAiFAAAEjwAAAAAAAAAACgAAAAHlAAAAsQAACIUAAASP",
+  "window_geometry": "AdnQywADAAAAAAJXAAAAeAAACPcAAAUbAAACVwAAAJcAAAj3AAAFGwAAAAAAAAAACgAAAAJXAAAAlwAACPcAAAUb",
   "view_mode": "grid",
-  "preview_panel_visible": false,
-  "splitter_position": "AAAA/wAAAAEAAAADAAABMAAABp0AAAIlAf////8BAAAAAQA=",
-  "grid_thumbnail_size": 160,
-  "list_thumbnail_size": 24,
+  "preview_panel_visible": true,
+  "splitter_position": "AAAA/wAAAAEAAAADAAABZAAABAQAAAErAf////8BAAAAAQA=",
+  "grid_thumbnail_size": 192,
+  "list_thumbnail_size": 16,
   "nav_splitter_position": "AAAA/wAAAAEAAAACAAACcAAAAoIB/////wEAAAACAA==",
   "nav_top_tabs_order": [
     "Favourites",
@@ -78,8 +78,8 @@
     "Advanced Filters"
   ],
   "preview_splitter_position": "AAAA/wAAAAEAAAACAAACxgAAAgIBAAAABAEAAAACAA==",
-  "quick_view_width": 1221,
-  "quick_view_height": 1065,
-  "quick_view_x": 995,
-  "quick_view_y": 175
+  "quick_view_width": 1965,
+  "quick_view_height": 1157,
+  "quick_view_x": 327,
+  "quick_view_y": 183
 }

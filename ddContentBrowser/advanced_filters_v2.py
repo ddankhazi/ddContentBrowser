@@ -296,9 +296,25 @@ class AdvancedFiltersPanelV2(QWidget):
         
         # Clear all button
         self.clear_all_btn = QPushButton("✕ Clear")
-        self.clear_all_btn.setMaximumWidth(60)
-        # Let Maya handle button styling
+        self.clear_all_btn.setFixedWidth(60)  # Fixed width to prevent shifting!
         self.clear_all_btn.clicked.connect(self.clear_all_filters)
+        # Initial style (no filters) - normal gray
+        self.clear_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                border: none;
+                border-radius: 3px;
+                padding: 5px;
+                color: #aaa;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                color: #ccc;
+            }
+            QPushButton:pressed {
+                background-color: #2a2a2a;
+            }
+        """)
         toolbar_layout.addWidget(self.clear_all_btn)
         
         main_layout.addWidget(toolbar)
@@ -513,6 +529,10 @@ class AdvancedFiltersPanelV2(QWidget):
             self.file_model.show_folders = True
             self.file_model.refresh()
             self.filters_cleared.emit()
+            self.filters_activated.emit(False)  # Signal that advanced filters are NOT active
+            
+            # Reset clear button style to normal
+            self.update_clear_button_style(has_filters=False)
             return
         
         # Get all assets from original unfiltered list
@@ -596,6 +616,9 @@ class AdvancedFiltersPanelV2(QWidget):
         self.filters_changed.emit(self.active_filters)
         self.filters_activated.emit(True)  # Signal that advanced filters are active
         
+        # Update clear button style to highlight it (Maya blue)
+        self.update_clear_button_style(has_filters=True)
+        
         if DEBUG_MODE:
             print(f"[AdvancedFilters] Applied filters: {len(filtered_assets)} files match")
     
@@ -614,15 +637,61 @@ class AdvancedFiltersPanelV2(QWidget):
         # Reset file model (clearFilters already calls refresh)
         self.file_model.clearFilters()
         
-        # Re-analyze to reset counts
-        self.analyze_current_files()
+        # DON'T re-analyze - clearFilters already refreshed the model
+        # The analyze will happen naturally when filters are next applied
+        # self.analyze_current_files()  # REMOVED - unnecessary re-scan
         
         # Emit signals
         self.filters_cleared.emit()
         self.filters_activated.emit(False)  # Signal that advanced filters are cleared
         
+        # Reset clear button style to normal
+        self.update_clear_button_style(has_filters=False)
+        
         if DEBUG_MODE:
-            print("[AdvancedFilters] All filters cleared")
+            print("[AdvancedFilters] All filters cleared (without re-scan)")
+    
+    def update_clear_button_style(self, has_filters):
+        """Update Clear button style based on filter state
+        
+        Args:
+            has_filters: True if filters are active (Maya blue), False for normal style
+        """
+        if has_filters:
+            # Maya blue background when filters are active (NO font-weight to prevent shift!)
+            self.clear_all_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4b7daa;
+                    border: none;
+                    border-radius: 3px;
+                    padding: 5px;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #5a8db8;
+                }
+                QPushButton:pressed {
+                    background-color: #3a6d9a;
+                }
+            """)
+        else:
+            # Normal gray style when no filters
+            self.clear_all_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    border: none;
+                    border-radius: 3px;
+                    padding: 5px;
+                    color: #aaa;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                    color: #ccc;
+                }
+                QPushButton:pressed {
+                    background-color: #2a2a2a;
+                }
+            """)
     
     def sync_folder_visibility_from_model(self):
         """Sync File Type 'Folder' checkbox with file_model.show_folders state"""

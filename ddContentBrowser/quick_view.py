@@ -69,6 +69,9 @@ class QuickViewWindow(QDialog):
         self.is_panning = False
         self.pan_start_pos = None
         
+        # Always on top state (can be toggled via context menu)
+        self.always_on_top = True
+        
         # Setup window flags (non-modal, always on top, frameless)
         self.setWindowFlags(
             Qt.Tool | 
@@ -705,6 +708,55 @@ class QuickViewWindow(QDialog):
             print("[QuickView] Closed")
         
         super().closeEvent(event)
+    
+    def contextMenuEvent(self, event):
+        """Handle right-click context menu"""
+        try:
+            from PySide6.QtWidgets import QMenu
+        except ImportError:
+            from PySide2.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        # Always on Top toggle
+        always_on_top_action = menu.addAction("✓ Always on Top" if self.always_on_top else "Always on Top")
+        always_on_top_action.setCheckable(True)
+        always_on_top_action.setChecked(self.always_on_top)
+        
+        # Execute menu
+        action = menu.exec_(event.globalPos())
+        
+        if action == always_on_top_action:
+            self.toggle_always_on_top()
+    
+    def toggle_always_on_top(self):
+        """Toggle always on top window flag"""
+        self.always_on_top = not self.always_on_top
+        
+        # Store current state
+        was_visible = self.isVisible()
+        geometry = self.geometry()
+        
+        # Update window flags
+        if self.always_on_top:
+            self.setWindowFlags(
+                Qt.Tool | 
+                Qt.WindowStaysOnTopHint | 
+                Qt.FramelessWindowHint
+            )
+        else:
+            self.setWindowFlags(
+                Qt.Tool | 
+                Qt.FramelessWindowHint
+            )
+        
+        # Restore visibility and geometry
+        if was_visible:
+            self.setGeometry(geometry)
+            self.show()
+        
+        if DEBUG_MODE:
+            print(f"[QuickView] Always on top: {self.always_on_top}")
     
     def show_single_file(self, asset):
         """Show single file preview"""
