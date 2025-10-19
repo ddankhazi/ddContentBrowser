@@ -3,7 +3,7 @@
 DD Content Browser - Collections System
 Manual and Smart collections for asset organization
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

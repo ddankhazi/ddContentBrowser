@@ -2,7 +2,7 @@
 DD Content Browser - Data Models
 Asset representation and file system model
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

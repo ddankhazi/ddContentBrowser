@@ -2,7 +2,7 @@
 DD Content Browser Package
 A powerful asset management and import tool for Maya
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

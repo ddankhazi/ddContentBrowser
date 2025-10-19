@@ -3,7 +3,7 @@
 DD Content Browser - Advanced Filters Panel (Adobe Bridge style)
 Metadata-based hierarchical filtering system
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

@@ -3,7 +3,7 @@
 DD Content Browser - Metadata Extractor
 Extracts metadata from various file types for advanced filtering
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

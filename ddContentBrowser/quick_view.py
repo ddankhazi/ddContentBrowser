@@ -3,7 +3,7 @@
 DD Content Browser - Quick View System
 macOS Quick Look-style floating preview window
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

@@ -73,7 +73,7 @@ def main():
         # Windows: Set AppUserModelID for proper taskbar icon
         try:
             import ctypes
-            myappid = 'DankHazid.DDContentBrowser.Standalone.1.0'
+            myappid = 'ddankhazi.DDContentBrowser.Standalone.1.0'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except:
             pass

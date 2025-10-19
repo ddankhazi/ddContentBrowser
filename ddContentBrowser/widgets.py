@@ -2,7 +2,7 @@
 DD Content Browser - UI Widgets
 Breadcrumb navigation, filter panel, preview panel, and custom list view
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

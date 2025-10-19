@@ -2,7 +2,7 @@
 DD Content Browser - Cache Module
 Thumbnail caching system with memory and disk storage
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

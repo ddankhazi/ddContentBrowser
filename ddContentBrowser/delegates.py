@@ -2,7 +2,7 @@
 DD Content Browser - Delegates
 Custom rendering for thumbnails in grid and list views
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

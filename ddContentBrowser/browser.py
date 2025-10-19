@@ -3,7 +3,7 @@
 DD Content Browser - Main Browser Window
 The main DDContentBrowser window class
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 

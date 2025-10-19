@@ -3,7 +3,7 @@
 DD Content Browser - Collections Panel UI
 UI for managing manual and smart collections
 
-Author: DankHazid
+Author: ddankhazi
 License: MIT
 """
 
