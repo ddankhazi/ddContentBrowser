@@ -1,7 +1,7 @@
 {
   "recent_paths": [
-    "C:\\Users\\Danki\\Pictures\\Screenshots",
     "C:\\Users\\Danki\\Pictures",
+    "C:\\Users\\Danki\\Pictures\\Screenshots",
     "C:\\Users\\Danki\\Pictures\\test",
     "C:\\Users\\Danki\\Pictures\\ART",
     "C:\\Users\\Danki\\Pictures\\ART\\Paintings",
@@ -28,7 +28,8 @@
     "C:\\Users\\Danki\\Documents",
     "D:\\work",
     "C:\\Program Files\\Autodesk\\Maya2026\\Examples",
-    "C:\\Users\\Danki\\Pictures\\ART\\Paintings"
+    "C:\\Users\\Danki\\Pictures\\ART\\Paintings",
+    "C:\\Users\\Danki\\Pictures\\Screenshots"
   ],
   "thumbnail_size": 128,
   "thumbnail_quality": 85,
@@ -61,7 +62,7 @@
     ".txt"
   ],
   "show_images": true,
-  "last_path": "C:\\Users\\Danki\\Pictures\\Screenshots",
+  "last_path": "C:\\Users\\Danki\\Pictures",
   "window_geometry": "AdnQywADAAAAAAAA////+AAACf8AAAVvAAABqwAAAOoAAAhLAAAFbgAAAAACAAAACgAAAAAAAAAAFwAACf8AAAVv",
   "view_mode": "grid",
   "preview_panel_visible": true,
@@ -80,6 +81,6 @@
   "preview_splitter_position": "AAAA/wAAAAEAAAACAAADxwAAARYBAAAABAEAAAACAA==",
   "quick_view_width": 1965,
   "quick_view_height": 1157,
-  "quick_view_x": 2857,
-  "quick_view_y": 95
+  "quick_view_x": 2902,
+  "quick_view_y": 193
 }

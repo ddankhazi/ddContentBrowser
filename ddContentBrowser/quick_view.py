@@ -728,6 +728,13 @@ class QuickViewWindow(QDialog):
         
         menu = QMenu(self)
         
+        # Lock Content toggle
+        lock_action = menu.addAction("📌 Lock Content" if not self.pinned else "🔓 Unlock Content")
+        lock_action.setCheckable(True)
+        lock_action.setChecked(self.pinned)
+        
+        menu.addSeparator()
+        
         # Always on Top toggle
         always_on_top_action = menu.addAction("✓ Always on Top" if self.always_on_top else "Always on Top")
         always_on_top_action.setCheckable(True)
@@ -736,8 +743,25 @@ class QuickViewWindow(QDialog):
         # Execute menu
         action = menu.exec_(event.globalPos())
         
-        if action == always_on_top_action:
+        if action == lock_action:
+            self.toggle_pin()
+        elif action == always_on_top_action:
             self.toggle_always_on_top()
+    
+    def toggle_pin(self):
+        """Toggle pin state (lock content)"""
+        self.pinned = not self.pinned
+        
+        if self.pinned:
+            # Save current assets
+            self.pinned_assets = self.current_assets.copy()
+            if DEBUG_MODE:
+                print(f"[QuickView] Content locked - showing {len(self.pinned_assets)} asset(s)")
+        else:
+            # Clear pinned assets
+            self.pinned_assets = []
+            if DEBUG_MODE:
+                print("[QuickView] Content unlocked")
     
     def toggle_always_on_top(self):
         """Toggle always on top window flag"""
