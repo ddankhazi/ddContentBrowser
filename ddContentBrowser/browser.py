@@ -1734,6 +1734,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Show panel and restore last sizes
             self.preview_panel.setVisible(True)
             
+            # Refresh preview with current selection
+            assets = self.get_selected_assets()
+            self.preview_panel.update_preview(assets)
+            
             # Restore previous sizes if available
             current_sizes = self.content_splitter.sizes()
             if len(current_sizes) == 3:
