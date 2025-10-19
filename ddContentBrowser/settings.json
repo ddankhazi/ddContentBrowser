@@ -11,6 +11,7 @@
     },
     "thumbnails": {
         "size": 128,
+        "memory_cache_size": 2000,
         "cache_size_mb": 500,
         "quality": "medium",
         "generate_for_3d": true
@@ -26,7 +27,12 @@
         "show_3d": true,
         "show_hdr": true,
         "show_video": true,
-        "custom_extensions": [],
+        "custom_extensions": [
+            ".cbr",
+            ".cbz",
+            ".zip",
+            ".rar"
+        ],
         "show_hidden": false,
         "case_sensitive_search": false,
         "regex_search": false,

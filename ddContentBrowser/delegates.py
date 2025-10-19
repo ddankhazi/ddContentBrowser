@@ -170,9 +170,14 @@ class ThumbnailDelegate(QStyledItemDelegate):
             tab_rect = QRect(thumb_x + 5, thumb_y + 5, tab_width, 8)
             painter.drawRoundedRect(tab_rect, 2, 2)
         else:
-            # Get thumbnail from cache
+            # Check if thumbnails are enabled
+            thumbnails_enabled = True
+            if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
+                thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
+            
+            # Get thumbnail from cache only if enabled
             file_path_key = str(asset.file_path)
-            thumbnail = self.memory_cache.get(file_path_key)
+            thumbnail = self.memory_cache.get(file_path_key) if thumbnails_enabled else None
             
             if thumbnail and not thumbnail.isNull():
                 # Draw thumbnail
@@ -262,8 +267,13 @@ class ThumbnailDelegate(QStyledItemDelegate):
                             thumb_size // 3, thumb_size // 7)
             painter.drawRoundedRect(tab_rect, 1, 1)
         else:
-            # Get thumbnail from cache
-            thumbnail = self.memory_cache.get(str(asset.file_path))
+            # Check if thumbnails are enabled
+            thumbnails_enabled = True
+            if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
+                thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
+            
+            # Get thumbnail from cache only if enabled
+            thumbnail = self.memory_cache.get(str(asset.file_path)) if thumbnails_enabled else None
             if thumbnail and not thumbnail.isNull():
                 scaled = thumbnail.scaled(thumb_size, thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 # Center the scaled image within thumb_rect (both horizontally and vertically)

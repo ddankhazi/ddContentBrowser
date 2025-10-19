@@ -25,7 +25,7 @@ class ContentBrowserConfig:
             "thumbnail_size": 128,
             "thumbnail_quality": 85,
             "thumbnail_disk_cache_mb": 500,
-            "thumbnail_cache_size": 200,
+            "thumbnail_cache_size": 2000,  # Increased from 200 to handle large folders
             "thumbnails_enabled": True,
             "auto_refresh": True,
             "supported_formats": supported_formats,  # Now from registry

@@ -53,7 +53,8 @@ class SettingsManager:
             # Thumbnail settings
             "thumbnails": {
                 "size": 128,
-                "cache_size_mb": 500,
+                "memory_cache_size": 2000,  # Number of thumbnails in RAM
+                "cache_size_mb": 500,  # Disk cache size in MB
                 "quality": "medium",  # low, medium, high
                 "generate_for_3d": True
             },
@@ -467,12 +468,27 @@ class ThumbnailSettingsTab(QWidget):
         cache_group = QGroupBox("Cache")
         cache_layout = QVBoxLayout()
         
+        # Memory cache size (number of thumbnails in RAM)
+        memory_cache_layout = QHBoxLayout()
+        memory_cache_layout.addWidget(QLabel("Memory Cache Size:"))
+        self.memory_cache_spin = QSpinBox()
+        self.memory_cache_spin.setRange(100, 10000)
+        self.memory_cache_spin.setSingleStep(100)
+        self.memory_cache_spin.setValue(self.settings.get("thumbnails", "memory_cache_size", 2000))
+        self.memory_cache_spin.setSuffix(" thumbnails")
+        self.memory_cache_spin.setToolTip("Number of thumbnails to keep in memory (RAM). Increase for large folders.")
+        memory_cache_layout.addWidget(self.memory_cache_spin)
+        memory_cache_layout.addStretch()
+        cache_layout.addLayout(memory_cache_layout)
+        
+        # Disk cache size (MB)
         cache_size_layout = QHBoxLayout()
-        cache_size_layout.addWidget(QLabel("Cache Size Limit:"))
+        cache_size_layout.addWidget(QLabel("Disk Cache Size Limit:"))
         self.cache_size_spin = QSpinBox()
         self.cache_size_spin.setRange(50, 5000)
         self.cache_size_spin.setValue(self.settings.get("thumbnails", "cache_size_mb", 500))
         self.cache_size_spin.setSuffix(" MB")
+        self.cache_size_spin.setToolTip("Maximum disk space for thumbnail cache.")
         cache_size_layout.addWidget(self.cache_size_spin)
         cache_size_layout.addStretch()
         cache_layout.addLayout(cache_size_layout)
@@ -537,6 +553,7 @@ class ThumbnailSettingsTab(QWidget):
         
         quality_map = {0: "low", 1: "medium", 2: "high"}
         self.settings.set("thumbnails", "quality", quality_map[self.quality_combo.currentIndex()])
+        self.settings.set("thumbnails", "memory_cache_size", self.memory_cache_spin.value())
         self.settings.set("thumbnails", "cache_size_mb", self.cache_size_spin.value())
         self.settings.set("thumbnails", "generate_for_3d", self.generate_3d_cb.isChecked())
 

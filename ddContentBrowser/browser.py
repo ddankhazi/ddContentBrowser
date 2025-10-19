@@ -322,6 +322,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Configuration and cache
         self.config = ContentBrowserConfig()
         
+        # Sync memory cache size from settings to config (settings takes precedence)
+        memory_cache_size = self.settings_manager.get("thumbnails", "memory_cache_size", 2000)
+        self.config.config["thumbnail_cache_size"] = memory_cache_size
+        
         # Initialize cache systems
         self.memory_cache = ThumbnailCache(self.config.config["thumbnail_cache_size"])
         self.disk_cache = ThumbnailDiskCache(
@@ -667,6 +671,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         self.folder_tree.setModel(self.folder_model)
         
+        # Sort alphabetically (A→Z) by name column
+        self.folder_tree.sortByColumn(0, Qt.AscendingOrder)
+        
         # Hide all columns except name
         for i in range(1, self.folder_model.columnCount()):
             self.folder_tree.hideColumn(i)
@@ -786,6 +793,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.size_label = QtWidgets.QLabel(str(initial_size))
         self.size_label.setMinimumWidth(30)
         view_toolbar.addWidget(self.size_label)
+        
+        # Thumbnail toggle
+        view_toolbar.addWidget(QtWidgets.QLabel("  |  "))  # Separator
+        self.thumbnails_enabled_checkbox = QtWidgets.QCheckBox("Thumbnails")
+        self.thumbnails_enabled_checkbox.setChecked(self.config.config.get("thumbnails_enabled", True))
+        self.thumbnails_enabled_checkbox.setToolTip("Enable/disable thumbnail generation and loading")
+        view_toolbar.addWidget(self.thumbnails_enabled_checkbox)
         
         view_toolbar.addStretch()
         browser_layout.addLayout(view_toolbar)
@@ -1015,6 +1029,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.list_mode_btn.clicked.connect(lambda: self.set_view_mode(False))
         self.grid_mode_btn.clicked.connect(lambda: self.set_view_mode(True))
         self.size_slider.valueChanged.connect(self.on_size_slider_changed)
+        self.thumbnails_enabled_checkbox.stateChanged.connect(self.on_thumbnails_toggle)
         
         # Navigation connections
         # self.recent_list.itemClicked.connect(self.navigate_from_recent)  # Removed - now using dropdown menu
@@ -1414,6 +1429,25 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self._size_change_timer.setSingleShot(True)
         self._size_change_timer.timeout.connect(self.request_thumbnails_for_visible_items)
         self._size_change_timer.start(200)  # Wait 200ms after size change stops
+    
+    def on_thumbnails_toggle(self, state):
+        """Handle thumbnail enable/disable toggle"""
+        enabled = self.thumbnails_enabled_checkbox.isChecked()
+        
+        # Save to config
+        self.config.config["thumbnails_enabled"] = enabled
+        self.config.save_config()
+        
+        if enabled:
+            # Re-enable thumbnails - request visible items
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        else:
+            # Clear thumbnail queue when disabled
+            if hasattr(self, 'thumbnail_generator'):
+                self.thumbnail_generator.clear_queue()
+        
+        # Force repaint to show/hide thumbnails
+        self.file_list.viewport().update()
     
     def browse_for_folder(self):
         """Browse for folder dialog"""
@@ -1979,6 +2013,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def request_thumbnails_for_visible_items(self):
         """Request thumbnail generation for currently visible items only"""
+        # Check if thumbnails are enabled
+        if not self.thumbnails_enabled_checkbox.isChecked():
+            return
+        
         if not hasattr(self, 'thumbnail_generator'):
             return
         
@@ -2143,6 +2181,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Apply UI font to all modules
         self._apply_ui_font()
+        
+        # Apply memory cache size from settings to config
+        memory_cache_size = self.settings_manager.get("thumbnails", "memory_cache_size", 2000)
+        self.config.config["thumbnail_cache_size"] = memory_cache_size
+        self.config.save_config()
+        
+        # Update existing memory cache max size
+        if hasattr(self, 'memory_cache'):
+            self.memory_cache.max_size = memory_cache_size
+            if DEBUG_MODE:
+                print(f"[Browser] Updated memory cache size to {memory_cache_size}")
         
         # Apply preview settings to PreviewPanel
         preview_resolution = self.settings_manager.get("preview", "resolution", 1024)
