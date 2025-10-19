@@ -3,7 +3,7 @@
 DD Content Browser - Advanced Filters Panel
 Complex filtering system with presets and custom filter combinations
 
-Author: Dankhazi D
+Author: ddankhazi
 License: MIT
 """
 

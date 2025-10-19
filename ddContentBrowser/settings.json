@@ -13,7 +13,7 @@
         "size": 128,
         "memory_cache_size": 2000,
         "cache_size_mb": 500,
-        "quality": "medium",
+        "quality": "low",
         "generate_for_3d": true
     },
     "preview": {
@@ -29,14 +29,11 @@
         "show_video": true,
         "custom_extensions": [
             ".cbr",
-            ".cbz",
-            ".zip",
-            ".rar",
-            ".stl"
+            ".cbz"
         ],
         "show_hidden": false,
         "case_sensitive_search": false,
-        "regex_search": false,
+        "regex_search": true,
         "max_recursive_files": 10000
     },
     "browser_state": {

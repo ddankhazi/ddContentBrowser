@@ -134,7 +134,7 @@ class QuickViewWindow(QDialog):
         
         # Graphics view for image display
         self.graphics_view = QGraphicsView()
-        self.graphics_view.setStyleSheet("QGraphicsView { background-color: #2a2a2a; border: none; }")
+        self.graphics_view.setStyleSheet("QGraphicsView { background-color: #181818; border: none; }")
         self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setTransformationAnchor(QGraphicsView.NoAnchor)  # Don't auto-adjust transform
