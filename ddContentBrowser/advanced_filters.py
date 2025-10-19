@@ -391,7 +391,7 @@ class AdvancedFiltersPanel(QWidget):
             elif type_filter == "scripts":
                 extensions.extend([".mel", ".py", ".txt"])
             elif type_filter == "3d_models":
-                extensions.extend([".obj", ".fbx", ".abc", ".usd", ".vdb"])
+                extensions.extend([".obj", ".fbx", ".abc", ".usd", ".vdb", ".dae", ".stl"])
             elif type_filter == "hdr":
                 extensions.extend([".hdr", ".exr"])
         

@@ -554,6 +554,8 @@ class ThumbnailGenerator(QThread):
             '.hda': (QColor(180, 100, 60), QColor(220, 140, 100)),  # Orange-brown (Houdini)
             '.blend': (QColor(50, 120, 200), QColor(80, 160, 240)), # Blue gradient (Blender)
             '.sbsar': (QColor(220, 120, 40), QColor(255, 160, 80)), # Orange gradient (Substance)
+            '.dae': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
+            '.stl': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
             # Image formats (lighter, image-like colors)
             '.tif': (QColor(100, 180, 220), QColor(140, 210, 255)),  # Light blue (TIFF)
             '.tiff': (QColor(100, 180, 220), QColor(140, 210, 255)), # Light blue (TIFF)

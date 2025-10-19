@@ -1906,8 +1906,32 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     imported_count += 1
                     
                 else:
-                    # Other 3D file types (OBJ, FBX, ABC, USD, etc.)
-                    cmds.file(str(asset.file_path), i=True)
+                    # Other 3D file types (OBJ, FBX, ABC, USD, DAE, STL, etc.)
+                    file_path = str(asset.file_path)
+                    file_lower = file_path.lower()
+                    
+                    # Determine file type for Maya import
+                    if file_lower.endswith('.obj'):
+                        file_type = 'OBJ'
+                    elif file_lower.endswith('.fbx'):
+                        file_type = 'FBX'
+                    elif file_lower.endswith('.abc'):
+                        file_type = 'Alembic'
+                    elif file_lower.endswith('.usd'):
+                        file_type = 'USD Import'
+                    elif file_lower.endswith('.dae'):
+                        file_type = 'DAE_FBX'
+                    elif file_lower.endswith('.stl'):
+                        file_type = 'STL'
+                    else:
+                        # Unknown 3D format, try without type specification
+                        cmds.file(file_path, i=True)
+                        imported_count += 1
+                        continue
+                    
+                    cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
+                             mergeNamespacesOnClash=False, namespace=':',
+                             options='v=0', preserveReferences=True)
                     imported_count += 1
                     
             except Exception as e:

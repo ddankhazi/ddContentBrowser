@@ -96,7 +96,7 @@ class FileMetadata:
             return 'hdr_image'
         elif ext in ['.ma', '.mb']:
             return 'maya'
-        elif ext in ['.obj', '.fbx', '.abc', '.usd']:
+        elif ext in ['.obj', '.fbx', '.abc', '.usd', '.dae', '.stl']:
             return '3d_model'
         elif ext in ['.vdb']:
             return 'volume'
@@ -204,6 +204,10 @@ class FileMetadata:
             self.metadata['3d_format'] = 'Alembic Cache'
         elif ext == '.usd':
             self.metadata['3d_format'] = 'Universal Scene Description'
+        elif ext == '.dae':
+            self.metadata['3d_format'] = 'DAE Collada'
+        elif ext == '.stl':
+            self.metadata['3d_format'] = 'STL'
     
     def get_metadata(self) -> Dict[str, Any]:
         """Return metadata dictionary"""

@@ -5993,6 +5993,7 @@ class MayaStyleListView(QListView):
                         imported_count += 1
                     else:
                         # Import 3D file
+                        file_type = None
                         if file_lower.endswith('.ma'):
                             file_type = 'mayaAscii'
                         elif file_lower.endswith('.mb'):
@@ -6005,13 +6006,23 @@ class MayaStyleListView(QListView):
                             file_type = 'Alembic'
                         elif file_lower.endswith('.usd'):
                             file_type = 'USD Import'
+                        elif file_lower.endswith('.dae') or file_lower.endswith('.stl'):
+                            # DAE/STL: Let Maya auto-detect (no explicit type needed)
+                            file_type = None
                         else:
                             # Skip unsupported file types
                             continue
                         
-                        cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
-                                 mergeNamespacesOnClash=False, namespace=':',
-                                 options='v=0', preserveReferences=True)
+                        # Import with or without type specification
+                        if file_type:
+                            cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
+                                     mergeNamespacesOnClash=False, namespace=':',
+                                     options='v=0', preserveReferences=True)
+                        else:
+                            # Auto-detect format (for DAE, STL, etc.)
+                            cmds.file(file_path, i=True, ignoreVersion=True,
+                                     mergeNamespacesOnClash=False, namespace=':',
+                                     preserveReferences=True)
                         imported_count += 1
                     
                 except Exception as e:

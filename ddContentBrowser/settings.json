@@ -31,7 +31,8 @@
             ".cbr",
             ".cbz",
             ".zip",
-            ".rar"
+            ".rar",
+            ".stl"
         ],
         "show_hidden": false,
         "case_sensitive_search": false,

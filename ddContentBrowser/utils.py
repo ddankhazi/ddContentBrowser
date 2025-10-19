@@ -68,9 +68,9 @@ FILE_TYPE_REGISTRY = {
         "is_3d": True
     },
     "3d_models": {
-        "extensions": [".obj", ".fbx", ".abc", ".usd", ".vdb"],
+        "extensions": [".obj", ".fbx", ".abc", ".usd", ".vdb", ".dae", ".stl"],
         "label": "3D Models",
-        "filter_label": "3D Models (.obj/.fbx/.abc/.usd/.vdb)",
+        "filter_label": "3D Models (.obj/.fbx/.abc/.usd/.vdb/ .dae/ .stl)",
         "importable": True,
         "generate_thumbnail": True,
         "is_3d": True
