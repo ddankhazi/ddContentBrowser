@@ -7,6 +7,7 @@ License: MIT
 """
 
 import os
+import re
 import time
 from pathlib import Path
 from datetime import datetime
@@ -34,6 +35,17 @@ from .utils import (
 
 # Debug flag - set to False to disable verbose logging
 DEBUG_MODE = False
+
+
+def natural_sort_key(text):
+    """
+    Generate a key for natural sorting (handles numbers correctly)
+    Example: "file1.jpg", "file2.jpg", "file10.jpg" instead of "file1.jpg", "file10.jpg", "file2.jpg"
+    """
+    def convert(part):
+        return int(part) if part.isdigit() else part.lower()
+    
+    return [convert(c) for c in re.split(r'(\d+)', text)]
 
 
 class AssetItem:
@@ -516,7 +528,8 @@ class FileSystemModel(QAbstractListModel):
                     asset._load_stat()
         
         if self.sort_column == "name":
-            self.assets.sort(key=lambda x: (not x.is_folder, x.name.lower()), reverse=not self.sort_ascending)
+            # Natural sorting: 1, 2, 10 instead of 1, 10, 2
+            self.assets.sort(key=lambda x: (not x.is_folder, natural_sort_key(x.name)), reverse=not self.sort_ascending)
         elif self.sort_column == "size":
             self.assets.sort(key=lambda x: (not x.is_folder, x.size), reverse=not self.sort_ascending)
         elif self.sort_column == "date":
