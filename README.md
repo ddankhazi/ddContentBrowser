@@ -1,2 +1,2 @@
 # ddContentBrowser
-dd Content Browser for Maya
+Content Browser for Maya by Denes Dankhazi
