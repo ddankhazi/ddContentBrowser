@@ -5801,15 +5801,26 @@ class MayaStyleListView(QListView):
                 
                 # Check if cursor is over DragDropCollectionListWidget
                 is_over_collections = False
+                collections_widget = None
                 check_widget = widget_at_cursor
                 while check_widget:
                     if isinstance(check_widget, DragDropCollectionListWidget):
                         is_over_collections = True
+                        collections_widget = check_widget
                         break
                     check_widget = check_widget.parent()
                 
+                # If over collections, check if cursor is over a valid collection item
+                is_over_valid_collection = False
+                if is_over_collections and collections_widget:
+                    # Map global position to collections widget local coordinates
+                    local_pos = collections_widget.mapFromGlobal(global_pos)
+                    item = collections_widget.itemAt(local_pos)
+                    if item and item.data(Qt.UserRole):  # Has collection name
+                        is_over_valid_collection = True
+                
                 # Update cursor based on position
-                if is_over_collections:
+                if is_over_valid_collection:
                     if not self.drag_to_collection:
                         self.drag_to_collection = True
                         self.setCursor(Qt.DragMoveCursor)
@@ -5825,7 +5836,7 @@ class MayaStyleListView(QListView):
                         return
                 else:
                     if self.drag_to_collection:
-                        # Left collections area
+                        # Left valid collection area (either left collections entirely or moved to empty space)
                         self.drag_to_collection = False
                         self.setCursor(Qt.ClosedHandCursor)
         
