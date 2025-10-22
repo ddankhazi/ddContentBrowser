@@ -6,6 +6,13 @@ Author: ddankhazi
 License: MIT
 """
 
+__all__ = [
+    'ThumbnailCache',
+    'ThumbnailDiskCache', 
+    'ThumbnailGenerator',
+    'apply_exif_orientation'
+]
+
 # UI Font - Default value (matches Windows/Maya UI)
 UI_FONT = "Segoe UI"
 
@@ -18,14 +25,143 @@ from datetime import datetime
 
 try:
     from PySide6.QtCore import QThread, Signal, Qt
-    from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QLinearGradient, QBrush
+    from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QLinearGradient, QBrush, QTransform
     from PySide6.QtCore import QRect
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtCore import QThread, Signal, Qt
-    from PySide2.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QLinearGradient, QBrush
+    from PySide2.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QLinearGradient, QBrush, QTransform
     from PySide2.QtCore import QRect
     PYSIDE_VERSION = 2
+
+
+def apply_exif_orientation(pixmap, file_path):
+    """
+    Apply EXIF orientation to pixmap (auto-rotate based on camera orientation)
+    FOR PREVIEW AND ZOOM MODE (+90° adjustment)
+    
+    EXIF Orientation values:
+    1 = Normal (0°)
+    2 = Flip horizontal
+    3 = Rotate 180°
+    4 = Flip vertical
+    5 = Transpose (flip horizontal + rotate 270° CW)
+    6 = Rotate 270° CW (or 90° CCW)
+    7 = Transverse (flip horizontal + rotate 90° CW)
+    8 = Rotate 90° CW (or 270° CCW)
+    
+    Args:
+        pixmap: QPixmap to transform
+        file_path: Path to image file (to read EXIF)
+    
+    Returns:
+        Transformed QPixmap or original if no rotation needed
+    """
+    try:
+        from PIL import Image
+        
+        # Open image and get EXIF orientation
+        img = Image.open(str(file_path))
+        exif = img._getexif()
+        
+        if not exif or 274 not in exif:
+            return pixmap  # No orientation tag
+        
+        orientation = exif[274]
+        
+        if orientation == 1:
+            return pixmap  # Normal, no rotation needed
+        
+        # Create transform
+        transform = QTransform()
+        
+        if orientation == 2:
+            # Flip horizontal, then rotate 90° CW
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
+        elif orientation == 3:
+            # Rotate 180°, then rotate 90° CW = 270° CW total
+            pixmap = pixmap.transformed(QTransform().rotate(270), Qt.SmoothTransformation)
+        elif orientation == 4:
+            # Flip vertical, then rotate 90° CW
+            pixmap = pixmap.transformed(QTransform().scale(1, -1), Qt.SmoothTransformation)
+            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
+        elif orientation == 5:
+            # Flip horizontal only, then rotate 90° CW
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
+        elif orientation == 6:
+            # Rotate 90° CW (was 0°, now +90°) - most common for portrait photos
+            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
+        elif orientation == 7:
+            # Flip horizontal, then rotate 90° CW twice = 180° total
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+            pixmap = pixmap.transformed(QTransform().rotate(180), Qt.SmoothTransformation)
+        elif orientation == 8:
+            # Rotate 180°, then rotate 90° CW = 270° CW total
+            pixmap = pixmap.transformed(QTransform().rotate(270), Qt.SmoothTransformation)
+        
+        return pixmap
+        
+    except Exception as e:
+        # If PIL not available or any error, return original
+        return pixmap
+
+
+def apply_exif_orientation_thumbnail(pixmap, file_path):
+    """
+    Apply EXIF orientation to pixmap (auto-rotate based on camera orientation)
+    FOR THUMBNAILS ONLY (no extra rotation)
+    
+    Args:
+        pixmap: QPixmap to transform
+        file_path: Path to image file (to read EXIF)
+    
+    Returns:
+        Transformed QPixmap or original if no rotation needed
+    """
+    try:
+        from PIL import Image
+        
+        # Open image and get EXIF orientation
+        img = Image.open(str(file_path))
+        exif = img._getexif()
+        
+        if not exif or 274 not in exif:
+            return pixmap  # No orientation tag
+        
+        orientation = exif[274]
+        
+        if orientation == 1:
+            return pixmap  # Normal, no rotation needed
+        
+        if orientation == 2:
+            # Flip horizontal
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+        elif orientation == 3:
+            # Rotate 180°
+            pixmap = pixmap.transformed(QTransform().rotate(180), Qt.SmoothTransformation)
+        elif orientation == 4:
+            # Flip vertical
+            pixmap = pixmap.transformed(QTransform().scale(1, -1), Qt.SmoothTransformation)
+        elif orientation == 5:
+            # Flip horizontal (no extra rotation)
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+        elif orientation == 6:
+            # No rotation - most common for portrait photos
+            pass
+        elif orientation == 7:
+            # Flip horizontal only
+            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
+        elif orientation == 8:
+            # Rotate 180°
+            pixmap = pixmap.transformed(QTransform().rotate(180), Qt.SmoothTransformation)
+        
+        return pixmap
+        
+    except Exception as e:
+        # If PIL not available or any error, return original
+        return pixmap
 
 
 class ThumbnailCache:
@@ -512,11 +648,61 @@ class ThumbnailGenerator(QThread):
                     # Fall through to QPixmap method below
             
             # Standard image files - use QPixmap (for 8-bit JPEG, PNG, etc.)
+            # For very large images (16K+), try OpenCV first for better memory handling
+            try:
+                # Check file size first - if over 50MB, use OpenCV
+                file_size_mb = os.path.getsize(str(file_path)) / (1024 * 1024)
+                
+                if file_size_mb > 50 or extension in ['.jpg', '.jpeg']:
+                    # Try OpenCV for large files - better memory handling
+                    import cv2
+                    import numpy as np
+                    
+                    # Read only a smaller version for thumbnails
+                    img = cv2.imread(str(file_path), cv2.IMREAD_COLOR)
+                    
+                    if img is not None:
+                        # Convert BGR to RGB
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        
+                        # Calculate thumbnail size
+                        h, w = img.shape[:2]
+                        scale = min(self.thumbnail_size / w, self.thumbnail_size / h)
+                        new_w = int(w * scale)
+                        new_h = int(h * scale)
+                        
+                        # Resize with OpenCV (faster for large images)
+                        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                        
+                        # Convert to QPixmap
+                        if PYSIDE_VERSION == 6:
+                            from PySide6.QtGui import QImage
+                        else:
+                            from PySide2.QtGui import QImage
+                        
+                        height, width, channel = img_resized.shape
+                        bytes_per_line = 3 * width
+                        q_image = QImage(img_resized.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                        
+                        pixmap = QPixmap.fromImage(q_image)
+                        
+                        # Apply EXIF orientation for thumbnails (auto-rotate based on camera orientation)
+                        pixmap = apply_exif_orientation_thumbnail(pixmap, file_path)
+                        
+                        return pixmap
+            except Exception as e:
+                print(f"[Cache] OpenCV loading failed for large JPG: {e}, trying QPixmap...")
+            
+            # Fallback to standard QPixmap loading
             pixmap = QPixmap(str(file_path))
             
             if pixmap.isNull():
                 # Failed to load, use default icon
+                print(f"[Cache] QPixmap failed to load: {file_path}")
                 return self._get_default_icon(file_path)
+            
+            # Apply EXIF orientation for thumbnails (auto-rotate based on camera orientation)
+            pixmap = apply_exif_orientation_thumbnail(pixmap, file_path)
             
             # Scale to thumbnail size (keep aspect ratio)
             scaled = pixmap.scaled(

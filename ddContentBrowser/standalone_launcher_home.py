@@ -323,7 +323,7 @@ def main():
     print("Close the window to exit.")
     
     # Run event loop
-    sys.exit(app.exec_() if hasattr(app, 'exec_') else app.exec())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

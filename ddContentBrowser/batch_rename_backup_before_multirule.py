@@ -796,7 +796,7 @@ def test_batch_rename():
     dialog.show()
     
     if app is None:
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
 
 
 if __name__ == "__main__":

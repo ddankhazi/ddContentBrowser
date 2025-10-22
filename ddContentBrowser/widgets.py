@@ -2434,11 +2434,31 @@ class PreviewPanel(QWidget):
             
             # === Standard images (JPG, PNG, etc.) ===
             else:
-                # Standard image formats - use QPixmap directly
-                self.full_res_pixmap = QPixmap(file_path_str)
+                # Use QImageReader for consistency with normal preview (handles EXIF orientation automatically)
+                try:
+                    image_reader = QImageReader(file_path_str)
+                    
+                    # Read full resolution image
+                    image = image_reader.read()
+                    
+                    if not image.isNull():
+                        self.full_res_pixmap = QPixmap.fromImage(image)
+                    else:
+                        # Fallback: try direct QPixmap load
+                        self.full_res_pixmap = QPixmap(file_path_str)
+                        
+                except Exception as e:
+                    # Fallback to standard QPixmap loading
+                    print(f"[Preview] QImageReader failed: {e}, using QPixmap fallback...")
+                    self.full_res_pixmap = QPixmap(file_path_str)
             
             if self.full_res_pixmap.isNull():
+                print(f"[Preview] Failed to load image for zoom: {file_path_str}")
                 return
+            
+            # Apply EXIF orientation (auto-rotate based on camera orientation)
+            from .cache import apply_exif_orientation
+            self.full_res_pixmap = apply_exif_orientation(self.full_res_pixmap, file_path_str)
             
             self.zoom_mode = True
             self.pan_offset = QPoint(0, 0)
@@ -2984,6 +3004,10 @@ class PreviewPanel(QWidget):
                                     pixmap = QPixmap.fromImage(q_image.copy())
                                     
                                     if not pixmap.isNull():
+                                        # Apply EXIF orientation (auto-rotate based on camera orientation)
+                                        from .cache import apply_exif_orientation
+                                        pixmap = apply_exif_orientation(pixmap, file_path_str)
+                                        
                                         self.current_pixmap = pixmap
                                         self.add_to_cache(file_path_str, pixmap, resolution_str)
                                         self.fit_pixmap_to_label()
@@ -3010,6 +3034,11 @@ class PreviewPanel(QWidget):
                                 image = image_reader.read()
                                 if not image.isNull():
                                     pixmap = QPixmap.fromImage(image)
+                                    
+                                    # Apply EXIF orientation (auto-rotate based on camera orientation)
+                                    from .cache import apply_exif_orientation
+                                    pixmap = apply_exif_orientation(pixmap, file_path_str)
+                                    
                                     self.current_pixmap = pixmap
                                     self.add_to_cache(file_path_str, pixmap, resolution_str)
                                     self.fit_pixmap_to_label()
@@ -3038,6 +3067,11 @@ class PreviewPanel(QWidget):
                             
                             if not image.isNull():
                                 pixmap = QPixmap.fromImage(image)
+                                
+                                # Apply EXIF orientation (auto-rotate based on camera orientation)
+                                from .cache import apply_exif_orientation
+                                pixmap = apply_exif_orientation(pixmap, file_path_str)
+                                
                                 self.current_pixmap = pixmap
                                 
                                 # Add to cache
@@ -5823,10 +5857,45 @@ class MayaStyleListView(QListView):
                 if is_over_valid_collection:
                     if not self.drag_to_collection:
                         self.drag_to_collection = True
-                        self.setCursor(Qt.DragMoveCursor)
+                        # Keep ClosedHandCursor - don't change to DragMoveCursor
+                        # self.setCursor(Qt.DragMoveCursor)
                         # Start actual Qt drag operation
+                        # Note: startDrag is blocking - it returns only after drag completes
                         self.startDrag(Qt.CopyAction)
-                        # After drag completes, reset flags
+                        
+                        # After drag completes, check if we should do batch import
+                        # If drag_to_collection is False, it means we left the collection area
+                        # and the dragLeaveEvent signal reset the flag
+                        if not self.drag_to_collection:
+                            # Check if mouse was released outside the browser window (over Maya)
+                            global_pos = QCursor.pos()
+                            widget_at_cursor = QApplication.widgetAt(global_pos)
+                            
+                            # Find if we're over the browser window
+                            is_over_browser = False
+                            check_widget = widget_at_cursor
+                            while check_widget:
+                                if hasattr(check_widget, 'windowTitle') and 'DD Content Browser' in str(check_widget.windowTitle()):
+                                    is_over_browser = True
+                                    break
+                                if check_widget.__class__.__name__ == 'DDContentBrowser':
+                                    is_over_browser = True
+                                    break
+                                check_widget = check_widget.parent() if check_widget else None
+                            
+                            # If not over browser, do batch import
+                            if not is_over_browser:
+                                indexes = self.selectedIndexes()
+                                if indexes:
+                                    count = len(indexes)
+                                    browser = self.parent()
+                                    while browser and not hasattr(browser, 'status_bar'):
+                                        browser = browser.parent()
+                                    if browser and hasattr(browser, 'status_bar'):
+                                        browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                                    self.batch_import_files(indexes)
+                        
+                        # Reset flags after drag completes
                         self.middle_button_pressed = False
                         self.drag_start_position = None
                         self.drag_started = False
@@ -6068,6 +6137,9 @@ class DragDropCollectionListWidget(QListWidget):
     # Signal emitted when files are dropped onto a collection
     files_dropped_on_collection = Signal(str, list)  # collection_name, file_paths
     
+    # Signal emitted when drag leaves the collection area
+    drag_left_collection = Signal()
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -6110,12 +6182,16 @@ class DragDropCollectionListWidget(QListWidget):
         event.ignore()
     
     def dragLeaveEvent(self, event):
-        """Handle drag leave - clear highlight"""
+        """Handle drag leave - clear highlight and notify file list"""
         if self.drop_indicator_item:
             font = self.drop_indicator_item.font()
             font.setBold(False)
             self.drop_indicator_item.setFont(font)
             self.drop_indicator_item = None
+        
+        # Notify the file list that we've left the collection area
+        # so it can switch back to Maya batch import mode
+        self.drag_left_collection.emit()
     
     def dropEvent(self, event):
         """Handle drop - add files to collection"""

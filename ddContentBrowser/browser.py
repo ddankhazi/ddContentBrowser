@@ -1053,6 +1053,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.open_btn.clicked.connect(self.open_selected_files)
         self.add_favorite_btn.clicked.connect(self.add_current_to_favorites)
         
+        # Connect collection drag-leave signal to file list
+        # This allows the file list to reset when leaving collection area during drag
+        self.collections_panel.collections_list.drag_left_collection.connect(
+            self.on_drag_left_collection
+        )
+        
         # Initialize sort indicators now that file_model exists
         self.update_sort_indicators()
         
@@ -3109,6 +3115,17 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         if DEBUG_MODE:
             if DEBUG_MODE:
                 print("[Browser] Cleared collection filter")
+    
+    def on_drag_left_collection(self):
+        """Handle when drag leaves collection area - reset file list drag state"""
+        # Reset the drag_to_collection flag on the file list
+        # This allows batch import to work again when dragging to Maya
+        if hasattr(self.file_list, 'drag_to_collection'):
+            self.file_list.drag_to_collection = False
+            # Restore the closed hand cursor to show we're still in drag mode
+            self.file_list.setCursor(Qt.ClosedHandCursor)
+            if DEBUG_MODE:
+                print("[Browser] Drag left collection area - reset to batch import mode")
     
     def add_collection_submenu(self, parent_menu, selected_assets):
         """Add 'Add to Collection >' submenu with list of manual collections"""
