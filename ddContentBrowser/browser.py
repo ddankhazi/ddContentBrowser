@@ -511,7 +511,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Status bar
         self.status_bar = self.statusBar()
-        self.status_bar.showMessage("Ready")
+        self.safe_show_status("Ready")
+    
+    def safe_show_status(self, message, timeout=0):
+        """Safely show status bar message, handling deleted widget cases"""
+        try:
+            if hasattr(self, 'status_bar') and self.status_bar is not None:
+                self.safe_show_status(message, timeout)
+        except RuntimeError:
+            # C++ object already deleted, safely ignore
+            pass
     
     def create_menu_bar(self):
         """Create menu bar with Tools menu"""
@@ -1131,9 +1140,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Show status message
         if include_subfolders:
-            self.status_bar.showMessage("Loading files from subfolders...")
+            self.safe_show_status("Loading files from subfolders...")
         else:
-            self.status_bar.showMessage("Showing current folder only")
+            self.safe_show_status("Showing current folder only")
         
         # Refresh the file list with force=True to bypass cache
         # (cache doesn't track include_subfolders state)
@@ -1144,9 +1153,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Update status bar with file count
         file_count = len(self.file_model.assets)
         if include_subfolders:
-            self.status_bar.showMessage(f"Loaded {file_count} files from subfolders")
+            self.safe_show_status(f"Loaded {file_count} files from subfolders")
         else:
-            self.status_bar.showMessage(f"Loaded {file_count} files")
+            self.safe_show_status(f"Loaded {file_count} files")
         
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -1155,8 +1164,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Navigate to specified path"""
         path = Path(path)
         if not path.exists() or not path.is_dir():
-            self.status_bar.showMessage(f"Invalid path: {path}")
+            self.safe_show_status(f"Invalid path: {path}")
             return
+        
+        # Exit collection mode if active
+        if self.file_model.collection_mode:
+            self.on_collection_cleared()
         
         # Disable subfolder mode when navigating to new path
         if self.include_subfolders_checkbox.isChecked():
@@ -1226,7 +1239,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.config.config["last_path"] = str(path)
         self.config.save_config()
         self.update_navigation_buttons()
-        self.status_bar.showMessage(f"Loaded: {path}")
+        self.safe_show_status(f"Loaded: {path}")
         
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -1246,7 +1259,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.file_model.setPath(Path(path))
             self.breadcrumb.set_path(path)
             self.update_navigation_buttons()
-            self.status_bar.showMessage(f"Back: {path}")
+            self.safe_show_status(f"Back: {path}")
             
             self.is_navigating_history = False
     
@@ -1260,7 +1273,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.file_model.setPath(Path(path))
             self.breadcrumb.set_path(path)
             self.update_navigation_buttons()
-            self.status_bar.showMessage(f"Forward: {path}")
+            self.safe_show_status(f"Forward: {path}")
             
             self.is_navigating_history = False
     
@@ -1337,7 +1350,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Force refresh
         self.file_list.viewport().update()
-        self.status_bar.showMessage(f"View mode: {'Grid' if icon_mode else 'List'}")
+        self.safe_show_status(f"View mode: {'Grid' if icon_mode else 'List'}")
         
         # Request thumbnails for newly visible items after view mode change
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -1574,14 +1587,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.config.save_config()
         self.update_recent_menu()
         self.update_recent_list()
-        self.status_bar.showMessage("Recent folders cleared")
+        self.safe_show_status("Recent folders cleared")
     
     def add_current_to_favorites(self):
         """Add current path to favorites"""
         current_path = self.breadcrumb.current_path.strip()
         
         if not current_path:
-            self.status_bar.showMessage("No path selected")
+            self.safe_show_status("No path selected")
             return
         
         # Normalize path for comparison
@@ -1591,14 +1604,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         existing_normalized = [str(Path(p).resolve()) for p in self.config.config["favorites"]]
         
         if normalized_path in existing_normalized:
-            self.status_bar.showMessage(f"Already in favorites: {Path(current_path).name}")
+            self.safe_show_status(f"Already in favorites: {Path(current_path).name}")
             return
         
         # Add to favorites
         self.config.config["favorites"].append(normalized_path)
         self.config.save_config()
         self.update_favorites_list()
-        self.status_bar.showMessage(f"Added to favorites: {Path(current_path).name}")
+        self.safe_show_status(f"Added to favorites: {Path(current_path).name}")
     
     def update_favorites_list(self):
         """Update favorites list"""
@@ -1643,9 +1656,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             del self.config.config["favorites"][index]
             self.config.save_config()
             self.update_favorites_list()
-            self.status_bar.showMessage(f"Removed from favorites: {Path(path_to_remove).name}")
+            self.safe_show_status(f"Removed from favorites: {Path(path_to_remove).name}")
         else:
-            self.status_bar.showMessage(f"Path not found in favorites")
+            self.safe_show_status(f"Path not found in favorites")
     
     def remove_from_favorites_multi(self, items):
         """Remove multiple paths from favorites"""
@@ -1674,11 +1687,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.config.save_config()
             self.update_favorites_list()
             if removed_count == 1:
-                self.status_bar.showMessage(f"Removed 1 item from favorites")
+                self.safe_show_status(f"Removed 1 item from favorites")
             else:
-                self.status_bar.showMessage(f"Removed {removed_count} items from favorites")
+                self.safe_show_status(f"Removed {removed_count} items from favorites")
         else:
-            self.status_bar.showMessage("No items were removed")
+            self.safe_show_status("No items were removed")
     
     def get_selected_assets(self):
         """Get selected assets"""
@@ -1799,13 +1812,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 self.import_selected_file()
             else:
                 # Not importable - show message and offer to open with default app
-                self.status_bar.showMessage(f"Cannot import {asset.extension} files to Maya. Use 'Open' to view.", 4000)
+                self.safe_show_status(f"Cannot import {asset.extension} files to Maya. Use 'Open' to view.", 4000)
     
     def import_selected_file(self):
         """Import selected file or navigate into folder"""
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         # If single folder selected - navigate into it
@@ -1834,7 +1847,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Check if file type is importable
             if not (asset.extension in maya_importable or asset.is_script_file or asset.is_image_file):
                 skipped_count += 1
-                self.status_bar.showMessage(f"Skipped {asset.name}: Cannot import {asset.extension} files", 2000)
+                self.safe_show_status(f"Skipped {asset.name}: Cannot import {asset.extension} files", 2000)
                 continue
                 
             try:
@@ -1857,10 +1870,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         cmds.setAttr(f"{substance_node}.filePath", str(asset.file_path), type="string")
                         
                         imported_count += 1
-                        self.status_bar.showMessage(f"Substance texture created: {substance_node}", 2000)
+                        self.safe_show_status(f"Substance texture created: {substance_node}", 2000)
                     except Exception as e:
                         error_count += 1
-                        self.status_bar.showMessage(f"Substance import error: {e}", 3000)
+                        self.safe_show_status(f"Substance import error: {e}", 3000)
                         print(f"Substance import error: {e}")
                 
                 elif asset.is_maya_file:
@@ -1942,7 +1955,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     
             except Exception as e:
                 error_count += 1
-                self.status_bar.showMessage(f"Import error ({asset.name}): {e}", 3000)
+                self.safe_show_status(f"Import error ({asset.name}): {e}", 3000)
                 print(f"Import error {asset.name}: {e}")
         
         # Summary message
@@ -1952,17 +1965,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 msg += f", {error_count} error(s)"
             if skipped_count > 0:
                 msg += f", {skipped_count} skipped"
-            self.status_bar.showMessage(msg, 4000)
+            self.safe_show_status(msg, 4000)
         elif error_count > 0:
-            self.status_bar.showMessage(f"✗ Import failed: {error_count} error(s)", 4000)
+            self.safe_show_status(f"✗ Import failed: {error_count} error(s)", 4000)
         elif skipped_count > 0:
-            self.status_bar.showMessage(f"No files imported ({skipped_count} skipped)", 3000)
+            self.safe_show_status(f"No files imported ({skipped_count} skipped)", 3000)
     
     def reference_selected_file(self):
         """Reference selected file"""
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         if not MAYA_AVAILABLE:
@@ -1974,11 +1987,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 if asset.is_maya_file:
                     namespace = asset.file_path.stem  # filename without extension
                     cmds.file(str(asset.file_path), r=True, namespace=namespace)
-                    self.status_bar.showMessage(f"Referenced: {asset.name} ({namespace})")
+                    self.safe_show_status(f"Referenced: {asset.name} ({namespace})")
                 else:
-                    self.status_bar.showMessage(f"Reference only supported for Maya files")
+                    self.safe_show_status(f"Reference only supported for Maya files")
             except Exception as e:
-                self.status_bar.showMessage(f"Reference error: {e}")
+                self.safe_show_status(f"Reference error: {e}")
                 print(f"Reference error {asset.name}: {e}")
     
     def open_selected_files(self):
@@ -1988,7 +2001,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         for asset in assets:
@@ -1998,24 +2011,24 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 # Use os.startfile on Windows (best option)
                 if os.name == 'nt':  # Windows
                     os.startfile(file_path)
-                    self.status_bar.showMessage(f"Opening: {asset.name}")
+                    self.safe_show_status(f"Opening: {asset.name}")
                 else:
                     # macOS and Linux fallback
                     if sys.platform == 'darwin':  # macOS
                         subprocess.Popen(['open', file_path])
                     else:  # Linux
                         subprocess.Popen(['xdg-open', file_path])
-                    self.status_bar.showMessage(f"Opening: {asset.name}")
+                    self.safe_show_status(f"Opening: {asset.name}")
                     
             except Exception as e:
-                self.status_bar.showMessage(f"Open error: {e}")
+                self.safe_show_status(f"Open error: {e}")
                 print(f"Open error {asset.name}: {e}")
     
     def clear_all_filters(self):
         """Clear all active filters"""
         self.file_model.clearFilters()
         self.update_filter_visual_feedback()
-        self.status_bar.showMessage("All filters cleared")
+        self.safe_show_status("All filters cleared")
     
     def on_thumbnail_ready(self, file_path, pixmap):
         """Handle thumbnail ready from generator"""
@@ -2031,15 +2044,23 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_thumbnail_progress(self, current, total):
         """Handle thumbnail generation progress"""
-        if total > 0:
-            if current >= total:
-                # Show final stats
-                msg = f"Ready (cached: {self.cache_hits}, generated: {self.generations})"
-                self.status_bar.showMessage(msg)
-            else:
-                # Show progress with stats
-                msg = f"Loading: {current}/{total} (cached: {self.cache_hits}, generating: {self.generations})"
-                self.status_bar.showMessage(msg)
+        # Check if status_bar still exists (widget might be deleted during shutdown)
+        try:
+            if not hasattr(self, 'status_bar') or self.status_bar is None:
+                return
+            
+            if total > 0:
+                if current >= total:
+                    # Show final stats
+                    msg = f"Ready (cached: {self.cache_hits}, generated: {self.generations})"
+                    self.safe_show_status(msg)
+                else:
+                    # Show progress with stats
+                    msg = f"Loading: {current}/{total} (cached: {self.cache_hits}, generating: {self.generations})"
+                    self.safe_show_status(msg)
+        except RuntimeError:
+            # C++ object already deleted, safely ignore
+            pass
     
     def on_thumbnail_failed(self, file_path, error_message):
         """Handle thumbnail generation failure"""
@@ -2270,7 +2291,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
             if DEBUG_MODE:
                 print("[Browser] Settings applied successfully")
-        self.status_bar.showMessage("Settings applied", 3000)
+        self.safe_show_status("Settings applied", 3000)
     
     def restore_browser_state(self):
         """Restore sort and filter state from last session"""
@@ -2344,7 +2365,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         cache_dir.mkdir(parents=True, exist_ok=True)
                 
                 QtWidgets.QMessageBox.information(self, "Success", "Thumbnail cache cleared successfully!")
-                self.status_bar.showMessage("Cache cleared", 3000)
+                self.safe_show_status("Cache cleared", 3000)
                 
                 # Request thumbnail regeneration
                 QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -2489,8 +2510,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if self.quick_view_window and self.quick_view_window.isVisible():
             self.quick_view_window.close()
         
-        # Stop thumbnail generator thread
+        # Disconnect thumbnail generator signals BEFORE stopping (prevents RuntimeError)
         if hasattr(self, 'thumbnail_generator'):
+            try:
+                self.thumbnail_generator.thumbnail_ready.disconnect()
+                self.thumbnail_generator.progress_update.disconnect()
+                self.thumbnail_generator.generation_failed.disconnect()
+                if hasattr(self.thumbnail_generator, 'cache_status'):
+                    self.thumbnail_generator.cache_status.disconnect()
+            except:
+                pass  # Already disconnected or never connected
+            
+            # Now stop the thread
             self.thumbnail_generator.stop()
             self.thumbnail_generator.wait(2000)  # Wait max 2 seconds
         
@@ -2537,7 +2568,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     def refresh_current_folder(self):
         """Refresh current folder (F5) - Force refresh bypasses cache"""
         self.file_model.refresh(force=True)
-        self.status_bar.showMessage("Refreshed (cache bypassed)")
+        self.safe_show_status("Refreshed (cache bypassed)")
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
     
     def navigate_to_parent(self):
@@ -2555,45 +2586,45 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # If no file selected, copy current folder path
             if self.breadcrumb.current_path:
                 QtWidgets.QApplication.clipboard().setText(self.breadcrumb.current_path)
-                self.status_bar.showMessage(f"Copied to clipboard: {self.breadcrumb.current_path}")
+                self.safe_show_status(f"Copied to clipboard: {self.breadcrumb.current_path}")
             return
         
         if len(assets) == 1:
             # Single selection - copy just the path
             path = str(assets[0].file_path)
             QtWidgets.QApplication.clipboard().setText(path)
-            self.status_bar.showMessage(f"Copied to clipboard: {assets[0].name}")
+            self.safe_show_status(f"Copied to clipboard: {assets[0].name}")
         else:
             # Multiple selection - copy all paths, each on a new line
             paths = [str(asset.file_path) for asset in assets]
             combined_paths = '\n'.join(paths)
             QtWidgets.QApplication.clipboard().setText(combined_paths)
-            self.status_bar.showMessage(f"Copied {len(assets)} paths to clipboard")
+            self.safe_show_status(f"Copied {len(assets)} paths to clipboard")
     
     def copy_filename_to_clipboard(self):
         """Copy selected filename(s) to clipboard (without path)"""
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         if len(assets) == 1:
             # Single selection - copy just the filename
             filename = assets[0].name
             QtWidgets.QApplication.clipboard().setText(filename)
-            self.status_bar.showMessage(f"Copied filename: {filename}")
+            self.safe_show_status(f"Copied filename: {filename}")
         else:
             # Multiple selection - copy all filenames, each on a new line
             filenames = [asset.name for asset in assets]
             combined_filenames = '\n'.join(filenames)
             QtWidgets.QApplication.clipboard().setText(combined_filenames)
-            self.status_bar.showMessage(f"Copied {len(assets)} filenames to clipboard")
+            self.safe_show_status(f"Copied {len(assets)} filenames to clipboard")
     
     def delete_selected_files(self):
         """Delete selected files (Delete key)"""
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         # Confirmation dialog
@@ -2616,21 +2647,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     os.remove(str(asset.file_path))
                     deleted_count += 1
                 except Exception as e:
-                    self.status_bar.showMessage(f"Error deleting {asset.name}: {e}")
+                    self.safe_show_status(f"Error deleting {asset.name}: {e}")
             
             if deleted_count > 0:
-                self.status_bar.showMessage(f"Deleted {deleted_count} file(s)")
+                self.safe_show_status(f"Deleted {deleted_count} file(s)")
                 self.refresh_current_folder()
     
     def rename_selected_file(self):
         """Rename selected file (F2)"""
         assets = self.get_selected_assets()
         if not assets:
-            self.status_bar.showMessage("No file selected")
+            self.safe_show_status("No file selected")
             return
         
         if len(assets) > 1:
-            self.status_bar.showMessage("Can only rename one file at a time")
+            self.safe_show_status("Can only rename one file at a time")
             return
         
         asset = assets[0]
@@ -2649,7 +2680,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             try:
                 new_path = asset.file_path.parent / new_name
                 asset.file_path.rename(new_path)
-                self.status_bar.showMessage(f"Renamed: {old_name} → {new_name}")
+                self.safe_show_status(f"Renamed: {old_name} → {new_name}")
                 self.refresh_current_folder()
             except Exception as e:
                 QtWidgets.QMessageBox.warning(
@@ -2783,9 +2814,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 # Linux - xdg-open doesn't support selecting, just open parent
                 subprocess.Popen(['xdg-open', str(path.parent)])
             
-            self.status_bar.showMessage(f"Opened in Explorer: {path.name}")
+            self.safe_show_status(f"Opened in Explorer: {path.name}")
         except Exception as e:
-            self.status_bar.showMessage(f"Could not open in Explorer: {e}")
+            self.safe_show_status(f"Could not open in Explorer: {e}")
     
     def show_in_content_browser(self, file_path):
         """Navigate to the file's parent directory and select the file in content browser"""
@@ -2796,13 +2827,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # If it's a folder, just navigate to it
         if file_path.is_dir():
             self.navigate_to_path(file_path)
-            self.status_bar.showMessage(f"Navigated to: {file_path.name}")
+            self.safe_show_status(f"Navigated to: {file_path.name}")
             return
         
         # For files, navigate to parent directory
         parent_dir = file_path.parent
         if not parent_dir.exists():
-            self.status_bar.showMessage(f"Parent directory not found: {parent_dir}")
+            self.safe_show_status(f"Parent directory not found: {parent_dir}")
             return
         
         # Exit collection mode if active
@@ -2831,10 +2862,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         self.file_list.setCurrentIndex(index)
                         self.file_list.scrollTo(index)
                         self.file_list.setFocus()
-                        self.status_bar.showMessage(f"Found and selected: {file_path.name}")
+                        self.safe_show_status(f"Found and selected: {file_path.name}")
                         return
             
-            self.status_bar.showMessage(f"File shown in directory: {file_path.name}")
+            self.safe_show_status(f"File shown in directory: {file_path.name}")
         
         # Delay selection to ensure view is updated
         QTimer.singleShot(300, select_file)
@@ -2851,9 +2882,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.config.config["favorites"].append(path_str)
             self.config.save_config()
             self.update_favorites_list()
-            self.status_bar.showMessage(f"Added to favorites: {Path(path_str).name}")
+            self.safe_show_status(f"Added to favorites: {Path(path_str).name}")
         else:
-            self.status_bar.showMessage(f"Already in favorites: {Path(path_str).name}")
+            self.safe_show_status(f"Already in favorites: {Path(path_str).name}")
     
     def show_file_properties(self, asset):
         """Show file properties dialog"""
@@ -2880,7 +2911,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             if path.exists() and path.is_dir():
                 self.navigate_to_path(path)
             else:
-                self.status_bar.showMessage("Invalid path in clipboard")
+                self.safe_show_status("Invalid path in clipboard")
     
     def update_filter_visual_feedback(self):
         """Update visual feedback for active filters"""
@@ -2965,7 +2996,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         filter_count = sum(len(values) for values in active_filters.values())
         file_count = self.file_model.rowCount()
         
-        self.status_bar.showMessage(f"Advanced filters: {filter_count} active - {file_count} files shown", 4000)
+        self.safe_show_status(f"Advanced filters: {filter_count} active - {file_count} files shown", 4000)
         
         # Request thumbnails for filtered results
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -2980,7 +3011,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         self.update_filter_visual_feedback()
         
         file_count = self.file_model.rowCount()
-        self.status_bar.showMessage(f"Advanced filters cleared - {file_count} files shown", 3000)
+        self.safe_show_status(f"Advanced filters cleared - {file_count} files shown", 3000)
         
         # Request thumbnails
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -3017,7 +3048,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         """Show batch rename dialog for selected files"""
         selected_assets = self.get_selected_assets()
         if not selected_assets:
-            self.status_bar.showMessage("No files selected for rename")
+            self.safe_show_status("No files selected for rename")
             return
         
         # Filter out folders and collect file paths
@@ -3027,7 +3058,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
                 file_paths.append(asset.file_path)
         
         if not file_paths:
-            self.status_bar.showMessage("No files selected (folders cannot be renamed in batch)")
+            self.safe_show_status("No files selected (folders cannot be renamed in batch)")
             return
         
         # Reload the batch_rename module to pick up any changes
@@ -3064,7 +3095,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             collection_files = collection.get_existing_files()
             
             if not collection_files:
-                self.status_bar.showMessage(f"Collection '{collection_name}' is empty")
+                self.safe_show_status(f"Collection '{collection_name}' is empty")
                 return
             
             # Apply collection filter to file model
@@ -3077,7 +3108,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             self.breadcrumb.set_collection_mode(collection_name)
             
             # Update status
-            self.status_bar.showMessage(f"📁 Collection: {collection_name} ({len(collection_files)} files)")
+            self.safe_show_status(f"📁 Collection: {collection_name} ({len(collection_files)} files)")
             
             # Update navigation buttons (enable back button)
             self.update_navigation_buttons()
@@ -3107,7 +3138,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         self.update_navigation_buttons()
         
         # Update status
-        self.status_bar.showMessage("Returned to folder view")
+        self.safe_show_status("Returned to folder view")
         
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -3174,7 +3205,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         # Show feedback
         file_count = len(file_paths)
         file_word = "file" if file_count == 1 else "files"
-        self.status_bar.showMessage(f"Added {file_count} {file_word} to collection '{collection_name}'")
+        self.safe_show_status(f"Added {file_count} {file_word} to collection '{collection_name}'")
         
         if DEBUG_MODE:
             if DEBUG_MODE:
@@ -3213,13 +3244,13 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         else:
             # Collection is now empty, exit collection mode
             self.on_collection_cleared()
-            self.status_bar.showMessage(f"Collection '{self.current_collection_name}' is now empty")
+            self.safe_show_status(f"Collection '{self.current_collection_name}' is now empty")
             return
         
         # Show feedback
         file_count = len(file_paths)
         file_word = "file" if file_count == 1 else "files"
-        self.status_bar.showMessage(f"Removed {file_count} {file_word} from collection '{self.current_collection_name}'")
+        self.safe_show_status(f"Removed {file_count} {file_word} from collection '{self.current_collection_name}'")
         
         # Request thumbnails for remaining visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)

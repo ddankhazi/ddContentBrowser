@@ -5892,7 +5892,10 @@ class MayaStyleListView(QListView):
                                     while browser and not hasattr(browser, 'status_bar'):
                                         browser = browser.parent()
                                     if browser and hasattr(browser, 'status_bar'):
-                                        browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                                        try:
+                                            browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                                        except RuntimeError:
+                                            pass  # Widget already deleted
                                     self.batch_import_files(indexes)
                         
                         # Reset flags after drag completes
@@ -5945,7 +5948,10 @@ class MayaStyleListView(QListView):
                     while browser and not hasattr(browser, 'status_bar'):
                         browser = browser.parent()
                     if browser and hasattr(browser, 'status_bar'):
-                        browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                        try:
+                            browser.status_bar.showMessage(f"Batch importing {count} file{'s' if count != 1 else ''}...", 2000)
+                        except RuntimeError:
+                            pass  # Widget already deleted
                     
                     self.batch_import_files(indexes)
                 else:
@@ -5954,7 +5960,10 @@ class MayaStyleListView(QListView):
                     while browser and not hasattr(browser, 'status_bar'):
                         browser = browser.parent()
                     if browser and hasattr(browser, 'status_bar'):
-                        browser.status_bar.showMessage("No files selected for batch import", 2000)
+                        try:
+                            browser.status_bar.showMessage("No files selected for batch import", 2000)
+                        except RuntimeError:
+                            pass  # Widget already deleted
             elif self.drag_started and not self.drag_to_collection and is_over_browser:
                 # Dragged within browser but not to collections - cancel silently
                 pass
@@ -5993,7 +6002,10 @@ class MayaStyleListView(QListView):
                 while browser and not hasattr(browser, 'status_bar'):
                     browser = browser.parent()
                 if browser and hasattr(browser, 'status_bar'):
-                    browser.status_bar.showMessage("Drag cancelled", 1500)
+                    try:
+                        browser.status_bar.showMessage("Drag cancelled", 1500)
+                    except RuntimeError:
+                        pass  # Widget already deleted
                 return
         
         super().keyPressEvent(event)
@@ -6113,13 +6125,16 @@ class MayaStyleListView(QListView):
             while browser and not hasattr(browser, 'status_bar'):
                 browser = browser.parent()
             if browser and hasattr(browser, 'status_bar'):
-                if imported_count > 0:
-                    msg = f"Imported {imported_count} file{'s' if imported_count != 1 else ''}"
-                    if failed_count > 0:
-                        msg += f" ({failed_count} failed)"
-                    browser.status_bar.showMessage(msg, 3000)
-                else:
-                    browser.status_bar.showMessage("No files imported", 2000)
+                try:
+                    if imported_count > 0:
+                        msg = f"Imported {imported_count} file{'s' if imported_count != 1 else ''}"
+                        if failed_count > 0:
+                            msg += f" ({failed_count} failed)"
+                        browser.status_bar.showMessage(msg, 3000)
+                    else:
+                        browser.status_bar.showMessage("No files imported", 2000)
+                except RuntimeError:
+                    pass  # Widget already deleted
         
         except Exception as e:
             print(f"Batch import error: {e}")
@@ -6128,7 +6143,10 @@ class MayaStyleListView(QListView):
             while browser and not hasattr(browser, 'status_bar'):
                 browser = browser.parent()
             if browser and hasattr(browser, 'status_bar'):
-                browser.status_bar.showMessage(f"Batch import error: {e}", 3000)
+                try:
+                    browser.status_bar.showMessage(f"Batch import error: {e}", 3000)
+                except RuntimeError:
+                    pass  # Widget already deleted
 
 
 class DragDropCollectionListWidget(QListWidget):
