@@ -1158,6 +1158,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.status_bar.showMessage(f"Invalid path: {path}")
             return
         
+        # Exit collection mode if active
+        if self.file_model.collection_mode:
+            self.on_collection_cleared()
+        
         # Disable subfolder mode when navigating to new path
         if self.include_subfolders_checkbox.isChecked():
             self.include_subfolders_checkbox.setChecked(False)
