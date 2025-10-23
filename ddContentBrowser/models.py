@@ -366,8 +366,13 @@ class FileSystemModel(QAbstractListModel):
                     for asset in cached_assets:
                         # Apply folder visibility filter
                         if asset.is_folder:
-                            if self.show_folders:
-                                filtered_assets.append(asset)
+                            if not self.show_folders:
+                                continue
+                            # Apply search filter to folders too
+                            if self.filter_text:
+                                if not self._matches_search(asset.name, self.filter_text):
+                                    continue
+                            filtered_assets.append(asset)
                             continue
                         
                         # Apply file type filter
@@ -454,7 +459,7 @@ class FileSystemModel(QAbstractListModel):
             
             # Only process if we didn't use cache
             if cached_assets is None:
-                # Filter based on search text
+                # Filter based on search text (applies to both folders and files)
                 if self.filter_text:
                     all_items = [f for f in all_items if self._matches_search(f.name, self.filter_text)]
                 
@@ -652,17 +657,68 @@ class FileSystemModel(QAbstractListModel):
         self.endResetModel()
     
     def _load_collection_files(self):
-        """Load files from collection list (collection mode)"""
+        """Load files and folders from collection list (collection mode)"""
         try:
             all_assets = []
             
-            # Load each file from collection
+            # Load each file/folder from collection
             for file_path_str in self.collection_files:
                 file_path = Path(file_path_str)
                 
-                # Check if file exists
+                # Check if file/folder exists
                 if not file_path.exists():
                     continue
+                
+                # Handle folders
+                if file_path.is_dir():
+                    # Always show the folder itself if show_folders is enabled
+                    if self.show_folders:
+                        try:
+                            asset = AssetItem(file_path, lazy_load=False)
+                            all_assets.append(asset)
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                print(f"[Collection] Error loading folder {file_path}: {e}")
+                    
+                    # If include_subfolders is enabled, also load all files from this folder recursively
+                    if self.include_subfolders:
+                        # Recursively load all files from this folder
+                        for item_path in file_path.rglob('*'):
+                            if item_path.is_file():
+                                # Check if extension is supported
+                                ext = item_path.suffix.lower()
+                                if ext not in self.supported_formats:
+                                    continue
+                                
+                                # Check file type filters
+                                if self.filter_file_types and ext not in self.filter_file_types:
+                                    continue
+                                
+                                # Create AssetItem
+                                try:
+                                    asset = AssetItem(item_path, lazy_load=False)
+                                    
+                                    # Apply size filter
+                                    if self.filter_min_size > 0 and asset.size < self.filter_min_size:
+                                        continue
+                                    if self.filter_max_size > 0 and asset.size > self.filter_max_size:
+                                        continue
+                                    
+                                    # Apply date filter
+                                    if self.filter_date_from and asset.modified < self.filter_date_from:
+                                        continue
+                                    if self.filter_date_to and asset.modified > self.filter_date_to:
+                                        continue
+                                    
+                                    all_assets.append(asset)
+                                    
+                                except Exception as e:
+                                    if DEBUG_MODE:
+                                        print(f"[Collection] Error loading file {item_path}: {e}")
+                                    continue
+                    continue
+                
+                # Handle files
                 if not file_path.is_file():
                     continue
                 
@@ -695,10 +751,14 @@ class FileSystemModel(QAbstractListModel):
                     
                 except Exception as e:
                     if DEBUG_MODE:
-                        print(f"[Collection] Error loading {file_path}: {e}")
+                        print(f"[Collection] Error loading file {file_path}: {e}")
                     continue
             
-            self.assets = all_assets
+            # Apply search filter (applies to both folders and files)
+            if self.filter_text:
+                self.assets = [asset for asset in all_assets if self._matches_search(asset.name, self.filter_text)]
+            else:
+                self.assets = all_assets
             
             # Apply sorting
             self._sort_assets()

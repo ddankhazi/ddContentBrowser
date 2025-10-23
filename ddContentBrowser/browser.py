@@ -2757,16 +2757,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 
                 menu.addSeparator()
                 
-                # Add to Collection submenu (only for files, not folders)
-                if not asset.is_folder:
-                    self.add_collection_submenu(menu, selected_assets)
-                    
-                    # Remove from Collection (only if in collection mode)
-                    if self.file_model.collection_mode:
-                        remove_action = menu.addAction("➖ Remove from Collection")
-                        remove_action.triggered.connect(lambda: self.remove_files_from_current_collection(selected_assets))
-                    
-                    menu.addSeparator()
+                # Add to Collection submenu (for both files and folders)
+                self.add_collection_submenu(menu, selected_assets)
+                
+                # Remove from Collection (only if in collection mode)
+                if self.file_model.collection_mode:
+                    remove_action = menu.addAction("➖ Remove from Collection")
+                    remove_action.triggered.connect(lambda: self.remove_files_from_current_collection(selected_assets))
+                
+                menu.addSeparator()
                 
                 rename_action = menu.addAction("✏️ Rename")
                 rename_action.triggered.connect(self.rename_selected_file)
@@ -3108,7 +3107,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             self.breadcrumb.set_collection_mode(collection_name)
             
             # Update status
-            self.safe_show_status(f"📁 Collection: {collection_name} ({len(collection_files)} files)")
+            self.safe_show_status(f"📁 Collection: {collection_name} ({len(collection_files)} items)")
             
             # Update navigation buttons (enable back button)
             self.update_navigation_buttons()
@@ -3182,20 +3181,20 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             )
     
     def add_files_to_collection(self, collection_name, assets):
-        """Add selected files to a collection"""
+        """Add selected files and folders to a collection"""
         from .asset_collections import ManualCollection
         
         collection = self.collection_manager.get_collection(collection_name)
         if not collection or not isinstance(collection, ManualCollection):
             return
         
-        # Get file paths from assets
-        file_paths = [str(asset.file_path) for asset in assets if not asset.is_folder]
+        # Get file paths from assets (now includes folders too)
+        file_paths = [str(asset.file_path) for asset in assets]
         
         if not file_paths:
             return
         
-        # Add files to collection
+        # Add files and folders to collection
         collection.add_files(file_paths)
         self.collection_manager.save()
         
@@ -3203,16 +3202,16 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         self.collections_panel.refresh_collections_list()
         
         # Show feedback
-        file_count = len(file_paths)
-        file_word = "file" if file_count == 1 else "files"
-        self.safe_show_status(f"Added {file_count} {file_word} to collection '{collection_name}'")
+        item_count = len(file_paths)
+        item_word = "item" if item_count == 1 else "items"
+        self.safe_show_status(f"Added {item_count} {item_word} to collection '{collection_name}'")
         
         if DEBUG_MODE:
             if DEBUG_MODE:
-                print(f"[Browser] Added {file_count} files to collection '{collection_name}'")
+                print(f"[Browser] Added {item_count} items to collection '{collection_name}'")
     
     def remove_files_from_current_collection(self, assets):
-        """Remove selected files from the currently active collection"""
+        """Remove selected files and folders from the currently active collection"""
         from .asset_collections import ManualCollection
         
         if not self.current_collection_name:
@@ -3222,13 +3221,13 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         if not collection or not isinstance(collection, ManualCollection):
             return
         
-        # Get file paths from assets
-        file_paths = [str(asset.file_path) for asset in assets if not asset.is_folder]
+        # Get file paths from assets (now includes folders too)
+        file_paths = [str(asset.file_path) for asset in assets]
         
         if not file_paths:
             return
         
-        # Remove files from collection
+        # Remove files and folders from collection
         for file_path in file_paths:
             collection.remove_file(file_path)
         
@@ -3237,7 +3236,7 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         # Refresh collections panel to update file count
         self.collections_panel.refresh_collections_list()
         
-        # Refresh the collection view to remove the files from display
+        # Refresh the collection view to remove the items from display
         collection_files = collection.get_existing_files()
         if collection_files:
             self.file_model.setCollectionFilter(collection_files)
@@ -3248,13 +3247,12 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             return
         
         # Show feedback
-        file_count = len(file_paths)
-        file_word = "file" if file_count == 1 else "files"
-        self.safe_show_status(f"Removed {file_count} {file_word} from collection '{self.current_collection_name}'")
+        item_count = len(file_paths)
+        item_word = "item" if item_count == 1 else "items"
+        self.safe_show_status(f"Removed {item_count} {item_word} from collection '{self.current_collection_name}'")
         
         # Request thumbnails for remaining visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE:
-            if DEBUG_MODE:
-                print(f"[Browser] Removed {file_count} files from collection '{self.current_collection_name}'")
+            print(f"[Browser] Removed {item_count} {item_word} from collection '{self.current_collection_name}'")

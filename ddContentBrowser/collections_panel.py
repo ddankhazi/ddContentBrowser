@@ -308,17 +308,17 @@ class CollectionsPanel(QWidget):
             )
     
     def export_collection_to_folder(self, collection_name: str):
-        """Export collection files to a folder"""
+        """Export collection items (files and folders) to a folder"""
         import shutil
         
         collection = self.collection_manager.get_collection(collection_name)
         if not isinstance(collection, ManualCollection):
             return
         
-        # Get existing files
-        files = collection.get_existing_files()
-        if not files:
-            QMessageBox.information(self, "Empty Collection", "This collection has no files to export")
+        # Get existing files/folders
+        items = collection.get_existing_files()
+        if not items:
+            QMessageBox.information(self, "Empty Collection", "This collection has no items to export")
             return
         
         # Select destination folder
@@ -336,10 +336,10 @@ class CollectionsPanel(QWidget):
         # Ask for conflict handling strategy
         reply = QMessageBox.question(
             self,
-            "File Conflict Handling",
-            f"How to handle existing files?\n\n"
-            f"Yes = Overwrite existing files\n"
-            f"No = Skip existing files\n"
+            "Conflict Handling",
+            f"How to handle existing files/folders?\n\n"
+            f"Yes = Overwrite existing\n"
+            f"No = Skip existing\n"
             f"Cancel = Rename duplicates",
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
         )
@@ -351,42 +351,69 @@ class CollectionsPanel(QWidget):
         else:
             conflict_mode = "rename"
         
-        # Copy files with progress
-        copied = 0
+        # Copy items with progress
+        copied_files = 0
+        copied_folders = 0
         skipped = 0
         errors = []
         
-        for file_path in files:
-            src = Path(file_path)
+        for item_path in items:
+            src = Path(item_path)
             dest = dest_path / src.name
             
             try:
-                # Handle conflicts
-                if dest.exists():
-                    if conflict_mode == "skip":
-                        skipped += 1
-                        continue
-                    elif conflict_mode == "rename":
-                        # Find unique name
-                        counter = 1
-                        stem = dest.stem
-                        suffix = dest.suffix
-                        while dest.exists():
-                            dest = dest_path / f"{stem}_{counter}{suffix}"
-                            counter += 1
-                
-                # Copy file
-                shutil.copy2(src, dest)
-                copied += 1
+                # Check if it's a folder or file
+                if src.is_dir():
+                    # Handle folder conflicts
+                    if dest.exists():
+                        if conflict_mode == "skip":
+                            skipped += 1
+                            continue
+                        elif conflict_mode == "rename":
+                            # Find unique name for folder
+                            counter = 1
+                            base_name = dest.name
+                            while dest.exists():
+                                dest = dest_path / f"{base_name}_{counter}"
+                                counter += 1
+                        elif conflict_mode == "overwrite":
+                            # Remove existing folder
+                            shutil.rmtree(dest)
+                    
+                    # Copy entire folder recursively
+                    shutil.copytree(src, dest)
+                    copied_folders += 1
+                    
+                else:
+                    # Handle file conflicts
+                    if dest.exists():
+                        if conflict_mode == "skip":
+                            skipped += 1
+                            continue
+                        elif conflict_mode == "rename":
+                            # Find unique name for file
+                            counter = 1
+                            stem = dest.stem
+                            suffix = dest.suffix
+                            while dest.exists():
+                                dest = dest_path / f"{stem}_{counter}{suffix}"
+                                counter += 1
+                    
+                    # Copy file
+                    shutil.copy2(src, dest)
+                    copied_files += 1
                 
             except Exception as e:
                 errors.append(f"{src.name}: {str(e)}")
         
         # Show results
         msg = f"Export complete!\n\n"
-        msg += f"Copied: {copied} file(s)\n"
+        if copied_files > 0:
+            msg += f"Copied: {copied_files} file(s)\n"
+        if copied_folders > 0:
+            msg += f"Copied: {copied_folders} folder(s)\n"
         if skipped > 0:
-            msg += f"Skipped: {skipped} file(s)\n"
+            msg += f"Skipped: {skipped} item(s)\n"
         if errors:
             msg += f"\nErrors ({len(errors)}):\n" + "\n".join(errors[:5])
             if len(errors) > 5:
@@ -395,13 +422,13 @@ class CollectionsPanel(QWidget):
         QMessageBox.information(self, "Export Complete", msg)
         
         if DEBUG_MODE:
-            print(f"[CollectionsPanel] Exported {copied} files from '{collection_name}' to {dest_folder}")
+            print(f"[CollectionsPanel] Exported {copied_files} files and {copied_folders} folders from '{collection_name}' to {dest_folder}")
     
     def add_files_to_collection(self, collection_name: str, file_paths: list):
-        """Add files to a collection"""
+        """Add files and folders to a collection"""
         collection = self.collection_manager.get_collection(collection_name)
         if not isinstance(collection, ManualCollection):
-            QMessageBox.warning(self, "Error", "Can only add files to manual collections")
+            QMessageBox.warning(self, "Error", "Can only add items to manual collections")
             return
         
         collection.add_files(file_paths)
@@ -409,14 +436,14 @@ class CollectionsPanel(QWidget):
         self.refresh_collections_list()
         
         if DEBUG_MODE:
-            print(f"[CollectionsPanel] Added {len(file_paths)} file(s) to {collection_name}")
+            print(f"[CollectionsPanel] Added {len(file_paths)} item(s) to {collection_name}")
     
     def on_files_dropped(self, collection_name: str, file_paths: list):
-        """Handle files dropped onto collection (via middle-button drag)"""
+        """Handle files and folders dropped onto collection (via middle-button drag)"""
         collection = self.collection_manager.get_collection(collection_name)
         
         if not isinstance(collection, ManualCollection):
-            QMessageBox.warning(self, "Error", "Can only add files to manual collections")
+            QMessageBox.warning(self, "Error", "Can only add items to manual collections")
             return
         
         # Add files to collection

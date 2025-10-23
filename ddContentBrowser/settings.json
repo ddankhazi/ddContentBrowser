@@ -37,7 +37,7 @@
         "max_recursive_files": 10000
     },
     "browser_state": {
-        "sort_column": "type",
+        "sort_column": "size",
         "sort_ascending": true,
         "filter_file_types": [],
         "show_folders": true,
