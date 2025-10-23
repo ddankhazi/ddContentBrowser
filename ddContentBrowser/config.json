@@ -1,5 +1,6 @@
 {
   "recent_paths": [
+    "S:\\Dropbox\\3d_free_assets\\arnoldLibrary\\proxy",
     "S:\\Dropbox\\3d_free_assets\\VDB",
     "S:\\Dropbox\\3d_free_assets\\arnoldLibrary",
     "S:\\Megascans\\Library\\Downloaded\\surface\\grass_wild_oeeb70",
@@ -9,7 +10,6 @@
     "S:\\Dropbox\\3d_free_assets\\Textures\\Marbles\\Marble_01",
     "S:\\Dropbox\\3d_free_assets\\Textures\\Marbles",
     "S:\\Dropbox\\3d_free_assets\\Textures",
-    "S:\\Dropbox\\3d_free_assets\\arnoldLibrary\\proxy",
     "S:\\Dropbox\\3d_free_assets\\Textures\\Walls",
     "S:\\Dropbox\\3d_free_assets\\Textures\\Barks",
     "S:\\Download\\comics",
@@ -77,13 +77,13 @@
     ".txt"
   ],
   "show_images": true,
-  "last_path": "S:\\Dropbox\\3d_free_assets\\VDB",
-  "window_geometry": "AdnQywADAAAAAAAA////+AAACf8AAAVvAAACowAAANIAAAmYAAAEnwAAAAACAAAACgAAAAAAAAAAFwAACf8AAAVv",
-  "view_mode": "grid",
+  "last_path": "S:\\Dropbox\\3d_free_assets\\arnoldLibrary\\proxy",
+  "window_geometry": "AdnQywADAAAAAAoA////+AAAE/8AAAVvAAACowAAANIAAAmYAAAEnwAAAAECAAAACgAAAAoAAAAAFwAAE/8AAAVv",
+  "view_mode": "list",
   "preview_panel_visible": true,
   "splitter_position": "AAAA/wAAAAEAAAADAAABXAAABXwAAAMaAf////8BAAAAAQA=",
-  "grid_thumbnail_size": 160,
-  "list_thumbnail_size": 24,
+  "grid_thumbnail_size": 64,
+  "list_thumbnail_size": 32,
   "nav_splitter_position": "AAAA/wAAAAEAAAACAAABzAAAAdIB/////wEAAAACAA==",
   "nav_top_tabs_order": [
     "Favourites",
