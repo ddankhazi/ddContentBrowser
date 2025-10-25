@@ -448,7 +448,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def setup_ui(self):
         """Setup UI"""
-        self.setWindowTitle("DD Content Browser")
+        self.setWindowTitle("Content Browser for Maya 1.0 by Denes Dankhazi")
         self.setMinimumSize(800, 600)
         
         # Create menu bar
@@ -658,6 +658,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.favorites_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)  # Enable multi-select
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self.show_favorites_context_menu)
+        
+        # Enable drag-and-drop reordering with middle mouse button (Maya style)
+        self.favorites_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.favorites_list.setDefaultDropAction(Qt.MoveAction)
+        self.favorites_list.setDragEnabled(False)  # Disabled by default, enabled on MMB press
+        
+        # Install event filter for middle mouse button drag
+        self.favorites_list.viewport().installEventFilter(self)
+        
+        # Connect model change to save new order
+        self.favorites_list.model().rowsMoved.connect(self.on_favorites_reordered)
+        
         fav_layout.addWidget(self.favorites_list)
         self.nav_top_tab_widgets["Favourites"] = fav_widget
         
@@ -1639,6 +1651,24 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if Path(path).exists():
                 self.favorites_list.addItem(path)
     
+    def on_favorites_reordered(self, parent, start, end, destination, row):
+        """Handle favorites list reordering - save new order to config"""
+        # Read current order from list widget
+        new_order = []
+        for i in range(self.favorites_list.count()):
+            item = self.favorites_list.item(i)
+            if item:
+                new_order.append(item.text())
+        
+        # Update config with new order
+        self.config.config["favorites"] = new_order
+        self.config.save_config()
+        
+        if DEBUG_MODE:
+            print(f"[Browser] Favorites reordered: {len(new_order)} items")
+        
+        self.safe_show_status("Favorites order saved", 2000)
+    
     def show_favorites_context_menu(self, position):
         """Show context menu for favorites list"""
         # Get selected items (can be multiple)
@@ -2420,9 +2450,35 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     # ========== Quick View System ==========
     
     def eventFilter(self, obj, event):
-        """Event filter for handling Ctrl+Scroll zoom AND Space key for Quick View"""
-        # Check if event is from file list or its viewport
-        if obj == self.file_list or obj == self.file_list.viewport():
+        """Event filter for handling Ctrl+Scroll zoom, Space key for Quick View, AND MMB drag for Favorites reordering"""
+        # === FAVORITES LIST MIDDLE MOUSE BUTTON DRAG ===
+        if hasattr(self, 'favorites_list') and obj == self.favorites_list.viewport():
+            # Middle mouse button press - enable drag
+            if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                self.favorites_list.setDragEnabled(True)
+                # Start drag with middle button (simulate left button press for drag)
+                # Store that we're in MMB drag mode
+                self._favorites_mmb_dragging = True
+                if DEBUG_MODE:
+                    print("[Browser] Favorites MMB drag enabled")
+                return False  # Let Qt handle the drag
+            
+            # Middle mouse button release - disable drag
+            if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == Qt.MiddleButton:
+                self.favorites_list.setDragEnabled(False)
+                self._favorites_mmb_dragging = False
+                if DEBUG_MODE:
+                    print("[Browser] Favorites MMB drag disabled")
+                return False
+            
+            # If we're in MMB drag mode and mouse moves, this might be a drag operation
+            if event.type() == QtCore.QEvent.MouseMove and getattr(self, '_favorites_mmb_dragging', False):
+                # Qt will handle the drag, just ensure it's enabled
+                if not self.favorites_list.dragEnabled():
+                    self.favorites_list.setDragEnabled(True)
+        
+        # Check if event is from file list or its viewport (only if file_list exists)
+        if hasattr(self, 'file_list') and (obj == self.file_list or obj == self.file_list.viewport()):
             # === CTRL+SCROLL ZOOM ===
             # Check for wheel event with Ctrl modifier
             try:

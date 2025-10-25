@@ -16,6 +16,9 @@ __all__ = [
 # UI Font - Default value (matches Windows/Maya UI)
 UI_FONT = "Segoe UI"
 
+# Debug flag - set to False to disable verbose logging
+DEBUG_MODE = False
+
 import os
 import sys
 import time
@@ -575,7 +578,8 @@ class ThumbnailGenerator(QThread):
             
             # Special handling for HDR/TIFF/TGA files - use OpenCV for better format support
             elif extension in ['.hdr', '.tif', '.tiff', '.tga']:
-                print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
+                if DEBUG_MODE:
+                    print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
                 try:
                     # Try OpenCV first for 16-bit/32-bit TIFF and HDR/EXR support
                     import cv2
@@ -589,21 +593,25 @@ class ThumbnailGenerator(QThread):
                     if has_non_ascii:
                         # Use buffer method for non-ASCII paths (ékezetes karakterek)
                         try:
-                            print(f"[THUMB] Using buffer method (non-ASCII path)")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Using buffer method (non-ASCII path)")
                             with open(file_path_str, 'rb') as f:
                                 file_bytes = np.frombuffer(f.read(), np.uint8)
                             img = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
                         except Exception as e:
-                            print(f"[THUMB] Buffer decode failed: {e}")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Buffer decode failed: {e}")
                     else:
                         # ASCII-only path, use direct imread
                         try:
                             img = cv2.imread(file_path_str, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
                         except Exception as e:
-                            print(f"[THUMB] OpenCV imread failed: {e}")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] OpenCV imread failed: {e}")
                     
                     if img is None:
-                        print(f"[THUMB] First attempt failed, trying IMREAD_COLOR...")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] First attempt failed, trying IMREAD_COLOR...")
                         # Try alternative loading method
                         if has_non_ascii:
                             try:
@@ -611,12 +619,14 @@ class ThumbnailGenerator(QThread):
                                     file_bytes = np.frombuffer(f.read(), np.uint8)
                                 img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                             except Exception as e:
-                                print(f"[THUMB] Buffer COLOR decode failed: {e}")
+                                if DEBUG_MODE:
+                                    print(f"[THUMB] Buffer COLOR decode failed: {e}")
                         else:
                             try:
                                 img = cv2.imread(file_path_str, cv2.IMREAD_COLOR)
                             except Exception as e:
-                                print(f"[THUMB] OpenCV COLOR imread failed: {e}")
+                                if DEBUG_MODE:
+                                    print(f"[THUMB] OpenCV COLOR imread failed: {e}")
                     
                     if img is None:
                         raise Exception("OpenCV could not load the image")
@@ -624,14 +634,17 @@ class ThumbnailGenerator(QThread):
                     # Check channel count
                     if len(img.shape) == 3:
                         channels = img.shape[2]
-                        print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, {channels} channels, dtype={img.dtype}")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, {channels} channels, dtype={img.dtype}")
                         
                         # Handle unsupported channel counts (e.g., 5-channel TIFF)
                         if channels > 4:
-                            print(f"[THUMB] Unsupported {channels} channels, extracting first 4...")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Unsupported {channels} channels, extracting first 4...")
                             img = img[:, :, :4]  # Keep only first 4 channels
                     else:
-                        print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, grayscale, dtype={img.dtype}")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, grayscale, dtype={img.dtype}")
                     
                     # Normalize bit depth FIRST (before color conversion!)
                     if img.dtype == np.uint16:
@@ -653,7 +666,8 @@ class ThumbnailGenerator(QThread):
                         # BGR - convert to RGB
                         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     
-                    print(f"[THUMB] Converted to RGB: {img.shape[1]}×{img.shape[0]}")
+                    if DEBUG_MODE:
+                        print(f"[THUMB] Converted to RGB: {img.shape[1]}×{img.shape[0]}")
                     
                     # Resize for thumbnail
                     height, width = img.shape[:2]
@@ -662,7 +676,8 @@ class ThumbnailGenerator(QThread):
                         new_width = int(width * scale)
                         new_height = int(height * scale)
                         img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-                        print(f"[THUMB] Resized to: {new_width}×{new_height}")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Resized to: {new_width}×{new_height}")
                     
                     # Convert numpy array to QPixmap
                     height, width, channels = img.shape
@@ -677,26 +692,30 @@ class ThumbnailGenerator(QThread):
                     pixmap = QPixmap.fromImage(q_image.copy())
                     
                     if not pixmap.isNull():
-                        print(f"[THUMB] ✓ Successfully created thumbnail")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] ✓ Successfully created thumbnail")
                         return pixmap
                     else:
                         raise Exception("Failed to convert to QPixmap")
                         
                 except Exception as e:
                     # Try multiple fallback methods
-                    print(f"[THUMB] OpenCV failed: {e}")
+                    if DEBUG_MODE:
+                        print(f"[THUMB] OpenCV failed: {e}")
                     pixmap = None
                     
                     # For multi-channel images, always try PIL/Pillow as fallback
                     # (OpenCV prints errors to stderr, not in exception message)
-                    print(f"[THUMB] Trying PIL/Pillow fallback for special format...")
+                    if DEBUG_MODE:
+                        print(f"[THUMB] Trying PIL/Pillow fallback for special format...")
                     try:
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
                         pil_image = Image.open(str(file_path))
                         
-                        print(f"[THUMB] PIL loaded: {pil_image.size}, mode={pil_image.mode}")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] PIL loaded: {pil_image.size}, mode={pil_image.mode}")
                         
                         # Convert to RGB (discard extra channels)
                         if pil_image.mode not in ('RGB', 'L'):
