@@ -487,7 +487,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.create_browser_panel(self.content_splitter)
         
         # Right panel - Preview (initially visible)
-        self.preview_panel = PreviewPanel(config=self.config)
+        self.preview_panel = PreviewPanel(self.settings_manager, config=self.config)
         self.content_splitter.addWidget(self.preview_panel)
         
         # Set splitter initial sizes (20% nav, 50% browser, 30% preview)
@@ -517,7 +517,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Safely show status bar message, handling deleted widget cases"""
         try:
             if hasattr(self, 'status_bar') and self.status_bar is not None:
-                self.safe_show_status(message, timeout)
+                self.status_bar.showMessage(message, timeout)
         except RuntimeError:
             # C++ object already deleted, safely ignore
             pass
@@ -861,8 +861,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_list.setUniformItemSizes(False)
         self.file_list.setSpacing(5)
         
-        # Enable drag and drop (only middle button will trigger drag)
-        self.file_list.setDragEnabled(False)  # Disable default drag - we handle it manually
+        # Enable drag and drop
+        # LEFT BUTTON (default) = Box selection (rubber band drag)
+        # ALT + LEFT BUTTON = Standard Maya file drag-and-drop
+        # CTRL/SHIFT + CLICK = Selection modifiers (Qt built-in)
+        # MIDDLE BUTTON = Batch import dialog (handled in MayaStyleListView)
+        self.file_list.setDragEnabled(False)  # Disabled by default, enabled when Alt pressed
+        self.file_list.setDragDropMode(QtWidgets.QAbstractItemView.DragOnly)  # Only drag, no drop into list itself
         self.file_list.setAcceptDrops(True)
         self.file_list.setDropIndicatorShown(True)
         self.file_list.setDefaultDropAction(Qt.CopyAction)
@@ -890,6 +895,25 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_list.viewport().installEventFilter(self)
         
         browser_layout.addWidget(self.file_list)
+        
+        # Info bar (selection info + controls hint)
+        info_bar_layout = QtWidgets.QHBoxLayout()
+        info_bar_layout.setContentsMargins(5, 2, 5, 2)
+        info_bar_layout.setSpacing(10)
+        
+        # Left: Selection info
+        self.selection_info_label = QtWidgets.QLabel("")
+        self.selection_info_label.setStyleSheet("color: #aaa; font-size: 11px; padding: 2px;")
+        info_bar_layout.addWidget(self.selection_info_label)
+        
+        info_bar_layout.addStretch()
+        
+        # Right: Controls hint
+        controls_hint = QtWidgets.QLabel("💡 LMB: Selection  |  Alt+LMB+Drag: Standard Import  |  MMB+Drag: Batch Import")
+        controls_hint.setStyleSheet("color: #888; font-size: 11px; padding: 2px;")
+        info_bar_layout.addWidget(controls_hint)
+        
+        browser_layout.addLayout(info_bar_layout)
         
         # Action buttons
         button_layout = QtWidgets.QHBoxLayout()
@@ -1061,12 +1085,6 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.reference_btn.clicked.connect(self.reference_selected_file)
         self.open_btn.clicked.connect(self.open_selected_files)
         self.add_favorite_btn.clicked.connect(self.add_current_to_favorites)
-        
-        # Connect collection drag-leave signal to file list
-        # This allows the file list to reset when leaving collection area during drag
-        self.collections_panel.collections_list.drag_left_collection.connect(
-            self.on_drag_left_collection
-        )
         
         # Initialize sort indicators now that file_model exists
         self.update_sort_indicators()
@@ -1292,8 +1310,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.file_list.setViewMode(QtWidgets.QListView.IconMode)
             self.file_list.setFlow(QtWidgets.QListView.LeftToRight)
             self.file_list.setWrapping(True)
-            # FIX: Prevent thumbnails from being draggable/movable in grid
-            self.file_list.setMovement(QtWidgets.QListView.Static)
+            # Allow drag but prevent item repositioning in grid
+            # Use Snap movement - allows drag-and-drop but items snap back to grid positions
+            self.file_list.setMovement(QtWidgets.QListView.Snap)
             self.size_slider.setEnabled(True)
             # Show sort header in grid mode too (user requested)
             self.sort_header.show()
@@ -1707,6 +1726,32 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Handle file selection change - update preview panel (deferred)"""
         # Defer preview update slightly to not block selection
         QTimer.singleShot(10, self._update_preview_deferred)
+        
+        # Update selection info immediately
+        self.update_selection_info()
+    
+    def update_selection_info(self):
+        """Update selection info label (left side of info bar)"""
+        assets = self.get_selected_assets()
+        count = len(assets)
+        
+        if count == 0:
+            self.selection_info_label.setText("")
+        else:
+            # Count files and folders separately
+            file_count = sum(1 for asset in assets if not asset.is_folder)
+            folder_count = sum(1 for asset in assets if asset.is_folder)
+            
+            parts = []
+            if file_count > 0:
+                parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
+            if folder_count > 0:
+                parts.append(f"{folder_count} folder{'s' if folder_count != 1 else ''}")
+            
+            if parts:
+                self.selection_info_label.setText(" + ".join(parts) + " selected")
+            else:
+                self.selection_info_label.setText(f"{count} selected")
     
     def _update_preview_deferred(self):
         """Deferred preview update (doesn't block selection)"""
@@ -2471,12 +2516,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 self.quick_view_window.show()
                 self.quick_view_window.raise_()
                 
-                # DON'T activate window - keep focus on browser for keyboard navigation
-                # self.quick_view_window.activateWindow()
-                
-                # Ensure browser keeps focus
-                self.activateWindow()
-                self.file_list.setFocus()
+                # Focus behavior: In Maya, keep focus on browser for keyboard navigation
+                # In standalone, let Quick View get focus for better UX
+                if MAYA_AVAILABLE:
+                    # DON'T activate Quick View - keep focus on browser
+                    self.activateWindow()
+                    self.file_list.setFocus()
+                else:
+                    # Standalone: activate Quick View for immediate keyboard control
+                    self.quick_view_window.activateWindow()
                 
                 if DEBUG_MODE:
                     if DEBUG_MODE:
@@ -3145,17 +3193,6 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         if DEBUG_MODE:
             if DEBUG_MODE:
                 print("[Browser] Cleared collection filter")
-    
-    def on_drag_left_collection(self):
-        """Handle when drag leaves collection area - reset file list drag state"""
-        # Reset the drag_to_collection flag on the file list
-        # This allows batch import to work again when dragging to Maya
-        if hasattr(self.file_list, 'drag_to_collection'):
-            self.file_list.drag_to_collection = False
-            # Restore the closed hand cursor to show we're still in drag mode
-            self.file_list.setCursor(Qt.ClosedHandCursor)
-            if DEBUG_MODE:
-                print("[Browser] Drag left collection area - reset to batch import mode")
     
     def add_collection_submenu(self, parent_menu, selected_assets):
         """Add 'Add to Collection >' submenu with list of manual collections"""

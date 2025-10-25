@@ -64,7 +64,7 @@ FILE_TYPE_REGISTRY = {
         "label": "Maya Files",
         "filter_label": "Maya Files (.ma/.mb)",
         "importable": True,
-        "generate_thumbnail": True,
+        "generate_thumbnail": False,  # Delegate draws gradient
         "is_3d": True
     },
     "3d_models": {
@@ -72,7 +72,7 @@ FILE_TYPE_REGISTRY = {
         "label": "3D Models",
         "filter_label": "3D Models (.obj/.fbx/.abc/.usd/.vdb/ .dae/ .stl)",
         "importable": True,
-        "generate_thumbnail": True,
+        "generate_thumbnail": False,  # Delegate draws gradient
         "is_3d": True
     },
     "blender": {
@@ -80,7 +80,7 @@ FILE_TYPE_REGISTRY = {
         "label": "Blender Files",
         "filter_label": "Blender (.blend)",
         "importable": False,  # Not directly importable to Maya
-        "generate_thumbnail": True,
+        "generate_thumbnail": False,  # Delegate draws gradient
         "is_3d": True
     },
     "houdini": {
@@ -88,7 +88,7 @@ FILE_TYPE_REGISTRY = {
         "label": "Houdini Digital Assets",
         "filter_label": "Houdini HDA (.hda)",
         "importable": True,
-        "generate_thumbnail": True,
+        "generate_thumbnail": False,  # Delegate draws gradient
         "is_3d": True
     },
     "substance": {
@@ -96,7 +96,7 @@ FILE_TYPE_REGISTRY = {
         "label": "Substance Archive",
         "filter_label": "Shaders (.sbsar)",
         "importable": True,
-        "generate_thumbnail": True,
+        "generate_thumbnail": False,  # Delegate draws gradient
         "is_3d": False
     },
     "images": {

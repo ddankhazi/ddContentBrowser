@@ -17,11 +17,33 @@ __all__ = [
 UI_FONT = "Segoe UI"
 
 import os
+import sys
 import time
 import hashlib
 import json
 from pathlib import Path
 from datetime import datetime
+
+# Suppress OpenCV error messages for unsupported formats
+# (We handle them gracefully with PIL fallback)
+os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
+if hasattr(sys, 'stderr'):
+    # Redirect stderr temporarily to suppress OpenCV errors
+    original_stderr = sys.stderr
+    
+    class SuppressedStderr:
+        def write(self, text):
+            # Only suppress OpenCV TIFF errors, pass through others
+            if "opencv" in text.lower() and "channels" in text.lower():
+                return
+            if "cv::imread_" in text and "can't read header" in text:
+                return
+            original_stderr.write(text)
+        
+        def flush(self):
+            original_stderr.flush()
+    
+    sys.stderr = SuppressedStderr()
 
 try:
     from PySide6.QtCore import QThread, Signal, Qt
@@ -40,72 +62,19 @@ def apply_exif_orientation(pixmap, file_path):
     Apply EXIF orientation to pixmap (auto-rotate based on camera orientation)
     FOR PREVIEW AND ZOOM MODE (+90° adjustment)
     
-    EXIF Orientation values:
-    1 = Normal (0°)
-    2 = Flip horizontal
-    3 = Rotate 180°
-    4 = Flip vertical
-    5 = Transpose (flip horizontal + rotate 270° CW)
-    6 = Rotate 270° CW (or 90° CCW)
-    7 = Transverse (flip horizontal + rotate 90° CW)
-    8 = Rotate 90° CW (or 270° CCW)
+    NOTE: This function is now DEPRECATED - use QImageReader.setAutoTransform(True) instead!
+    Kept for backward compatibility only.
     
     Args:
         pixmap: QPixmap to transform
         file_path: Path to image file (to read EXIF)
     
     Returns:
-        Transformed QPixmap or original if no rotation needed
+        Original pixmap unchanged (EXIF handling now done by QImageReader)
     """
-    try:
-        from PIL import Image
-        
-        # Open image and get EXIF orientation
-        img = Image.open(str(file_path))
-        exif = img._getexif()
-        
-        if not exif or 274 not in exif:
-            return pixmap  # No orientation tag
-        
-        orientation = exif[274]
-        
-        if orientation == 1:
-            return pixmap  # Normal, no rotation needed
-        
-        # Create transform
-        transform = QTransform()
-        
-        if orientation == 2:
-            # Flip horizontal, then rotate 90° CW
-            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
-            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
-        elif orientation == 3:
-            # Rotate 180°, then rotate 90° CW = 270° CW total
-            pixmap = pixmap.transformed(QTransform().rotate(270), Qt.SmoothTransformation)
-        elif orientation == 4:
-            # Flip vertical, then rotate 90° CW
-            pixmap = pixmap.transformed(QTransform().scale(1, -1), Qt.SmoothTransformation)
-            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
-        elif orientation == 5:
-            # Flip horizontal only, then rotate 90° CW
-            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
-            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
-        elif orientation == 6:
-            # Rotate 90° CW (was 0°, now +90°) - most common for portrait photos
-            pixmap = pixmap.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
-        elif orientation == 7:
-            # Flip horizontal, then rotate 90° CW twice = 180° total
-            pixmap = pixmap.transformed(QTransform().scale(-1, 1), Qt.SmoothTransformation)
-            pixmap = pixmap.transformed(QTransform().rotate(180), Qt.SmoothTransformation)
-        elif orientation == 8:
-            # Rotate 180°, then rotate 90° CW = 270° CW total
-            pixmap = pixmap.transformed(QTransform().rotate(270), Qt.SmoothTransformation)
-        
-        return pixmap
-        
-    except Exception as e:
-        # If PIL not available or any error, return original
-        return pixmap
+    # QImageReader.setAutoTransform(True) handles EXIF orientation automatically
+    # This function is no longer needed but kept for compatibility
+    return pixmap
 
 
 def apply_exif_orientation_thumbnail(pixmap, file_path):
@@ -437,6 +406,17 @@ class ThumbnailGenerator(QThread):
         self.processed_count = 0  # Track how many we've processed
         self.total_count = 0      # Track total in current batch
         
+        # Increase Qt image allocation limit from 256MB to 1024MB (1GB)
+        # This allows loading very large images (e.g., 8K textures)
+        try:
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtGui import QImageReader
+            else:
+                from PySide2.QtGui import QImageReader
+            QImageReader.setAllocationLimit(1024)  # 1024 MB = 1 GB
+        except Exception as e:
+            print(f"[Cache] Could not set image allocation limit: {e}")
+        
     def add_to_queue(self, file_path, file_mtime, priority=False):
         """Add file to generation queue with optional priority"""
         # Check if already in queue
@@ -562,13 +542,21 @@ class ThumbnailGenerator(QThread):
             if extension == '.pdf':
                 try:
                     from .widgets import load_pdf_page
-                    pixmap, _, _ = load_pdf_page(file_path, page_number=0, max_size=self.thumbnail_size)
+                    pixmap, page_count, status = load_pdf_page(file_path, page_number=0, max_size=self.thumbnail_size)
+                    
+                    # Check if PDF is encrypted
+                    if status == "encrypted":
+                        # Password protected PDF - use default icon without extra error message
+                        return self._get_default_icon(file_path)
+                    
                     if pixmap and not pixmap.isNull():
                         return pixmap
                     else:
                         raise Exception("PDF loader returned null pixmap")
                 except Exception as e:
-                    print(f"[Cache] PDF loading failed: {e}, using default icon...")
+                    # Only print error for non-encrypted PDFs
+                    if "encrypted" not in str(e).lower():
+                        print(f"[Cache] PDF loading failed: {e}, using default icon...")
                     return self._get_default_icon(file_path)
             
             # Special handling for EXR files - use dedicated EXR loader
@@ -585,31 +573,67 @@ class ThumbnailGenerator(QThread):
                     print(f"[Cache] EXR loading failed: {e}, trying QPixmap fallback...")
                     # Fall through to QPixmap method below
             
-            # Special handling for HDR/TIFF files - use OpenCV for better format support
-            elif extension in ['.hdr', '.tif', '.tiff']:
+            # Special handling for HDR/TIFF/TGA files - use OpenCV for better format support
+            elif extension in ['.hdr', '.tif', '.tiff', '.tga']:
+                print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
                 try:
                     # Try OpenCV first for 16-bit/32-bit TIFF and HDR/EXR support
                     import cv2
                     import numpy as np
                     
-                    # Read image with OpenCV (supports 16-bit and 32-bit TIFF)
-                    img = cv2.imread(str(file_path), cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                    # OpenCV can't handle Unicode paths, check for non-ASCII first
+                    file_path_str = str(file_path)
+                    has_non_ascii = any(ord(c) > 127 for c in file_path_str)
+                    
+                    img = None
+                    if has_non_ascii:
+                        # Use buffer method for non-ASCII paths (ékezetes karakterek)
+                        try:
+                            print(f"[THUMB] Using buffer method (non-ASCII path)")
+                            with open(file_path_str, 'rb') as f:
+                                file_bytes = np.frombuffer(f.read(), np.uint8)
+                            img = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                        except Exception as e:
+                            print(f"[THUMB] Buffer decode failed: {e}")
+                    else:
+                        # ASCII-only path, use direct imread
+                        try:
+                            img = cv2.imread(file_path_str, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                        except Exception as e:
+                            print(f"[THUMB] OpenCV imread failed: {e}")
+                    
+                    if img is None:
+                        print(f"[THUMB] First attempt failed, trying IMREAD_COLOR...")
+                        # Try alternative loading method
+                        if has_non_ascii:
+                            try:
+                                with open(file_path_str, 'rb') as f:
+                                    file_bytes = np.frombuffer(f.read(), np.uint8)
+                                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                            except Exception as e:
+                                print(f"[THUMB] Buffer COLOR decode failed: {e}")
+                        else:
+                            try:
+                                img = cv2.imread(file_path_str, cv2.IMREAD_COLOR)
+                            except Exception as e:
+                                print(f"[THUMB] OpenCV COLOR imread failed: {e}")
                     
                     if img is None:
                         raise Exception("OpenCV could not load the image")
                     
-                    # Convert to RGB if needed
-                    if len(img.shape) == 2:
-                        # Grayscale - convert to RGB
-                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                    elif img.shape[2] == 4:
-                        # RGBA - convert to RGB
-                        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
-                    elif img.shape[2] == 3:
-                        # BGR - convert to RGB
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    # Check channel count
+                    if len(img.shape) == 3:
+                        channels = img.shape[2]
+                        print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, {channels} channels, dtype={img.dtype}")
+                        
+                        # Handle unsupported channel counts (e.g., 5-channel TIFF)
+                        if channels > 4:
+                            print(f"[THUMB] Unsupported {channels} channels, extracting first 4...")
+                            img = img[:, :, :4]  # Keep only first 4 channels
+                    else:
+                        print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, grayscale, dtype={img.dtype}")
                     
-                    # Normalize to 0-255 range for display
+                    # Normalize bit depth FIRST (before color conversion!)
                     if img.dtype == np.uint16:
                         # 16-bit image - normalize to 8-bit
                         img = (img / 256).astype(np.uint8)
@@ -618,6 +642,19 @@ class ThumbnailGenerator(QThread):
                         img = np.clip(img, 0, 1)  # Clip to 0-1 range
                         img = (img * 255).astype(np.uint8)
                     
+                    # NOW convert to RGB (after normalization)
+                    if len(img.shape) == 2:
+                        # Grayscale - convert to RGB
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                    elif len(img.shape) == 3 and img.shape[2] == 4:
+                        # RGBA - convert to RGB
+                        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+                    elif len(img.shape) == 3 and img.shape[2] == 3:
+                        # BGR - convert to RGB
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    
+                    print(f"[THUMB] Converted to RGB: {img.shape[1]}×{img.shape[0]}")
+                    
                     # Resize for thumbnail
                     height, width = img.shape[:2]
                     if width > self.thumbnail_size or height > self.thumbnail_size:
@@ -625,6 +662,7 @@ class ThumbnailGenerator(QThread):
                         new_width = int(width * scale)
                         new_height = int(height * scale)
                         img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                        print(f"[THUMB] Resized to: {new_width}×{new_height}")
                     
                     # Convert numpy array to QPixmap
                     height, width, channels = img.shape
@@ -639,13 +677,100 @@ class ThumbnailGenerator(QThread):
                     pixmap = QPixmap.fromImage(q_image.copy())
                     
                     if not pixmap.isNull():
+                        print(f"[THUMB] ✓ Successfully created thumbnail")
                         return pixmap
                     else:
                         raise Exception("Failed to convert to QPixmap")
                         
                 except Exception as e:
-                    print(f"[Cache] OpenCV loading failed for {extension}: {e}, trying QPixmap fallback...")
-                    # Fall through to QPixmap method below
+                    # Try multiple fallback methods
+                    print(f"[THUMB] OpenCV failed: {e}")
+                    pixmap = None
+                    
+                    # For multi-channel images, always try PIL/Pillow as fallback
+                    # (OpenCV prints errors to stderr, not in exception message)
+                    print(f"[THUMB] Trying PIL/Pillow fallback for special format...")
+                    try:
+                        from PIL import Image
+                        # Disable decompression bomb warning for large images
+                        Image.MAX_IMAGE_PIXELS = None
+                        pil_image = Image.open(str(file_path))
+                        
+                        print(f"[THUMB] PIL loaded: {pil_image.size}, mode={pil_image.mode}")
+                        
+                        # Convert to RGB (discard extra channels)
+                        if pil_image.mode not in ('RGB', 'L'):
+                            print(f"[THUMB] Converting {pil_image.mode} to RGB...")
+                            pil_image = pil_image.convert('RGB')
+                        elif pil_image.mode == 'L':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        # Resize
+                        pil_image.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                        
+                        # Convert to QPixmap
+                        import numpy as np
+                        img_array = np.array(pil_image)
+                        height, width = img_array.shape[:2]
+                        channels = img_array.shape[2] if len(img_array.shape) == 3 else 1
+                        
+                        if PYSIDE_VERSION == 6:
+                            from PySide6.QtGui import QImage
+                        else:
+                            from PySide2.QtGui import QImage
+                        
+                        if channels == 3:
+                            bytes_per_line = width * 3
+                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                            pixmap = QPixmap.fromImage(q_image.copy())
+                            print(f"[THUMB] ✓ PIL fallback successful: {width}×{height}")
+                            return pixmap
+                    except Exception as pil_error:
+                        print(f"[THUMB] PIL fallback also failed: {pil_error}")
+                        # Check if it's an unsupported multi-channel TIFF
+                        if "unknown pixel mode" in str(pil_error) or "KeyError" in str(pil_error):
+                            print(f"[THUMB] → Unsupported TIFF format (5+ channels), skipping: {file_path.name}")
+                    
+                    # Method 1: Try QImageReader with explicit format and increased limit
+                    try:
+                        if PYSIDE_VERSION == 6:
+                            from PySide6.QtGui import QImageReader, QImage
+                        else:
+                            from PySide2.QtGui import QImageReader, QImage
+                        
+                        reader = QImageReader(str(file_path))
+                        
+                        # Increase allocation limit for this reader (TGA files can be huge)
+                        reader.setAllocationLimit(2048)  # 2 GB limit
+                        
+                        # Force format detection
+                        if extension == '.tga':
+                            reader.setFormat(b'tga')
+                            print(f"[THUMB] QImageReader trying TGA with 2GB limit...")
+                        elif extension in ['.tif', '.tiff']:
+                            reader.setFormat(b'tiff')
+                        
+                        image = reader.read()
+                        if not image.isNull():
+                            pixmap = QPixmap.fromImage(image)
+                            print(f"[THUMB] ✓ QImageReader successful")
+                    except Exception as reader_error:
+                        print(f"[THUMB] QImageReader failed: {reader_error}")
+                    
+                    # Method 2: Standard QPixmap
+                    if pixmap is None or pixmap.isNull():
+                        pixmap = QPixmap(str(file_path))
+                    
+                    # If we got a valid pixmap, resize it
+                    if pixmap is not None and not pixmap.isNull():
+                        pixmap = pixmap.scaled(
+                            self.thumbnail_size,
+                            self.thumbnail_size,
+                            Qt.KeepAspectRatio,
+                            Qt.SmoothTransformation
+                        )
+                        return pixmap
+                    # Fall through to default handling below
             
             # Standard image files - use QPixmap (for 8-bit JPEG, PNG, etc.)
             # For very large images (16K+), try OpenCV first for better memory handling
@@ -658,8 +783,25 @@ class ThumbnailGenerator(QThread):
                     import cv2
                     import numpy as np
                     
-                    # Read only a smaller version for thumbnails
-                    img = cv2.imread(str(file_path), cv2.IMREAD_COLOR)
+                    # OpenCV can't handle Unicode paths, check for non-ASCII first
+                    file_path_str = str(file_path)
+                    has_non_ascii = any(ord(c) > 127 for c in file_path_str)
+                    
+                    img = None
+                    if has_non_ascii:
+                        # Use buffer method for non-ASCII paths (ékezetes karakterek)
+                        try:
+                            with open(file_path_str, 'rb') as f:
+                                file_bytes = np.frombuffer(f.read(), np.uint8)
+                            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                        except Exception as e:
+                            print(f"[Cache] Buffer decode failed: {e}")
+                    else:
+                        # ASCII-only path, use direct imread
+                        try:
+                            img = cv2.imread(file_path_str, cv2.IMREAD_COLOR)
+                        except:
+                            pass
                     
                     if img is not None:
                         # Convert BGR to RGB
@@ -686,9 +828,6 @@ class ThumbnailGenerator(QThread):
                         
                         pixmap = QPixmap.fromImage(q_image)
                         
-                        # Apply EXIF orientation for thumbnails (auto-rotate based on camera orientation)
-                        pixmap = apply_exif_orientation_thumbnail(pixmap, file_path)
-                        
                         return pixmap
             except Exception as e:
                 print(f"[Cache] OpenCV loading failed for large JPG: {e}, trying QPixmap...")
@@ -700,9 +839,6 @@ class ThumbnailGenerator(QThread):
                 # Failed to load, use default icon
                 print(f"[Cache] QPixmap failed to load: {file_path}")
                 return self._get_default_icon(file_path)
-            
-            # Apply EXIF orientation for thumbnails (auto-rotate based on camera orientation)
-            pixmap = apply_exif_orientation_thumbnail(pixmap, file_path)
             
             # Scale to thumbnail size (keep aspect ratio)
             scaled = pixmap.scaled(

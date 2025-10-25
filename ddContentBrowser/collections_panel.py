@@ -12,16 +12,16 @@ from pathlib import Path
 try:
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                    QListWidget, QListWidgetItem, QMenu, QInputDialog,
-                                   QMessageBox, QFileDialog)
-    from PySide6.QtCore import Qt, Signal
-    from PySide6.QtGui import QFont, QIcon, QColor
+                                   QMessageBox, QFileDialog, QStyledItemDelegate)
+    from PySide6.QtCore import Qt, Signal, QRect
+    from PySide6.QtGui import QFont, QIcon, QColor, QPainter
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                    QListWidget, QListWidgetItem, QMenu, QInputDialog,
-                                   QMessageBox, QFileDialog)
-    from PySide2.QtCore import Qt, Signal
-    from PySide2.QtGui import QFont, QIcon, QColor
+                                   QMessageBox, QFileDialog, QStyledItemDelegate)
+    from PySide2.QtCore import Qt, Signal, QRect
+    from PySide2.QtGui import QFont, QIcon, QColor, QPainter
     PYSIDE_VERSION = 2
 
 from .asset_collections import CollectionManager, ManualCollection, SmartCollection
@@ -32,6 +32,49 @@ UI_FONT = "Segoe UI"
 
 # Debug flag
 DEBUG_MODE = False
+
+
+class ColorBarDelegate(QStyledItemDelegate):
+    """Custom delegate to draw a colored bar on the left side of collection items"""
+    
+    def __init__(self, collection_manager, parent=None):
+        super().__init__(parent)
+        self.collection_manager = collection_manager
+    
+    def paint(self, painter, option, index):
+        # Get collection name from item data
+        collection_name = index.data(Qt.UserRole)
+        if collection_name:
+            # Get collection and its bg_color
+            collection = self.collection_manager.get_collection(collection_name)
+            if collection:
+                bg_color = getattr(collection, 'bg_color', None)
+                if bg_color:
+                    # Draw colored bar first, before the default item
+                    painter.save()
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(bg_color))
+                    
+                    # Bar: 6px wide on the left edge
+                    bar_rect = QRect(option.rect.left(), option.rect.top(), 6, option.rect.height())
+                    painter.drawRect(bar_rect)
+                    
+                    painter.restore()
+                    
+                    # Adjust option.rect to shift text to the right
+                    adjusted_option = option
+                    adjusted_option.rect = QRect(
+                        option.rect.left() + 12,  # Shift right by 12px
+                        option.rect.top(),
+                        option.rect.width() - 12,
+                        option.rect.height()
+                    )
+                    # Draw default item (text) with adjusted rect
+                    super().paint(painter, adjusted_option, index)
+                    return
+        
+        # Draw default item (text) normally if no color
+        super().paint(painter, option, index)
 
 
 class CollectionsPanel(QWidget):
@@ -72,6 +115,11 @@ class CollectionsPanel(QWidget):
         self.collections_list.itemClicked.connect(self.on_collection_clicked)
         self.collections_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.collections_list.customContextMenuRequested.connect(self.show_context_menu)
+        
+        # Set custom delegate for colored bar
+        self.color_bar_delegate = ColorBarDelegate(self.collection_manager, self.collections_list)
+        self.collections_list.setItemDelegate(self.color_bar_delegate)
+        
         # Maya-style selection color
         self.collections_list.setStyleSheet("""
             QListWidget::item:selected {
@@ -129,16 +177,13 @@ class CollectionsPanel(QWidget):
         # Add manual collections
         if manual_cols:
             for collection in manual_cols:
-                # Use a subtle gray folder symbol (▸ or ▶ or ▪)
-                item_text = f"▸ {collection.name}"
+                item_text = f"{collection.name}"
                 if isinstance(collection, ManualCollection):
                     file_count = len(collection.get_existing_files())
                     item_text += f" ({file_count})"
                 
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, collection.name)  # Store collection name
-                # Set gray color for the icon
-                item.setForeground(QColor(150, 150, 150))
                 self.collections_list.addItem(item)
         
         # Add smart collections (future)
@@ -195,49 +240,87 @@ class CollectionsPanel(QWidget):
         item = self.collections_list.itemAt(position)
         if not item:
             return
-        
         collection_name = item.data(Qt.UserRole)
         if not collection_name:
             return
-        
         collection = self.collection_manager.get_collection(collection_name)
         if not collection:
             return
-        
         menu = QMenu()
-        
         # Rename action
         rename_action = menu.addAction("Rename...")
-        
         # Delete action
         delete_action = menu.addAction("Delete")
-        
+        # Set background color (manual collections only)
+        if isinstance(collection, ManualCollection):
+            color_menu = QMenu("Set Background Color", self)
+            palette = [
+                ("Default", "#282828"),  # Dark gray (Maya default)
+                ("Sky Blue", "#87CEEB"),
+                ("Light Green", "#90EE90"),
+                ("Yellow", "#FFD700"),
+                ("Orange", "#FFA500"),
+                ("Coral", "#FF7F50"),
+                ("Lavender", "#E6E6FA"),
+                ("Pink", "#FFB6C1"),
+                ("Light Gray", "#D3D3D3"),
+                ("Mint", "#98FF98"),
+                ("Sand", "#F4A460"),
+                ("Aqua", "#00CED1")
+            ]
+            color_actions = []
+            for name, hexcode in palette:
+                act = color_menu.addAction(name)
+                if hexcode:
+                    act.setIcon(self.make_color_icon(hexcode))
+                color_actions.append((act, hexcode))
+            menu.addMenu(color_menu)
+        else:
+            color_menu = None
+            color_actions = []
         menu.addSeparator()
-        
         # Export to Folder action (manual collections only)
         if isinstance(collection, ManualCollection):
-            export_action = menu.addAction("📦 Export to Folder...")
+            export_action = menu.addAction("\U0001F4E6 Export to Folder...")
         else:
             export_action = None
-        
         # Cleanup action (manual collections only)
         if isinstance(collection, ManualCollection):
             menu.addSeparator()
             cleanup_action = menu.addAction("Clean up missing files")
         else:
             cleanup_action = None
-        
         # Execute menu
         action = menu.exec_(self.collections_list.mapToGlobal(position))
-        
         if action == rename_action:
             self.rename_collection(collection_name)
         elif action == delete_action:
             self.delete_collection(collection_name)
+        elif color_menu:
+            for act, hexcode in color_actions:
+                if action == act:
+                    self.set_collection_bg_color(collection_name, item, hexcode)
+                    break
         elif export_action and action == export_action:
             self.export_collection_to_folder(collection_name)
         elif cleanup_action and action == cleanup_action:
             self.cleanup_collection(collection_name)
+
+    def set_collection_bg_color(self, collection_name, item, hexcode):
+        from PySide6.QtGui import QColor
+        color = QColor(hexcode) if hexcode else QColor("#31363b")
+        collection = self.collection_manager.get_collection(collection_name)
+        if collection:
+            setattr(collection, 'bg_color', color.name())
+            self.collection_manager.save()
+            # Force refresh to update delegate rendering
+            self.refresh_collections_list()
+
+    def make_color_icon(self, hexcode):
+        from PySide6.QtGui import QIcon, QPixmap, QColor
+        pix = QPixmap(16, 16)
+        pix.fill(QColor(hexcode))
+        return QIcon(pix)
     
     def rename_collection(self, old_name: str):
         """Rename collection"""
@@ -462,7 +545,10 @@ class CollectionsPanel(QWidget):
             while browser and not hasattr(browser, 'status_bar'):
                 browser = browser.parent()
             if browser and hasattr(browser, 'status_bar'):
-                browser.status_bar.showMessage(
-                    f"Added {added_count} file(s) to '{collection_name}'",
-                    2000
-                )
+                try:
+                    browser.status_bar.showMessage(
+                        f"Added {added_count} file(s) to '{collection_name}'",
+                        2000
+                    )
+                except RuntimeError:
+                    pass  # Widget already deleted

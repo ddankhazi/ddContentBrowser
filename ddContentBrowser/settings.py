@@ -30,9 +30,10 @@ class SettingsManager:
     """Manages application settings with JSON persistence"""
     
     def __init__(self):
-        # Store settings in script directory (version controlled, updates with tool)
-        self.script_dir = Path(__file__).parent.resolve()
-        self.settings_file = self.script_dir / "settings.json"
+        # Store settings in user home directory for persistence across updates
+        self.settings_dir = Path.home() / ".ddContentBrowser"
+        self.settings_dir.mkdir(parents=True, exist_ok=True)
+        self.settings_file = self.settings_dir / "settings.json"
         self.settings = self.load_default_settings()
         self.load()
     
@@ -63,7 +64,8 @@ class SettingsManager:
                 "resolution": 1024,
                 "hdr_cache_size": 5,
                 "default_exposure": 0.0,
-                "auto_fit": True
+                "auto_fit": True,
+                "background_mode": "dark_gray"  # dark_gray, light_gray, checkered, black, white
             },
             # Filter settings
             "filters": {
@@ -120,8 +122,8 @@ class SettingsManager:
     def save(self):
         """Save settings to JSON file"""
         try:
-            # Ensure parent directory exists (script folder should always exist)
-            self.script_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure parent directory exists
+            self.settings_dir.mkdir(parents=True, exist_ok=True)
             with open(self.settings_file, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, indent=4)
             if DEBUG_MODE:

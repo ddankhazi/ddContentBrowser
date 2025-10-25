@@ -9,20 +9,41 @@ License: MIT
 
 from pathlib import Path
 
+# Import Maya detection
+from .utils import MAYA_AVAILABLE
+
 try:
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                                    QPushButton, QWidget, QStackedWidget, 
                                    QGraphicsView, QGraphicsScene, QSizeGrip)
-    from PySide6.QtCore import Qt, QPoint, Signal
+    from PySide6.QtCore import Qt, QPoint, Signal, qInstallMessageHandler, QtMsgType
     from PySide6.QtGui import QPixmap
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                                    QPushButton, QWidget, QStackedWidget, 
                                    QGraphicsView, QGraphicsScene, QSizeGrip)
-    from PySide2.QtCore import Qt, QPoint, Signal
+    from PySide2.QtCore import Qt, QPoint, Signal, qInstallMessageHandler, QtMsgType
     from PySide2.QtGui import QPixmap
     PYSIDE_VERSION = 2
+
+# Custom Qt message handler to suppress TGA warnings
+def qt_message_handler(msg_type, context, message):
+    # Suppress QTgaHandler allocation warnings (we handle large TGA with PIL)
+    if "QTgaHandler" in message and "exceeds limit" in message:
+        return
+    # Pass through other messages
+    if msg_type == QtMsgType.QtDebugMsg:
+        print(f"Qt Debug: {message}")
+    elif msg_type == QtMsgType.QtWarningMsg:
+        print(f"Qt Warning: {message}")
+    elif msg_type == QtMsgType.QtCriticalMsg:
+        print(f"Qt Critical: {message}")
+    elif msg_type == QtMsgType.QtFatalMsg:
+        print(f"Qt Fatal: {message}")
+
+# Install the message handler
+qInstallMessageHandler(qt_message_handler)
 
 # Import HDR/EXR and PDF loading from widgets
 from .widgets import load_hdr_exr_image, load_pdf_page
@@ -96,8 +117,11 @@ class QuickViewWindow(QDialog):
         )
         self.setModal(False)
         
-        # Don't steal focus from browser (critical for keyboard navigation)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        # Focus behavior: Don't steal focus in Maya (critical for keyboard navigation)
+        # but DO get focus in standalone mode (better UX)
+        if MAYA_AVAILABLE:
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
+        # In standalone, window will get focus automatically
         
         # Enable mouse tracking for resize cursors
         self.setMouseTracking(True)
@@ -706,27 +730,32 @@ class QuickViewWindow(QDialog):
         #     print(f"[QuickView] _refit_on_first_show - viewport: {viewport_rect.width()}x{viewport_rect.height()}, pixmap_item: {self.pixmap_item is not None}")
         
         if self.pixmap_item is not None:
-            # Re-calculate fit with correct viewport size
-            viewport_rect = self.graphics_view.viewport().rect()
-            pixmap = self.pixmap_item.pixmap()
-            
-            if not pixmap.isNull():
-                pixmap_width = pixmap.width()
-                pixmap_height = pixmap.height()
+            # Check if pixmap_item is still valid (not deleted)
+            try:
+                # Re-calculate fit with correct viewport size
+                viewport_rect = self.graphics_view.viewport().rect()
+                pixmap = self.pixmap_item.pixmap()
                 
-                # Clear transforms
-                self.graphics_view.resetTransform()
-                
-                # Calculate scale to fit
-                scale_x = viewport_rect.width() / pixmap_width if pixmap_width > 0 else 1.0
-                scale_y = viewport_rect.height() / pixmap_height if pixmap_height > 0 else 1.0
-                fit_scale = min(scale_x, scale_y)
-                
-                # Apply scale
-                self.graphics_view.scale(fit_scale, fit_scale)
-                
-                # Center the image
-                self.graphics_view.centerOn(self.pixmap_item)
+                if not pixmap.isNull():
+                    pixmap_width = pixmap.width()
+                    pixmap_height = pixmap.height()
+                    
+                    # Clear transforms
+                    self.graphics_view.resetTransform()
+                    
+                    # Calculate scale to fit
+                    scale_x = viewport_rect.width() / pixmap_width if pixmap_width > 0 else 1.0
+                    scale_y = viewport_rect.height() / pixmap_height if pixmap_height > 0 else 1.0
+                    fit_scale = min(scale_x, scale_y)
+                    
+                    # Apply scale
+                    self.graphics_view.scale(fit_scale, fit_scale)
+                    
+                    # Center the image
+                    self.graphics_view.centerOn(self.pixmap_item)
+            except RuntimeError:
+                # Pixmap item was deleted, ignore
+                pass
                 
                 self.zoom_factor = 1.0
                 
@@ -985,11 +1014,15 @@ class QuickViewWindow(QDialog):
         # if DEBUG_MODE:
         #     print(f"[QuickView] Layout mode changed to: {mode}")
         
+        # Save layout mode preference
+        self.save_state()
+        
         # Refresh layout with new mode
         self.refresh_layout()
     
     def show_single_file(self, asset):
         """Show single file preview"""
+        self.is_single_file_mode = True  # Mark as single file mode
         file_path = Path(asset.file_path)
         
         # Check if it's a PDF
@@ -1054,49 +1087,133 @@ class QuickViewWindow(QDialog):
                 #         print(f"[QuickView] HDR/EXR load failed or returned None")
             else:
                 # Standard image formats (JPG, PNG, etc.)
-                # Try OpenCV first for large images (better memory handling for 16K+ images)
-                try:
-                    # Check file size - if over 50MB or JPG, use OpenCV
-                    import os
-                    file_size_mb = os.path.getsize(str(file_path)) / (1024 * 1024)
+                # For large TGA files, use PIL directly (Qt has allocation limit issues)
+                if str(file_path).lower().endswith('.tga'):
+                    try:
+                        import sys
+                        import os
+                        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+                        if external_libs not in sys.path:
+                            sys.path.insert(0, external_libs)
+                        
+                        from PIL import Image
+                        # Disable decompression bomb warning for large images
+                        Image.MAX_IMAGE_PIXELS = None
+                        print(f"[QuickView] Loading TGA with PIL: {file_path.name}")
+                        pil_image = Image.open(str(file_path))
+                        
+                        # Convert to RGB
+                        if pil_image.mode not in ('RGB', 'L'):
+                            pil_image = pil_image.convert('RGB')
+                        elif pil_image.mode == 'L':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        # Scale down if too large for Quick View (8K limit)
+                        max_dimension = 8192
+                        if pil_image.width > max_dimension or pil_image.height > max_dimension:
+                            scale_factor = max_dimension / max(pil_image.width, pil_image.height)
+                            new_width = int(pil_image.width * scale_factor)
+                            new_height = int(pil_image.height * scale_factor)
+                            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            print(f"[QuickView] PIL scaled TGA to {new_width}x{new_height}")
+                        
+                        # Convert PIL to QPixmap
+                        import numpy as np
+                        img_array = np.array(pil_image)
+                        height, width = img_array.shape[:2]
+                        
+                        from PySide6.QtGui import QImage
+                        bytes_per_line = width * 3
+                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(q_image.copy())
+                        print(f"[QuickView] ✓ TGA loaded with PIL: {width}x{height}")
+                    except Exception as pil_error:
+                        print(f"[QuickView] PIL TGA loading failed: {pil_error}")
+                        pixmap = None
+                else:
+                    # Non-TGA files: Try QImageReader first for size limiting (better memory handling for 16K+ images)
+                    try:
+                        from PySide6.QtGui import QImageReader
+                        from PySide6.QtCore import QSize
                     
-                    if file_size_mb > 50 or str(file_path).lower().endswith(('.jpg', '.jpeg')):
-                        try:
-                            import cv2
-                            import numpy as np
-                            
-                            # Read FULL resolution image with OpenCV
-                            img = cv2.imread(str(file_path), cv2.IMREAD_COLOR)
-                            
-                            if img is not None:
-                                # Convert BGR to RGB
-                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                                
-                                # Convert to QPixmap
-                                from PySide6.QtGui import QImage
-                                height, width, channels = img.shape
-                                bytes_per_line = width * channels
-                                q_image = QImage(img.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                                pixmap = QPixmap.fromImage(q_image.copy())
-                            else:
-                                raise Exception("OpenCV could not load image")
-                        except Exception as cv_error:
-                            # print(f"[QuickView] OpenCV loading failed: {cv_error}, using QPixmap...")
+                        image_reader = QImageReader(str(file_path))
+                        image_reader.setAllocationLimit(2048)  # 2 GB limit for large TGA files
+                        image_reader.setAutoTransform(True)  # Auto-apply EXIF orientation
+                        
+                        # Check image size before loading - limit to 8K (8192x8192) for performance
+                        image_size = image_reader.size()
+                        max_dimension = 8192
+                        
+                        if image_size.width() > max_dimension or image_size.height() > max_dimension:
+                            # Scale down large images
+                            scale_factor = max_dimension / max(image_size.width(), image_size.height())
+                            new_width = int(image_size.width() * scale_factor)
+                            new_height = int(image_size.height() * scale_factor)
+                            image_reader.setScaledSize(QSize(new_width, new_height))
+                            print(f"[QuickView] Scaling down {image_size.width()}x{image_size.height()} to {new_width}x{new_height}")
+                        
+                        # Read image (or scaled version)
+                        image = image_reader.read()
+                        
+                        if not image.isNull():
+                            pixmap = QPixmap.fromImage(image)
+                        else:
+                            # Fallback: try direct QPixmap load
                             pixmap = QPixmap(str(file_path))
-                    else:
-                        # Small files - use standard QPixmap
-                        pixmap = QPixmap(str(file_path))
-                except Exception as e:
-                    # Fallback to standard QPixmap loading
-                    # print(f"[QuickView] Error checking file size: {e}, using QPixmap...")
-                    pixmap = QPixmap(str(file_path))
+                            
+                    except Exception as e:
+                        # Fallback to standard QPixmap loading
+                        print(f"[QuickView] QImageReader failed: {e}, trying PIL fallback...")
+                        
+                        # Try PIL for TGA/special formats
+                        if str(file_path).lower().endswith(('.tga', '.tiff', '.tif')):
+                            try:
+                                import sys
+                                import os
+                                external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+                                if external_libs not in sys.path:
+                                    sys.path.insert(0, external_libs)
+                                
+                                from PIL import Image
+                                pil_image = Image.open(str(file_path))
+                                
+                                # Convert to RGB
+                                if pil_image.mode not in ('RGB', 'L'):
+                                    pil_image = pil_image.convert('RGB')
+                                elif pil_image.mode == 'L':
+                                    pil_image = pil_image.convert('RGB')
+                                
+                                # Scale down if too large for Quick View (8K limit)
+                                max_dimension = 8192
+                                if pil_image.width > max_dimension or pil_image.height > max_dimension:
+                                    scale_factor = max_dimension / max(pil_image.width, pil_image.height)
+                                    new_width = int(pil_image.width * scale_factor)
+                                    new_height = int(pil_image.height * scale_factor)
+                                    pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                                    print(f"[QuickView] PIL scaled down to {new_width}x{new_height}")
+                                
+                                # Convert PIL to QPixmap
+                                import numpy as np
+                                img_array = np.array(pil_image)
+                                height, width = img_array.shape[:2]
+                                channels = img_array.shape[2] if len(img_array.shape) == 3 else 1
+                            
+                                from PySide6.QtGui import QImage
+                                if channels == 3:
+                                    bytes_per_line = width * 3
+                                    q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                    pixmap = QPixmap.fromImage(q_image.copy())
+                                    print(f"[QuickView] ✓ PIL fallback successful")
+                            except Exception as pil_error:
+                                print(f"[QuickView] PIL fallback failed: {pil_error}")
+                                pixmap = QPixmap(str(file_path))
+                        else:
+                            pixmap = QPixmap(str(file_path))
             
             if pixmap is None or pixmap.isNull():
                 # if DEBUG_MODE:
                 #     print(f"[QuickView] Failed to load image: {file_path.name}")
                 return
-            
-            # NOTE: Quick view doesn't need apply_exif_orientation - loads correctly already
             
             # Clear scene
             self.graphics_scene.clear()
@@ -1600,9 +1717,15 @@ class QuickViewWindow(QDialog):
             self.is_pdf = False  # No single PDF navigation in grid mode
             
             # Get viewport size for layout calculation
-            viewport_rect = self.graphics_view.viewport().rect()
-            viewport_width = viewport_rect.width()
-            viewport_height = viewport_rect.height()
+            # Use the graphics_view size instead of viewport().rect() for accurate dimensions
+            viewport_width = self.graphics_view.width() - 4  # Subtract small margin for scrollbars
+            viewport_height = self.graphics_view.height() - 4
+            
+            # Ensure minimum size
+            if viewport_width < 100:
+                viewport_width = self.width() - 20
+            if viewport_height < 100:
+                viewport_height = self.height() - 80  # Account for toolbar
             
             # PureRef-style layout parameters
             ROW_HEIGHT = 250  # Fixed height for all items
@@ -1625,6 +1748,35 @@ class QuickViewWindow(QDialog):
                     result = load_hdr_exr_image(str(file_path))
                     if result and result[0]:
                         pixmap = result[0]
+                elif file_path.suffix.lower() == '.tga':
+                    # Use PIL for TGA files (Qt has allocation issues)
+                    try:
+                        import sys
+                        import os
+                        external_libs = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ddContentBrowser', 'external_libs')
+                        if external_libs not in sys.path:
+                            sys.path.insert(0, external_libs)
+                        
+                        from PIL import Image
+                        Image.MAX_IMAGE_PIXELS = None
+                        pil_image = Image.open(str(file_path))
+                        
+                        if pil_image.mode not in ('RGB', 'L'):
+                            pil_image = pil_image.convert('RGB')
+                        elif pil_image.mode == 'L':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        import numpy as np
+                        img_array = np.array(pil_image)
+                        height, width = img_array.shape[:2]
+                        
+                        from PySide6.QtGui import QImage
+                        bytes_per_line = width * 3
+                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(q_image.copy())
+                    except Exception as e:
+                        print(f"[QuickView Grid] PIL TGA load failed: {e}")
+                        pixmap = None
                 else:
                     # Try OpenCV first for large images
                     try:
@@ -1656,7 +1808,6 @@ class QuickViewWindow(QDialog):
                         pixmap = QPixmap(str(file_path))
                 
                 if pixmap and not pixmap.isNull():
-                    # NOTE: Quick view doesn't need apply_exif_orientation - loads correctly already
                     loaded_items.append((asset, pixmap, is_pdf, page_count))
             
             if not loaded_items:
@@ -1664,41 +1815,35 @@ class QuickViewWindow(QDialog):
             
             # Calculate target width based on layout mode
             if self.layout_mode == 'grid':
-                # Legacy grid mode - use simple grid calculation
+                # Grid mode - use simple grid calculation
                 target_width = viewport_width
                 use_grid_mode = True
             else:
-                # Tile flow mode
+                # Tile flow mode (3:2, 2:3, or fit)
                 use_grid_mode = False
                 
-                # Calculate target aspect ratio
-                if self.layout_mode == '3:2':
-                    target_aspect = 3.0 / 2.0  # landscape
-                elif self.layout_mode == '2:3':
-                    target_aspect = 2.0 / 3.0  # portrait
-                else:  # 'fit'
-                    # Use window aspect ratio
-                    target_aspect = viewport_width / viewport_height if viewport_height > 0 else 1.5
-                
-                # Simple heuristic: calculate items per row
-                avg_item_aspect = 1.5
+                # Calculate ACTUAL average item aspect ratio from loaded images
+                total_aspect = 0
+                for _, pixmap, _, _ in loaded_items:
+                    aspect = pixmap.width() / pixmap.height() if pixmap.height() > 0 else 1.0
+                    total_aspect += aspect
+                avg_item_aspect = total_aspect / len(loaded_items) if loaded_items else 1.5
                 avg_item_width = ROW_HEIGHT * avg_item_aspect
                 num_items = len(loaded_items)
                 
                 if self.layout_mode == '3:2':
                     # Landscape: More columns than rows (wider layout)
-                    # Use sqrt(N * 3.5) for strong wider bias
                     items_per_row = max(2, int((num_items * 3.5) ** 0.5 + 0.5))
                 elif self.layout_mode == '2:3':
                     # Portrait: More rows than columns (taller layout)
-                    # Use sqrt(N / 3.5) for strong taller bias
                     items_per_row = max(1, int((num_items / 3.5) ** 0.5 + 0.5))
                 else:  # 'fit'
-                    # Use target aspect ratio
-                    items_per_row = max(2, int((num_items * target_aspect) ** 0.5 + 0.5))
+                    # Balanced layout - simple sqrt-based calculation
+                    items_per_row = max(2, int((num_items * 1.3) ** 0.5 + 0.5))
                 
                 # Calculate target width based on items per row
-                target_width = items_per_row * avg_item_width + (items_per_row - 1) * PADDING
+                # Add 10% margin to ensure items fit even with slight width variation
+                target_width = (items_per_row * avg_item_width + (items_per_row - 1) * PADDING) * 1.1
             
             # GRID MODE - simple grid layout
             if use_grid_mode:
@@ -1742,6 +1887,8 @@ class QuickViewWindow(QDialog):
                     
                     scaled_width = pixmap.width() * scale_factor
                     scaled_height = pixmap.height() * scale_factor
+                    
+                    # Center in cell
                     x_offset = (cell_width - scaled_width) / 2
                     y_offset = (cell_height - scaled_height) / 2
                     
@@ -1892,7 +2039,7 @@ class QuickViewWindow(QDialog):
             
             # Calculate scale to fit content in viewport
             scale_x = viewport_width / total_width if total_width > 0 else 1.0
-            scale_y = viewport_rect.height() / total_height if total_height > 0 else 1.0
+            scale_y = viewport_height / total_height if total_height > 0 else 1.0
             fit_scale = min(scale_x, scale_y, 1.0)  # Don't scale up, max 1.0
             
             # Apply scale
@@ -1941,6 +2088,14 @@ class QuickViewWindow(QDialog):
             self.move(x, y)
             # if DEBUG_MODE:
             #     print(f"[QuickView] Restored position: ({x}, {y})")
+        
+        # Restore layout mode
+        if "quick_view_layout_mode" in config:
+            mode = config["quick_view_layout_mode"]
+            if mode in ['3:2', '2:3', 'fit', 'grid']:
+                self.layout_mode = mode
+                # if DEBUG_MODE:
+                #     print(f"[QuickView] Restored layout mode: {mode}")
     
     def save_state(self):
         """Save window state to config"""
@@ -1956,8 +2111,11 @@ class QuickViewWindow(QDialog):
         self.browser.config.config["quick_view_x"] = pos.x()
         self.browser.config.config["quick_view_y"] = pos.y()
         
+        # Save layout mode
+        self.browser.config.config["quick_view_layout_mode"] = self.layout_mode
+        
         # Save to file
         self.browser.config.save_config()
         
         # if DEBUG_MODE:
-        #     print(f"[QuickView] Saved state: {self.width()}×{self.height()} at ({pos.x()}, {pos.y()})")
+        #     print(f"[QuickView] Saved state: {self.width()}×{self.height()} at ({pos.x()}, {pos.y()}), layout: {self.layout_mode}")

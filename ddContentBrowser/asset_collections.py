@@ -48,9 +48,10 @@ class Collection:
 class ManualCollection(Collection):
     """Manual collection - user adds/removes files"""
     
-    def __init__(self, name: str, files: Optional[List[str]] = None):
+    def __init__(self, name: str, files: Optional[List[str]] = None, bg_color: Optional[str] = None):
         super().__init__(name, "manual")
         self.files = files or []  # List of file paths
+        self.bg_color = bg_color  # Hex string or None
     
     def add_file(self, file_path: str):
         """Add file to collection"""
@@ -107,12 +108,18 @@ class ManualCollection(Collection):
         """Convert to dictionary for JSON storage"""
         data = super().to_dict()
         data['files'] = self.files
+        if self.bg_color:
+            data['bg_color'] = self.bg_color
         return data
     
     @staticmethod
     def from_dict(data: Dict) -> 'ManualCollection':
         """Create collection from dictionary"""
-        collection = ManualCollection(data['name'], data.get('files', []))
+        collection = ManualCollection(
+            data['name'],
+            data.get('files', []),
+            data.get('bg_color')
+        )
         collection.created = data.get('created', datetime.now().isoformat())
         collection.modified = data.get('modified', datetime.now().isoformat())
         return collection
