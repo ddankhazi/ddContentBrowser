@@ -719,8 +719,9 @@ class ThumbnailGenerator(QThread):
                         
                         # Convert to RGB (discard extra channels)
                         if pil_image.mode not in ('RGB', 'L'):
-                            print(f"[THUMB] Converting {pil_image.mode} to RGB...")
-                            pil_image = pil_image.convert('RGB')
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Converting {pil_image.mode} to RGB...")
+                                pil_image = pil_image.convert('RGB')
                         elif pil_image.mode == 'L':
                             pil_image = pil_image.convert('RGB')
                         
@@ -742,13 +743,15 @@ class ThumbnailGenerator(QThread):
                             bytes_per_line = width * 3
                             q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
                             pixmap = QPixmap.fromImage(q_image.copy())
-                            print(f"[THUMB] ✓ PIL fallback successful: {width}×{height}")
-                            return pixmap
+                            if DEBUG_MODE:
+                                print(f"[THUMB] ✓ PIL fallback successful: {width}×{height}")
+                                return pixmap
                     except Exception as pil_error:
                         print(f"[THUMB] PIL fallback also failed: {pil_error}")
                         # Check if it's an unsupported multi-channel TIFF
                         if "unknown pixel mode" in str(pil_error) or "KeyError" in str(pil_error):
-                            print(f"[THUMB] → Unsupported TIFF format (5+ channels), skipping: {file_path.name}")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] → Unsupported TIFF format (5+ channels), skipping: {file_path.name}")
                     
                     # Method 1: Try QImageReader with explicit format and increased limit
                     try:
@@ -765,14 +768,16 @@ class ThumbnailGenerator(QThread):
                         # Force format detection
                         if extension == '.tga':
                             reader.setFormat(b'tga')
-                            print(f"[THUMB] QImageReader trying TGA with 2GB limit...")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] QImageReader trying TGA with 2GB limit...")
                         elif extension in ['.tif', '.tiff']:
                             reader.setFormat(b'tiff')
                         
                         image = reader.read()
                         if not image.isNull():
                             pixmap = QPixmap.fromImage(image)
-                            print(f"[THUMB] ✓ QImageReader successful")
+                            if DEBUG_MODE:
+                                print(f"[THUMB] ✓ QImageReader successful")
                     except Exception as reader_error:
                         print(f"[THUMB] QImageReader failed: {reader_error}")
                     

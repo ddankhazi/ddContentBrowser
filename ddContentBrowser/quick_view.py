@@ -46,7 +46,7 @@ def qt_message_handler(msg_type, context, message):
 qInstallMessageHandler(qt_message_handler)
 
 # Import HDR/EXR and PDF loading from widgets
-from .widgets import load_hdr_exr_image, load_pdf_page
+from .widgets import load_hdr_exr_image, load_pdf_page, load_pdf_page_normalized
 
 # UI Font - will be set by browser at runtime
 UI_FONT = "Segoe UI"
@@ -753,20 +753,20 @@ class QuickViewWindow(QDialog):
                     
                     # Center the image
                     self.graphics_view.centerOn(self.pixmap_item)
+                    
+                    self.zoom_factor = 1.0
+                    
+                    # If PDF, recreate navigation overlay with correct scale
+                    if self.is_pdf and self.pdf_page_count > 1:
+                        self.pdf_fit_scale = fit_scale  # Update fit scale
+                        pixmap_rect = pixmap.rect()
+                        self.create_pdf_navigation_overlay(pixmap_rect, fit_scale)
+                    
+                    # if DEBUG_MODE:
+                    #     print(f"[QuickView] Re-fitted on first show (scale: {fit_scale:.2f})")
             except RuntimeError:
                 # Pixmap item was deleted, ignore
                 pass
-                
-                self.zoom_factor = 1.0
-                
-                # If PDF, recreate navigation overlay with correct scale
-                if self.is_pdf and self.pdf_page_count > 1:
-                    self.pdf_fit_scale = fit_scale  # Update fit scale
-                    pixmap_rect = pixmap.rect()
-                    self.create_pdf_navigation_overlay(pixmap_rect)
-                
-                # if DEBUG_MODE:
-                #     print(f"[QuickView] Re-fitted on first show (scale: {fit_scale:.2f})")
         else:
             # No pixmap - might be multi-grid, try generic fit
             self.fit_to_view()
@@ -1271,13 +1271,13 @@ class QuickViewWindow(QDialog):
             pass
     
     def show_pdf_preview(self, file_path):
-        """Show PDF preview (simple version: just load first page as image)"""
+        """Show PDF preview with normalized page sizing (letterbox for different page sizes)"""
         # if DEBUG_MODE:
         #     print(f"[QuickView] Loading PDF: {file_path.name}")
         
         try:
-            # Load first page of PDF
-            pixmap, page_count, resolution = load_pdf_page(str(file_path), 0, 2048)
+            # Use normalized PDF loading for consistent layout across pages
+            pixmap, page_count, resolution, canvas_size = load_pdf_page_normalized(str(file_path), 0, 2048)
             
             if pixmap is None or pixmap.isNull():
                 # if DEBUG_MODE:
@@ -1308,10 +1308,14 @@ class QuickViewWindow(QDialog):
             
             # Fit PDF in view
             self.graphics_view.resetTransform()
-            viewport_rect = self.graphics_view.viewport().rect()
             
-            scale_x = viewport_rect.width() / pixmap.width() if pixmap.width() > 0 else 1.0
-            scale_y = viewport_rect.height() / pixmap.height() if pixmap.height() > 0 else 1.0
+            # Use graphics_view widget size instead of viewport (more reliable on first show)
+            view_size = self.graphics_view.size()
+            viewport_width = view_size.width() - 4  # Account for scrollbar space
+            viewport_height = view_size.height() - 4
+            
+            scale_x = viewport_width / pixmap.width() if pixmap.width() > 0 else 1.0
+            scale_y = viewport_height / pixmap.height() if pixmap.height() > 0 else 1.0
             fit_scale = min(scale_x, scale_y)
             
             self.graphics_view.scale(fit_scale, fit_scale)
@@ -1326,20 +1330,22 @@ class QuickViewWindow(QDialog):
             self.pdf_path = str(file_path)
             self.pdf_current_page = 0
             self.pdf_page_count = page_count
+            self.pdf_canvas_size = canvas_size  # Store normalized canvas size for consistent rendering
             
-            # Create PDF navigation overlays (only if multiple pages)
-            if page_count > 1:
-                self.create_pdf_navigation_overlay(pixmap_rect)
+            # Don't create navigation overlay on first load - let _refit_on_first_show do it with correct viewport size
+            # Only create it if this is NOT the first show (window already visible)
+            if page_count > 1 and hasattr(self, '_first_show_done') and self._first_show_done:
+                self.create_pdf_navigation_overlay(pixmap_rect, fit_scale)
             
             # if DEBUG_MODE:
-            #     print(f"[QuickView] PDF loaded: page 1/{page_count}")
+            #     print(f"[QuickView] PDF loaded: page 1/{page_count}, canvas size: {canvas_size}")
         
         except Exception as e:
             # if DEBUG_MODE:
             #     print(f"[QuickView] Error loading PDF: {e}")
             pass
     
-    def create_pdf_navigation_overlay(self, pixmap_rect):
+    def create_pdf_navigation_overlay(self, pixmap_rect, fit_scale=None):
         """Create simple navigation arrows on PDF edges"""
         try:
             from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsTextItem
@@ -1354,12 +1360,14 @@ class QuickViewWindow(QDialog):
         self.pdf_nav_items.clear()
         
         # Get current scale for zoom-independent sizing
-        # Use stored fit scale if available, otherwise get from view transform
-        if hasattr(self, 'pdf_fit_scale') and self.pdf_fit_scale:
-            scale_factor = self.pdf_fit_scale * self.zoom_factor
+        # Use passed fit_scale if available (most accurate), otherwise stored or calculated
+        if fit_scale is not None:
+            scale_factor = fit_scale * (self.zoom_factor if hasattr(self, 'zoom_factor') else 1.0)
+        elif hasattr(self, 'pdf_fit_scale') and self.pdf_fit_scale:
+            scale_factor = self.pdf_fit_scale * (self.zoom_factor if hasattr(self, 'zoom_factor') else 1.0)
         else:
             view_transform = self.graphics_view.transform()
-            scale_factor = view_transform.m11()
+            scale_factor = view_transform.m11() if view_transform.m11() > 0 else 1.0
         
         # Fixed button dimensions in screen pixels (zoom-independent)
         fixed_btn_width = 120
@@ -1391,7 +1399,7 @@ class QuickViewWindow(QDialog):
         
         # Visual indicator for left arrow (smaller, centered)
         left_visual = QGraphicsRectItem(10 / scale_factor, (pdf_height - visual_height) / 2, visual_width, visual_height)
-        left_visual.setBrush(QBrush(QColor(40, 40, 40, 150)))
+        left_visual.setBrush(QBrush(QColor(40, 40, 40, 50)))  # Very subtle background
         left_visual.setPen(Qt.NoPen)
         left_visual.setData(0, "pdf_prev")
         left_visual.setVisible(False)
@@ -1424,7 +1432,7 @@ class QuickViewWindow(QDialog):
         
         # Visual indicator for right arrow (smaller, centered)
         right_visual = QGraphicsRectItem(pdf_width - 70 / scale_factor, (pdf_height - visual_height) / 2, visual_width, visual_height)
-        right_visual.setBrush(QBrush(QColor(40, 40, 40, 150)))
+        right_visual.setBrush(QBrush(QColor(40, 40, 40, 50)))  # Very subtle background
         right_visual.setPen(Qt.NoPen)
         right_visual.setData(0, "pdf_next")
         right_visual.setVisible(False)
@@ -1476,9 +1484,10 @@ class QuickViewWindow(QDialog):
         self._do_pdf_navigate(new_page)
     
     def _do_pdf_navigate(self, new_page):
-        """Actually load and display PDF page"""
-        # Load new page
-        pixmap, _, _ = load_pdf_page(self.pdf_path, new_page, 2048)
+        """Actually load and display PDF page with normalized sizing"""
+        # Use normalized loading with stored canvas size
+        canvas_size = getattr(self, 'pdf_canvas_size', None)
+        pixmap, _, _, _ = load_pdf_page_normalized(self.pdf_path, new_page, 2048, canvas_size)
         
         if pixmap is None or pixmap.isNull():
             return
@@ -1508,11 +1517,16 @@ class QuickViewWindow(QDialog):
         
         # Get current scale for zoom-independent sizing
         # Use stored fit scale if available, otherwise get from view transform
-        if hasattr(self, 'pdf_fit_scale') and self.pdf_fit_scale:
+        if not hasattr(self, 'pdf_fit_scale'):
+            self.pdf_fit_scale = 1.0
+        if not hasattr(self, 'zoom_factor'):
+            self.zoom_factor = 1.0
+            
+        if self.pdf_fit_scale:
             scale_factor = self.pdf_fit_scale * self.zoom_factor
         else:
             view_transform = self.graphics_view.transform()
-            scale_factor = view_transform.m11()
+            scale_factor = view_transform.m11() if view_transform.m11() > 0 else 1.0
         
         # Fixed button dimensions in screen pixels (smaller for grid)
         fixed_btn_width = 40
@@ -1541,7 +1555,7 @@ class QuickViewWindow(QDialog):
         
         # Visual indicator for left
         left_visual = QGraphicsRectItem(cell_x + 5 / scale_factor, cell_y + (cell_height - visual_height) / 2, visual_width, visual_height)
-        left_visual.setBrush(QBrush(QColor(40, 40, 40, 150)))
+        left_visual.setBrush(QBrush(QColor(40, 40, 40, 50)))  # Very subtle background
         left_visual.setPen(Qt.NoPen)
         left_visual.setData(0, f"grid_pdf_prev_{cell_index}")
         left_visual.setVisible(False)
@@ -1574,7 +1588,7 @@ class QuickViewWindow(QDialog):
         
         # Visual indicator for right
         right_visual = QGraphicsRectItem(cell_x + cell_width - 35 / scale_factor, cell_y + (cell_height - visual_height) / 2, visual_width, visual_height)
-        right_visual.setBrush(QBrush(QColor(40, 40, 40, 150)))
+        right_visual.setBrush(QBrush(QColor(40, 40, 40, 50)))  # Very subtle background
         right_visual.setPen(Qt.NoPen)
         right_visual.setData(0, f"grid_pdf_next_{cell_index}")
         right_visual.setVisible(False)
@@ -1630,15 +1644,16 @@ class QuickViewWindow(QDialog):
         self._do_pdf_navigate_grid(cell_index, new_page)
     
     def _do_pdf_navigate_grid(self, cell_index, new_page):
-        """Actually load and display grid PDF page"""
+        """Actually load and display grid PDF page with normalized sizing"""
         if cell_index not in self.grid_pdf_states:
             return
         
         pdf_state = self.grid_pdf_states[cell_index]
         page_count = pdf_state['page_count']
         
-        # Load new page
-        pixmap, _, _ = load_pdf_page(pdf_state['path'], new_page, 2048)
+        # Use normalized loading with stored canvas size
+        canvas_size = pdf_state.get('canvas_size', None)
+        pixmap, _, _, _ = load_pdf_page_normalized(pdf_state['path'], new_page, 2048, canvas_size)
         
         if pixmap is None or pixmap.isNull():
             # if DEBUG_MODE:
@@ -1686,9 +1701,6 @@ class QuickViewWindow(QDialog):
     
     def show_multi_file_grid(self, assets):
         """Show multiple images and PDFs in PureRef-style flowing tile layout"""
-        # if DEBUG_MODE:
-        #     print(f"[QuickView] show_multi_file_grid called for {len(assets)} files")
-        
         try:
             # Filter to images and PDFs
             image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tga', '.tif', '.tiff', 
@@ -1701,8 +1713,6 @@ class QuickViewWindow(QDialog):
                     supported_assets.append(a)
             
             if not supported_assets:
-                # if DEBUG_MODE:
-                #     print("[QuickView] No supported files to display in grid")
                 return
             
             # Reset first show flag (new content needs refit)
@@ -1732,7 +1742,7 @@ class QuickViewWindow(QDialog):
             PADDING = 10  # Padding between items
             
             # Pre-load all images to get dimensions
-            loaded_items = []  # List of (asset, pixmap, is_pdf, page_count)
+            loaded_items = []  # List of (asset, pixmap, is_pdf, page_count, canvas_size)
             
             for asset in supported_assets:
                 file_path = Path(asset.file_path)
@@ -1741,13 +1751,16 @@ class QuickViewWindow(QDialog):
                 # Load image/PDF
                 pixmap = None
                 page_count = 1
+                canvas_size = None
                 
                 if is_pdf:
-                    pixmap, page_count, _ = load_pdf_page(str(file_path), 0, 2048)
+                    # Use normalized PDF loading for consistent sizing
+                    pixmap, page_count, _, canvas_size = load_pdf_page_normalized(str(file_path), 0, 2048)
                 elif file_path.suffix.lower() in ['.exr', '.hdr']:
                     result = load_hdr_exr_image(str(file_path))
                     if result and result[0]:
                         pixmap = result[0]
+                    canvas_size = None  # Not a PDF
                 elif file_path.suffix.lower() == '.tga':
                     # Use PIL for TGA files (Qt has allocation issues)
                     try:
@@ -1777,6 +1790,7 @@ class QuickViewWindow(QDialog):
                     except Exception as e:
                         print(f"[QuickView Grid] PIL TGA load failed: {e}")
                         pixmap = None
+                    canvas_size = None  # Not a PDF
                 else:
                     # Try OpenCV first for large images
                     try:
@@ -1806,9 +1820,10 @@ class QuickViewWindow(QDialog):
                             pixmap = QPixmap(str(file_path))
                     except:
                         pixmap = QPixmap(str(file_path))
+                    canvas_size = None  # Not a PDF
                 
                 if pixmap and not pixmap.isNull():
-                    loaded_items.append((asset, pixmap, is_pdf, page_count))
+                    loaded_items.append((asset, pixmap, is_pdf, page_count, canvas_size))
             
             if not loaded_items:
                 return
@@ -1824,7 +1839,7 @@ class QuickViewWindow(QDialog):
                 
                 # Calculate ACTUAL average item aspect ratio from loaded images
                 total_aspect = 0
-                for _, pixmap, _, _ in loaded_items:
+                for _, pixmap, _, _, _ in loaded_items:
                     aspect = pixmap.width() / pixmap.height() if pixmap.height() > 0 else 1.0
                     total_aspect += aspect
                 avg_item_aspect = total_aspect / len(loaded_items) if loaded_items else 1.5
@@ -1862,7 +1877,7 @@ class QuickViewWindow(QDialog):
                 
                 # Place items in grid
                 item_index = 0
-                for idx, (asset, pixmap, is_pdf, page_count) in enumerate(loaded_items):
+                for idx, (asset, pixmap, is_pdf, page_count, canvas_size) in enumerate(loaded_items):
                     col = idx % cols
                     row = idx // cols
                     
@@ -1900,6 +1915,7 @@ class QuickViewWindow(QDialog):
                             'path': str(asset.file_path),
                             'page': 0,
                             'page_count': page_count,
+                            'canvas_size': canvas_size,  # Store normalized canvas size
                             'pixmap_item': pixmap_item,
                             'cell_x': cell_x,
                             'cell_y': cell_y,
@@ -1932,15 +1948,16 @@ class QuickViewWindow(QDialog):
                 self.zoom_factor = 1.0
                 self.pdf_fit_scale = fit_scale
                 self.current_file_path = None
+                
                 return  # Exit early for grid mode
             
             # TILE FLOW MODE - Greedy row packing algorithm
-            rows = []  # List of rows, each row is a list of (asset, pixmap, is_pdf, page_count, x, y, width, height)
+            rows = []  # List of rows, each row is a list of (asset, pixmap, is_pdf, page_count, canvas_size, x, y, width, height)
             current_row = []
             current_row_width = 0
             current_y = PADDING
             
-            for asset, pixmap, is_pdf, page_count in loaded_items:
+            for asset, pixmap, is_pdf, page_count, canvas_size in loaded_items:
                 # Calculate item width based on aspect ratio
                 aspect_ratio = pixmap.width() / pixmap.height() if pixmap.height() > 0 else 1.0
                 item_width = ROW_HEIGHT * aspect_ratio
@@ -1959,6 +1976,7 @@ class QuickViewWindow(QDialog):
                     'pixmap': pixmap,
                     'is_pdf': is_pdf,
                     'page_count': page_count,
+                    'canvas_size': canvas_size,  # Store canvas size for normalized PDF rendering
                     'x': current_row_width + PADDING,
                     'y': current_y,
                     'width': item_width,
@@ -1978,6 +1996,7 @@ class QuickViewWindow(QDialog):
                     pixmap = item_data['pixmap']
                     is_pdf = item_data['is_pdf']
                     page_count = item_data['page_count']
+                    canvas_size = item_data['canvas_size']
                     x = item_data['x']
                     y = item_data['y']
                     width = item_data['width']
@@ -2008,6 +2027,7 @@ class QuickViewWindow(QDialog):
                             'path': str(asset.file_path),
                             'page': 0,
                             'page_count': page_count,
+                            'canvas_size': canvas_size,  # Store canvas size for consistent rendering
                             'pixmap_item': pixmap_item,
                             'cell_x': x,
                             'cell_y': y,

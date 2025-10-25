@@ -1515,6 +1515,157 @@ def load_pdf_page(file_path, page_number=0, max_size=1024):
         return None, 0, None
 
 
+def get_pdf_max_page_size(file_path):
+    """
+    Get maximum page dimensions across all pages in a PDF
+    This is used for consistent layout when pages have different sizes
+    
+    Args:
+        file_path: Path to PDF file
+        
+    Returns:
+        tuple: (max_width, max_height, page_count) or (None, None, 0) on failure
+    """
+    if not PYMUPDF_AVAILABLE:
+        return None, None, 0
+    
+    try:
+        doc = fitz.open(str(file_path))
+        
+        # Check if encrypted
+        if doc.is_encrypted:
+            doc.close()
+            return None, None, 0
+        
+        page_count = len(doc)
+        max_width = 0
+        max_height = 0
+        
+        # Scan all pages for maximum dimensions
+        for page_num in range(page_count):
+            try:
+                page = doc[page_num]
+                rect = page.rect
+                max_width = max(max_width, int(rect.width))
+                max_height = max(max_height, int(rect.height))
+            except Exception as e:
+                print(f"[PDF] Error reading page {page_num}: {e}")
+                continue
+        
+        doc.close()
+        
+        return max_width, max_height, page_count
+        
+    except Exception as e:
+        print(f"[PDF] Error scanning page sizes: {e}")
+        return None, None, 0
+
+
+def load_pdf_page_normalized(file_path, page_number=0, max_size=1024, canvas_size=None):
+    """
+    Load PDF page with normalized/centered layout for consistent sizing
+    
+    Args:
+        file_path: Path to PDF file
+        page_number: Page number to load (0-indexed)
+        max_size: Maximum width/height for preview (default 1024)
+        canvas_size: Optional tuple (width, height) to use as canvas size
+                     If None, will auto-detect max page size in document
+        
+    Returns:
+        tuple: (QPixmap, page_count, resolution_str, (canvas_w, canvas_h)) or (None, 0, None, None) on failure
+    """
+    if not PYMUPDF_AVAILABLE:
+        print("PyMuPDF not available - cannot load PDF")
+        return None, 0, None, None
+    
+    try:
+        # Open PDF document
+        doc = fitz.open(str(file_path))
+        
+        # Check if encrypted
+        if doc.is_encrypted:
+            print(f"[PDF] Password protected: {Path(file_path).name}")
+            doc.close()
+            return None, -1, "encrypted", None
+        
+        page_count = len(doc)
+        
+        # Validate page number
+        if page_number < 0 or page_number >= page_count:
+            page_number = 0
+        
+        # Get canvas size (either provided or auto-detect max size)
+        if canvas_size is None:
+            # Scan all pages for max dimensions
+            max_width = 0
+            max_height = 0
+            for i in range(page_count):
+                try:
+                    p = doc[i]
+                    r = p.rect
+                    max_width = max(max_width, int(r.width))
+                    max_height = max(max_height, int(r.height))
+                except:
+                    continue
+            canvas_width = max_width
+            canvas_height = max_height
+        else:
+            canvas_width, canvas_height = canvas_size
+        
+        # Get current page
+        try:
+            page = doc[page_number]
+        except (ValueError, RuntimeError) as e:
+            print(f"Error accessing PDF page {page_number}: {e}")
+            doc.close()
+            return None, 0, None, None
+        
+        # Get page dimensions
+        rect = page.rect
+        page_width = int(rect.width)
+        page_height = int(rect.height)
+        resolution_str = f"{page_width} x {page_height}"
+        
+        # Calculate zoom to fit max_size based on CANVAS size (not page size)
+        zoom = min(max_size / canvas_width, max_size / canvas_height, 2.0)
+        mat = fitz.Matrix(zoom, zoom)
+        
+        # Render page
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        
+        # Convert to QImage
+        img_format = QImage.Format_RGB888 if pix.n == 3 else QImage.Format_RGBA8888
+        q_image = QImage(pix.samples, pix.width, pix.height, pix.stride, img_format)
+        q_image = q_image.copy()
+        
+        # Create canvas pixmap at normalized size
+        canvas_scaled_width = int(canvas_width * zoom)
+        canvas_scaled_height = int(canvas_height * zoom)
+        canvas = QPixmap(canvas_scaled_width, canvas_scaled_height)
+        canvas.fill(QColor(42, 42, 42))  # Match Quick View background (#2a2a2a)
+        
+        # Center the page image on canvas
+        page_pixmap = QPixmap.fromImage(q_image)
+        offset_x = (canvas_scaled_width - page_pixmap.width()) // 2
+        offset_y = (canvas_scaled_height - page_pixmap.height()) // 2
+        
+        from PySide6.QtGui import QPainter
+        painter = QPainter(canvas)
+        painter.drawPixmap(offset_x, offset_y, page_pixmap)
+        painter.end()
+        
+        doc.close()
+        
+        return canvas, page_count, resolution_str, (canvas_width, canvas_height)
+        
+    except Exception as e:
+        print(f"Error loading PDF with normalization: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, 0, None, None
+
+
 class MayaStyleListView(QListView):
     """
     Custom QListView with dual drag-and-drop modes:
