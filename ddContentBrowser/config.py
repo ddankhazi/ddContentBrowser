@@ -11,9 +11,10 @@ class ContentBrowserConfig:
     """Configuration manager class"""
     
     def __init__(self):
-        # Store config in script directory (version controlled, updates with tool)
-        self.script_dir = Path(__file__).parent.resolve()
-        self.config_file = self.script_dir / "config.json"
+        # Store config in user directory (persistent across updates)
+        self.config_dir = Path.home() / ".ddContentBrowser"
+        self.config_dir.mkdir(exist_ok=True)
+        self.config_file = self.config_dir / "config.json"
         
         # Get supported formats from central registry
         from .utils import get_all_supported_extensions
