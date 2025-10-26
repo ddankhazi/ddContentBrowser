@@ -712,7 +712,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         nav_top_order = self.config.config.get("nav_top_tabs_order", ["Favourites", "Folders"])
         for tab_name in nav_top_order:
             if tab_name in self.nav_top_tab_widgets:
-                self.nav_top_tabs.addTab(self.nav_top_tab_widgets[tab_name], tab_name)
+                # Display "Favorites" in UI, but keep internal key as "Favourites"
+                display_name = "Favorites" if tab_name == "Favourites" else tab_name
+                self.nav_top_tabs.addTab(self.nav_top_tab_widgets[tab_name], display_name)
         
         self.nav_splitter.addWidget(self.nav_top_tabs)
         
