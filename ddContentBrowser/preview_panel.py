@@ -4585,6 +4585,7 @@ class PreviewPanel(QWidget):
     def add_tag(self):
         """Add a new tag from input field (supports bulk tagging for multiple files)"""
         tag_text = self.tag_input.text().strip()
+        
         if not tag_text:
             return
         
@@ -4593,15 +4594,9 @@ class PreviewPanel(QWidget):
             print("No asset selected to tag")
             return
         
-        # Check if tag already displayed (prevent duplicates in UI)
-        for i in range(self.tags_layout.count()):
-            item = self.tags_layout.itemAt(i)
-            if item and item.widget():
-                existing_tag = item.widget().property('tag_text')
-                if existing_tag and existing_tag.lower() == tag_text.lower():
-                    print(f"Tag '{tag_text}' already added to selection")
-                    self.tag_input.clear()
-                    return
+        # REMOVED: Don't check UI for duplicates - we want to add to files that DON'T have it yet!
+        # The tag might already be displayed as a partial tag, but we still want to add it
+        # to the files that don't have it yet.
         
         # Save to database
         try:
@@ -4611,30 +4606,59 @@ class PreviewPanel(QWidget):
             # Add tag to database (or get existing)
             tag_id = mm.add_tag(tag_text)
             
-            # Link tag to ALL selected files (bulk operation!)
-            # Note: Database will handle duplicates (INSERT OR IGNORE)
-            tagged_count = 0
+            # Check which files already have this tag
+            files_with_tag = []
+            files_without_tag = []
+            
             for asset in self.current_assets:
                 current_file = str(asset.file_path)
-                mm.add_tag_to_file(current_file, tag_id)
+                metadata = mm.get_file_metadata(current_file)
+                
+                # Check if this file already has this tag
+                has_tag = False
+                if metadata and metadata.get('tags'):
+                    for existing_tag in metadata['tags']:
+                        if existing_tag['id'] == tag_id:
+                            has_tag = True
+                            break
+                
+                if has_tag:
+                    files_with_tag.append(asset.name)
+                else:
+                    files_without_tag.append(current_file)
+            
+            # Add tag only to files that don't have it yet
+            # Note: Database will handle duplicates (INSERT OR IGNORE) as safety net
+            tagged_count = 0
+            for file_path in files_without_tag:
+                mm.add_tag_to_file(file_path, tag_id)
                 tagged_count += 1
             
-            if tagged_count == 1:
-                print(f"Tag added: {tag_text} -> {self.current_assets[0].name}")
-            else:
-                print(f"Tag added: {tag_text} -> {tagged_count} files")
+            if tagged_count > 0:
+                if tagged_count == 1:
+                    print(f"✓ Tag added: {tag_text} -> 1 file")
+                else:
+                    print(f"✓ Tag added: {tag_text} -> {tagged_count} files")
+            
+            if len(files_with_tag) > 0:
+                print(f"ℹ {len(files_with_tag)} file(s) already had this tag")
+                
         except Exception as e:
             print(f"Error saving tag: {e}")
+            import traceback
+            traceback.print_exc()
+            return
         
-        # Create tag chip (only once for display)
-        self.create_tag_chip(tag_text, tag_id)
+        # Reload the tags display to show updated state
+        # If multiple files selected, reload common tags (this will show the updated partial/common state)
+        # If single file, reload that file's tags
+        if len(self.current_assets) == 1:
+            self.load_tags(self.current_assets[0])
+        else:
+            self.load_common_tags(self.current_assets)
         
         # Clear input
         self.tag_input.clear()
-        
-        # Hide info label if tags exist
-        if self.tags_layout.count() > 0:
-            self.tag_info_label.hide()
     
     def create_tag_chip(self, tag_text, tag_id=None, is_common=True, count=None, total=None):
         """Create a visual tag chip widget
@@ -4961,10 +4985,6 @@ class PreviewPanel(QWidget):
                     self.create_tag_chip(tag['name'], tag['id'], is_common=False, count=count, total=total_files)
                 
                 self.tag_info_label.hide()
-            
-            # Summary message (debug)
-            # if common_tags or partial_tags:
-            #     print(f"Loaded {len(common_tags)} common and {len(partial_tags)} partial tags for {total_files} files")
             
         except Exception as e:
             import traceback

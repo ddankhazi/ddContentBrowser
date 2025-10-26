@@ -29,7 +29,7 @@ except ImportError:
 
 from .metadata_extractor import MetadataCache, FileMetadata
 
-# Debug flag
+# Debug mode
 DEBUG_MODE = False
 
 
@@ -455,34 +455,43 @@ class AdvancedFiltersPanelV2(QWidget):
                 for category_tags in tags_by_category.values():
                     for tag in category_tags:
                         tag_name = tag['name']
+                        tag_id = tag['id']
                         # Count how many files in current metadata_list have this tag
                         tag_count = 0
                         for metadata in metadata_list:
                             if 'file_path' in metadata:
                                 file_path = metadata['file_path']
+                                # FRESH read from database (not cached!)
                                 file_metadata = self.metadata_manager.get_file_metadata(file_path)
                                 if file_metadata and 'tags' in file_metadata:
-                                    file_tag_names = [t['name'] for t in file_metadata['tags']]
-                                    if tag_name in file_tag_names:
+                                    file_tag_ids = [t['id'] for t in file_metadata['tags']]
+                                    if tag_id in file_tag_ids:
                                         tag_count += 1
                         
                         if tag_count > 0:
                             category_values['Tags'][tag_name] = tag_count
+                            
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f"[AdvancedFilters] Error loading tags: {e}")
+                    print(f"[AdvancedFilters] ERROR loading tags: {e}")
                     import traceback
                     traceback.print_exc()
         
         # Create or update filter category widgets
-        category_order = ['File Type', 'Category', 'File Size', 'Tags', 'Dimensions', 
+        # Tags first, then other categories
+        category_order = ['Tags', 'File Type', 'Category', 'File Size', 'Dimensions', 
                          'Aspect Ratio', 'Color Mode', 'Bit Depth']
         
         # Categories that should start collapsed
         collapsed_by_default = ['Dimensions']  # Only Dimensions collapsed by default
         
         for category_name in category_order:
-            if category_name not in category_values:
+            # IMPORTANT: Don't skip empty categories - we need to clear them!
+            # Get values for this category (empty dict if no values)
+            values_for_category = dict(category_values.get(category_name, {}))
+            
+            # Skip only if category never existed AND has no values
+            if category_name not in self.filter_categories and len(values_for_category) == 0:
                 continue
             
             if category_name not in self.filter_categories:
@@ -500,8 +509,8 @@ class AdvancedFiltersPanelV2(QWidget):
                 if category_name in collapsed_by_default:
                     category_widget.toggle_collapse()  # Start collapsed
             
-            # Set/update values
-            self.filter_categories[category_name].set_values(dict(category_values[category_name]))
+            # Set/update values (even if empty - this will clear the category!)
+            self.filter_categories[category_name].set_values(values_for_category)
     
     def on_category_selection_changed(self, category_name: str, selected_values: List[str]):
         """Handle filter selection change in a category"""
