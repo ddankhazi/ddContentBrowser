@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM DD Content Browser - Standalone Launcher (PORTABLE version)
 REM Tries to find Python 3.11 in PATH or common locations
 
@@ -31,8 +32,14 @@ if "%PYTHON_CMD%"=="" (
 
 if "%PYTHON_CMD%"=="" (
     REM Check user AppData location
-    set "COMMON_PYTHON=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311\python.exe"
-    if exist "%COMMON_PYTHON%" set "PYTHON_CMD=%COMMON_PYTHON%"
+    set COMMON_PYTHON=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311\python.exe
+    if exist "!COMMON_PYTHON!" (
+        echo Found Python at !COMMON_PYTHON!
+        set "PYTHON_CMD=!COMMON_PYTHON!"
+    ) else (
+        echo Checking Python installation in user directory...
+        dir "C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311\" 2>nul
+    )
 )
 
 REM 4. If still not found, prompt user
@@ -44,6 +51,15 @@ if "%PYTHON_CMD%"=="" (
 )
 
 echo Using Python: %PYTHON_CMD%
+
+REM Check if PySide6 is installed
+"%PYTHON_CMD%" -c "import PySide6" 2>nul
+if errorlevel 1 (
+    echo Installing PySide6...
+    "%PYTHON_CMD%" -m pip install PySide6
+)
+
+echo Starting application...
 "%PYTHON_CMD%" standalone_launcher_portable.py
 
 pause
