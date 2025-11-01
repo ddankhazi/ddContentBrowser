@@ -148,7 +148,11 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
             
             # Get thumbnail from cache only if enabled
+            # Determine cache key
             file_path_key = str(asset.file_path)
+            if asset.is_sequence and asset.sequence:
+                file_path_key = str(asset.sequence.pattern)
+            
             thumbnail = self.memory_cache.get(file_path_key) if thumbnails_enabled else None
             
             if thumbnail and not thumbnail.isNull():
@@ -245,7 +249,12 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
             
             # Get thumbnail from cache only if enabled
-            thumbnail = self.memory_cache.get(str(asset.file_path)) if thumbnails_enabled else None
+            # For sequences, use pattern as cache key
+            cache_key = str(asset.file_path)
+            if asset.is_sequence and asset.sequence:
+                cache_key = str(asset.sequence.pattern)
+            
+            thumbnail = self.memory_cache.get(cache_key) if thumbnails_enabled else None
             if thumbnail and not thumbnail.isNull():
                 scaled = thumbnail.scaled(thumb_size, thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 # Center the scaled image within thumb_rect (both horizontally and vertically)

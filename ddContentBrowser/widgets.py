@@ -1052,7 +1052,12 @@ def load_hdr_exr_raw(file_path, max_size=2048):
                 return rgb, width, height, resolution_str
                 
         except Exception as e:
-            print(f"OpenEXR raw loading failed: {e}")
+            error_msg = str(e)
+            # Deep/volumetric EXR files are not supported
+            if "non-numeric dtype" in error_msg or "object" in error_msg:
+                print(f"ℹ️  Deep/volumetric EXR not supported for preview: {Path(file_path_str).name}")
+            else:
+                print(f"OpenEXR raw loading failed: {e}")
             return None, None, None, None
     
     # If neither imageio nor OpenEXR available
@@ -1309,7 +1314,12 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                 return pixmap, resolution_str
                 
         except Exception as e:
-            print(f"OpenEXR loading failed: {e}")
+            error_msg = str(e)
+            # Deep/volumetric EXR files are not supported
+            if "non-numeric dtype" in error_msg or "deep/volumetric" in error_msg.lower():
+                print(f"ℹ️  Deep/volumetric EXR not supported for preview: {Path(file_path_str).name}")
+            else:
+                print(f"OpenEXR loading failed: {e}")
             # Fall through to Maya MImage fallback
     
     # Fallback: Use Maya MImage for HDR or if OpenEXR not available

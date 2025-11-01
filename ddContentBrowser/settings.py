@@ -134,10 +134,12 @@ class SettingsManager:
             return default
     
     def set(self, category, key, value):
-        """Set a setting value"""
+        """Set a setting value and save to disk"""
         if category not in self.settings:
             self.settings[category] = {}
         self.settings[category][key] = value
+        # Auto-save after setting value
+        self.save()
     
     def reset_to_defaults(self):
         """Reset all settings to defaults"""

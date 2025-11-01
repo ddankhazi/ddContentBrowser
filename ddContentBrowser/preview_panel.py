@@ -441,7 +441,219 @@ class FlowLayout(QtWidgets.QLayout):
             item = self.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+
+
+class SequencePlaybackWidget(QWidget):
+    """Playback controls for image sequences
     
+    Features:
+    - Play/Pause button
+    - Timeline slider
+    - Frame counter
+    - FPS selector
+    - Keyboard shortcuts (Space, Arrow keys)
+    
+    Signals:
+        frame_changed(int): Emitted when frame changes (0-based index)
+    """
+    
+    frame_changed = Signal(int)  # Emitted when current frame changes
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.sequence = None  # ImageSequence object
+        self.current_frame_index = 0  # 0-based index into sequence.files
+        self.is_playing = False
+        self.fps = 24  # Default FPS
+        
+        # Playback timer
+        self.playback_timer = QtCore.QTimer()
+        self.playback_timer.timeout.connect(self.advance_frame)
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Setup playback controls UI"""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setSpacing(5)
+        
+        # Play/Pause button
+        self.play_button = QToolButton()
+        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.play_button.setToolTip("Play/Pause (Space)")
+        self.play_button.setFixedSize(32, 32)
+        self.play_button.clicked.connect(self.toggle_play_pause)
+        layout.addWidget(self.play_button)
+        
+        # Frame counter label (before slider)
+        self.frame_label = QLabel("Frame: - / -")
+        self.frame_label.setMinimumWidth(100)
+        self.frame_label.setStyleSheet(f"font-family: {UI_FONT}; color: #aaa;")
+        layout.addWidget(self.frame_label)
+        
+        # Timeline slider
+        self.timeline_slider = QtWidgets.QSlider(Qt.Horizontal)
+        self.timeline_slider.setMinimum(0)
+        self.timeline_slider.setMaximum(0)
+        self.timeline_slider.setValue(0)
+        self.timeline_slider.setTickPosition(QtWidgets.QSlider.NoTicks)
+        self.timeline_slider.valueChanged.connect(self.on_slider_changed)
+        layout.addWidget(self.timeline_slider, 1)  # Stretch factor 1
+        
+        # FPS selector
+        layout.addWidget(QLabel("FPS:"))
+        self.fps_combo = QComboBox()
+        self.fps_combo.addItems(["24", "25", "30", "60"])
+        self.fps_combo.setCurrentText("24")
+        self.fps_combo.setMaximumWidth(60)
+        self.fps_combo.currentTextChanged.connect(self.on_fps_changed)
+        layout.addWidget(self.fps_combo)
+    
+    def set_sequence(self, sequence):
+        """Set the image sequence to play
+        
+        Args:
+            sequence: ImageSequence object
+        """
+        self.sequence = sequence
+        self.current_frame_index = 0
+        self.is_playing = False
+        self.playback_timer.stop()
+        
+        if sequence and sequence.files:
+            frame_count = len(sequence.files)
+            self.timeline_slider.setMaximum(frame_count - 1)
+            self.timeline_slider.setValue(0)
+            self.update_frame_label()
+            self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.setEnabled(True)
+        else:
+            self.timeline_slider.setMaximum(0)
+            self.frame_label.setText("Frame: - / -")
+            self.setEnabled(False)
+    
+    def toggle_play_pause(self):
+        """Toggle between play and pause"""
+        if not self.sequence or not self.sequence.files:
+            return
+        
+        if self.is_playing:
+            self.pause()
+        else:
+            self.play()
+    
+    def play(self):
+        """Start playback"""
+        if not self.sequence or not self.sequence.files:
+            return
+        
+        self.is_playing = True
+        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        
+        # Calculate interval in milliseconds
+        interval = int(1000.0 / self.fps)
+        self.playback_timer.start(interval)
+    
+    def pause(self):
+        """Pause playback"""
+        self.is_playing = False
+        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.playback_timer.stop()
+    
+    def advance_frame(self):
+        """Advance to next frame (called by timer)"""
+        if not self.sequence or not self.sequence.files:
+            return
+        
+        # Loop back to start
+        self.current_frame_index = (self.current_frame_index + 1) % len(self.sequence.files)
+        self.timeline_slider.setValue(self.current_frame_index)
+    
+    def on_slider_changed(self, value):
+        """Handle slider value change"""
+        self.current_frame_index = value
+        self.update_frame_label()
+        self.frame_changed.emit(value)
+    
+    def on_fps_changed(self, fps_str):
+        """Handle FPS change"""
+        try:
+            self.fps = int(fps_str)
+            # Update timer interval if playing
+            if self.is_playing:
+                interval = int(1000.0 / self.fps)
+                self.playback_timer.setInterval(interval)
+        except ValueError:
+            pass
+    
+    def update_frame_label(self):
+        """Update frame counter label"""
+        if self.sequence and self.sequence.files:
+            current = self.current_frame_index + 1  # 1-based for display
+            total = len(self.sequence.files)
+            
+            # Get actual frame number from filename
+            file_path = self.sequence.files[self.current_frame_index]
+            frame_num = self.sequence._extract_frame(file_path.name)
+            
+            if frame_num is not None:
+                self.frame_label.setText(f"Frame: {current}/{total} (#{frame_num})")
+            else:
+                self.frame_label.setText(f"Frame: {current}/{total}")
+        else:
+            self.frame_label.setText("Frame: - / -")
+    
+    def step_forward(self):
+        """Step one frame forward"""
+        if not self.sequence or not self.sequence.files:
+            return
+        
+        new_index = min(self.current_frame_index + 1, len(self.sequence.files) - 1)
+        self.timeline_slider.setValue(new_index)
+    
+    def step_backward(self):
+        """Step one frame backward"""
+        if not self.sequence or not self.sequence.files:
+            return
+        
+        new_index = max(self.current_frame_index - 1, 0)
+        self.timeline_slider.setValue(new_index)
+    
+    def go_to_first_frame(self):
+        """Go to first frame"""
+        self.timeline_slider.setValue(0)
+    
+    def go_to_last_frame(self):
+        """Go to last frame"""
+        if self.sequence and self.sequence.files:
+            self.timeline_slider.setValue(len(self.sequence.files) - 1)
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts"""
+        if event.key() == Qt.Key_Space:
+            self.toggle_play_pause()
+            event.accept()
+        elif event.key() == Qt.Key_Right:
+            self.pause()  # Pause if playing
+            self.step_forward()
+            event.accept()
+        elif event.key() == Qt.Key_Left:
+            self.pause()  # Pause if playing
+            self.step_backward()
+            event.accept()
+        elif event.key() == Qt.Key_Home:
+            self.pause()
+            self.go_to_first_frame()
+            event.accept()
+        elif event.key() == Qt.Key_End:
+            self.pause()
+            self.go_to_last_frame()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class PreviewPanel(QWidget):
     """Preview panel showing file preview and metadata"""
     
@@ -490,6 +702,11 @@ class PreviewPanel(QWidget):
         self.is_image_scaled = False
         self.original_image_size = None  # (width, height)
         self.scaled_image_size = None    # (width, height)
+        
+        # Sequence scrubbing state
+        self.is_scrubbing = False  # Track if currently scrubbing through sequence
+        self.scrub_start_pos = None  # Mouse position when scrubbing started
+        self.scrub_start_frame = 0  # Frame index when scrubbing started
         
         self.setMinimumWidth(250)  # Minimum width when visible
         self.setup_ui()
@@ -727,6 +944,12 @@ class PreviewPanel(QWidget):
         
         preview_layout.addWidget(self.exposure_controls)
         self.exposure_controls.hide()  # Hidden by default, shown only for HDR/EXR
+        
+        # === Sequence Playback Controls (only visible for image sequences) ===
+        self.sequence_playback = SequencePlaybackWidget()
+        self.sequence_playback.frame_changed.connect(self.on_sequence_frame_changed)
+        preview_layout.addWidget(self.sequence_playback)
+        self.sequence_playback.hide()  # Hidden by default, shown only for sequences
         
         # Text file preview controls (only visible for text files)
         self.text_controls = QWidget()
@@ -1367,6 +1590,68 @@ class PreviewPanel(QWidget):
         if event_type == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
             self.show_background_menu(event.globalPos() if hasattr(event, 'globalPos') else event.globalPosition().toPoint())
             return True  # Event handled
+        
+        # === SEQUENCE SCRUBBING (Middle Mouse or Ctrl+Left Mouse) ===
+        # Check if we're viewing a sequence
+        is_sequence = (self.current_assets and len(self.current_assets) == 1 and 
+                      self.current_assets[0].is_sequence and self.current_assets[0].sequence)
+        
+        if is_sequence and not self.zoom_mode:
+            # Mouse press - start scrubbing
+            if event_type == QEvent.MouseButtonPress:
+                # Middle mouse button OR Ctrl+Left mouse
+                if (event.button() == Qt.MiddleButton or 
+                    (event.button() == Qt.LeftButton and QtWidgets.QApplication.keyboardModifiers() == Qt.ControlModifier)):
+                    
+                    try:
+                        self.scrub_start_pos = event.globalPosition().toPoint()
+                    except AttributeError:
+                        self.scrub_start_pos = event.globalPos()
+                    
+                    self.scrub_start_frame = self.sequence_playback.current_frame_index
+                    self.is_scrubbing = True
+                    
+                    # Pause playback while scrubbing
+                    if self.sequence_playback.is_playing:
+                        self.sequence_playback.pause()
+                    
+                    self.graphics_view.setCursor(Qt.SizeHorCursor)
+                    return True  # Event handled
+            
+            # Mouse move - scrub through frames
+            if event_type == QEvent.MouseMove and self.is_scrubbing and self.scrub_start_pos is not None:
+                try:
+                    current_pos = event.globalPosition().toPoint()
+                except AttributeError:
+                    current_pos = event.globalPos()
+                
+                # Calculate horizontal offset in pixels
+                delta_x = current_pos.x() - self.scrub_start_pos.x()
+                
+                # Convert pixels to frames (every 10 pixels = 1 frame)
+                scrub_sensitivity = 10  # Lower = more sensitive
+                frame_offset = delta_x // scrub_sensitivity
+                
+                # Calculate new frame index
+                sequence = self.current_assets[0].sequence
+                new_frame_index = self.scrub_start_frame + frame_offset
+                new_frame_index = max(0, min(new_frame_index, len(sequence.files) - 1))
+                
+                # Update frame if changed
+                if new_frame_index != self.sequence_playback.current_frame_index:
+                    self.sequence_playback.timeline_slider.setValue(new_frame_index)
+                
+                return True  # Event handled
+            
+            # Mouse release - stop scrubbing
+            if event_type == QEvent.MouseButtonRelease:
+                if ((event.button() == Qt.MiddleButton or event.button() == Qt.LeftButton) and 
+                    self.is_scrubbing):
+                    
+                    self.is_scrubbing = False
+                    self.scrub_start_pos = None
+                    self.graphics_view.setCursor(Qt.ArrowCursor)
+                    return True  # Event handled
         
         # Mouse press - start panning in zoom mode
         if event_type == QEvent.MouseButtonPress and self.zoom_mode and event.button() == Qt.LeftButton:
@@ -2083,6 +2368,7 @@ class PreviewPanel(QWidget):
         # Hide all control panels initially
         self.exposure_controls.hide()
         self.text_controls.hide()
+        self.sequence_playback.hide()
         
         # Hide PDF overlay controls
         self.pdf_prev_overlay.hide()
@@ -2091,6 +2377,24 @@ class PreviewPanel(QWidget):
         
         self.title_label.setText(f"Preview: {asset.name}")
         self.clear_metadata()
+        
+        # Check if this is an image sequence
+        if asset.is_sequence and asset.sequence:
+            # Show sequence playback controls
+            self.sequence_playback.set_sequence(asset.sequence)
+            self.sequence_playback.show()
+            
+            # Load and display the first frame by default (matching the frame counter)
+            if asset.sequence.files:
+                first_frame_path = asset.sequence.files[0]
+                self.load_sequence_frame(first_frame_path, asset)
+                # Update playback widget to show frame 0
+                self.sequence_playback.current_frame_index = 0
+                self.sequence_playback.timeline_slider.setValue(0)
+                self.sequence_playback.update_frame_label()
+            
+            # Don't load individual file preview for sequences
+            return
         
         # Store current image path for zoom viewer
         if asset.is_image_file:
@@ -2398,6 +2702,16 @@ class PreviewPanel(QWidget):
         # Add metadata
         self.add_metadata_row("📄", "Name", asset.name)
         
+        # If this is a sequence, add sequence-specific metadata
+        if asset.is_sequence and asset.sequence:
+            seq = asset.sequence
+            self.add_metadata_row("🎬", "Sequence", f"{seq.frame_count} frames")
+            self.add_metadata_row("📊", "Frame Range", f"{seq.first_frame}-{seq.last_frame}")
+            if not seq.is_continuous and seq.missing_frames:
+                missing_count = len(seq.missing_frames)
+                self.add_metadata_row("⚠️", "Missing", f"{missing_count} frames")
+            self.add_metadata_row("💾", "Total Size", self.format_file_size(seq.total_size))
+        
         # File type with special handling for PDF
         if asset.is_pdf_file:
             file_type = "PDF Document"
@@ -2405,7 +2719,9 @@ class PreviewPanel(QWidget):
             file_type = asset.extension.upper() + " file"
         self.add_metadata_row("🗂️", "Type", file_type)
         
-        self.add_metadata_row("💾", "Size", self.format_file_size(asset.size))
+        if not asset.is_sequence:
+            # Only show individual file size if not a sequence
+            self.add_metadata_row("💾", "Size", self.format_file_size(asset.size))
         
         # Image resolution (use cached value if available)
         if asset.is_image_file and resolution_str:
@@ -5079,4 +5395,182 @@ class PreviewPanel(QWidget):
             splitter_state = self.preview_splitter.saveState().toBase64().data().decode()
             self.config.config["preview_splitter_position"] = splitter_state
             self.config.save_config()
+    
+    def on_sequence_frame_changed(self, frame_index):
+        """Handle sequence frame change from playback widget
+        
+        Args:
+            frame_index: 0-based index into sequence.files
+        """
+        if not self.current_assets or not self.current_assets[0].is_sequence:
+            return
+        
+        asset = self.current_assets[0]
+        sequence = asset.sequence
+        
+        if not sequence or frame_index >= len(sequence.files):
+            return
+        
+        # Get the frame Path object (sequence.files is a list of Path objects)
+        frame_path = sequence.files[frame_index]
+        
+        # Load and display this frame
+        self.load_sequence_frame(frame_path, asset)
+    
+    def load_sequence_frame(self, frame_path, asset):
+        """Load and display a specific frame from a sequence
+        
+        Args:
+            frame_path: Path to the frame file
+            asset: The sequence AssetItem (for metadata access)
+        """
+        self.graphics_scene.clear()
+        self.current_text_item = None
+        self.current_pixmap = None
+        
+        file_path_str = str(frame_path)
+        file_ext = file_path_str.lower()
+        
+        # Check if this is HDR/EXR
+        is_hdr_exr = file_ext.endswith('.hdr') or file_ext.endswith('.exr')
+        
+        # Setup exposure controls if HDR/EXR
+        if is_hdr_exr:
+            self.current_hdr_path = file_path_str
+            self.exposure_controls.show()
+            # Keep current exposure value (don't reset for sequences)
+        else:
+            self.current_hdr_path = None
+            self.exposure_controls.hide()
+        
+        # Try to load from cache first (for non-HDR)
+        pixmap = None
+        resolution_str = None
+        
+        if not is_hdr_exr and file_path_str in self.preview_cache:
+            pixmap, resolution_str = self.preview_cache[file_path_str]
+            self.current_pixmap = pixmap
+            self.fit_pixmap_to_label()
+            return
+        
+        # Load the frame
+        try:
+            if is_hdr_exr:
+                # Load HDR/EXR with exposure
+                rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
+                
+                if rgb_raw is not None:
+                    self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
+                    pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure)
+                else:
+                    pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
+                
+                if pixmap:
+                    self.current_pixmap = pixmap
+                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                    self.fit_pixmap_to_label()
+            else:
+                # Standard image loading
+                if file_ext.endswith('.tx'):
+                    try:
+                        from .widgets import load_oiio_image
+                        pixmap, resolution_str, metadata = load_oiio_image(
+                            file_path_str,
+                            max_size=1024,
+                            mip_level=0,
+                            exposure=0.0
+                        )
+                    except:
+                        pixmap = None
+                
+                # For TGA files, skip QImageReader (causes warnings) and use PIL directly
+                if not pixmap and file_ext.endswith('.tga'):
+                    try:
+                        from PIL import Image
+                        Image.MAX_IMAGE_PIXELS = None  # Disable decompression bomb warning
+                        
+                        pil_image = Image.open(file_path_str)
+                        original_size = pil_image.size
+                        resolution_str = f"{original_size[0]} x {original_size[1]}"
+                        
+                        # Convert to RGB
+                        if pil_image.mode not in ('RGB', 'L'):
+                            pil_image = pil_image.convert('RGB')
+                        elif pil_image.mode == 'L':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        # Scale if needed
+                        if original_size[0] > 1024 or original_size[1] > 1024:
+                            pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                        
+                        # Convert PIL to QPixmap
+                        import numpy as np
+                        img_array = np.array(pil_image)
+                        height, width = img_array.shape[:2]
+                        bytes_per_line = width * 3
+                        
+                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(q_image.copy())
+                        
+                    except Exception as pil_error:
+                        print(f"[Preview] PIL loading failed for {Path(file_path_str).name}: {pil_error}")
+                        pixmap = None
+                
+                if not pixmap:
+                    # Use standard Qt loading for other formats
+                    reader = QImageReader(file_path_str)
+                    reader.setAutoTransform(True)
+                    
+                    # Scale if needed
+                    size = reader.size()
+                    if size.width() > 1024 or size.height() > 1024:
+                        scaled_size = size.scaled(1024, 1024, Qt.KeepAspectRatio)
+                        reader.setScaledSize(scaled_size)
+                    
+                    image = reader.read()
+                    if not image.isNull():
+                        pixmap = QPixmap.fromImage(image)
+                        resolution_str = f"{size.width()} x {size.height()}"
+                    else:
+                        # QImageReader failed - try PIL fallback for other special formats
+                        try:
+                            from PIL import Image
+                            Image.MAX_IMAGE_PIXELS = None  # Disable decompression bomb warning
+                            
+                            pil_image = Image.open(file_path_str)
+                            original_size = pil_image.size
+                            resolution_str = f"{original_size[0]} x {original_size[1]}"
+                            
+                            # Convert to RGB
+                            if pil_image.mode not in ('RGB', 'L'):
+                                pil_image = pil_image.convert('RGB')
+                            elif pil_image.mode == 'L':
+                                pil_image = pil_image.convert('RGB')
+                            
+                            # Scale if needed
+                            if original_size[0] > 1024 or original_size[1] > 1024:
+                                pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                            
+                            # Convert PIL to QPixmap
+                            import numpy as np
+                            img_array = np.array(pil_image)
+                            height, width = img_array.shape[:2]
+                            bytes_per_line = width * 3
+                            
+                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                            pixmap = QPixmap.fromImage(q_image.copy())
+                            
+                        except Exception as pil_error:
+                            print(f"[Preview] PIL fallback failed for {Path(file_path_str).name}: {pil_error}")
+                            pixmap = None
+                
+                if pixmap and not pixmap.isNull():
+                    self.current_pixmap = pixmap
+                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                    self.fit_pixmap_to_label()
+        
+        except Exception as e:
+            print(f"Error loading sequence frame {frame_path}: {e}")
+            self.graphics_scene.clear()
+            self.current_text_item = None
 

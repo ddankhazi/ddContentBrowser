@@ -25,12 +25,37 @@ from .advanced_filters_v2 import AdvancedFiltersPanelV2
 # PySide imports
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import Qt, QTimer, qInstallMessageHandler
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2 import QtCore, QtWidgets, QtGui
-    from PySide2.QtCore import Qt, QTimer
+    from PySide2.QtCore import Qt, QTimer, qInstallMessageHandler
     PYSIDE_VERSION = 2
+
+# Custom Qt message handler to suppress TGA warnings globally
+def qt_message_handler(msg_type, context, message):
+    """Suppress QTgaHandler allocation warnings (we handle large TGA files properly)"""
+    # Suppress ALL TGA-related warnings (Qt's TGA handler is unreliable)
+    if "QTgaHandler" in message:
+        return
+    
+    # Pass through other messages
+    if PYSIDE_VERSION == 6:
+        from PySide6.QtCore import QtMsgType
+    else:
+        from PySide2.QtCore import QtMsgType
+    
+    if msg_type == QtMsgType.QtDebugMsg:
+        print(f"Qt Debug: {message}")
+    elif msg_type == QtMsgType.QtWarningMsg:
+        print(f"Qt Warning: {message}")
+    elif msg_type == QtMsgType.QtCriticalMsg:
+        print(f"Qt Critical: {message}")
+    elif msg_type == QtMsgType.QtFatalMsg:
+        print(f"Qt Fatal: {message}")
+
+# Install the message handler GLOBALLY (affects all Qt operations including cache.py)
+qInstallMessageHandler(qt_message_handler)
 
 # Maya imports
 try:
@@ -424,6 +449,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         preview_visible = self.config.config.get("preview_panel_visible", True)
         self.preview_panel.setVisible(preview_visible)
         self.preview_toggle_btn.setChecked(preview_visible)
+        
+        # Restore sequence mode from config (UI state)
+        sequence_mode = self.config.config.get("sequence_mode", False)
+        self.sequence_mode_checkbox.setChecked(sequence_mode)
+        self.file_model.sequence_mode = sequence_mode
         
         # Apply settings from settings manager (overrides config if exists)
         self.apply_settings()
@@ -838,6 +868,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.thumbnails_enabled_checkbox.setToolTip("Enable/disable thumbnail generation and loading")
         view_toolbar.addWidget(self.thumbnails_enabled_checkbox)
         
+        # Sequence mode toggle checkbox (will be initialized later from settings)
+        self.sequence_mode_checkbox = QtWidgets.QCheckBox("Sequences")
+        self.sequence_mode_checkbox.setToolTip("Group image sequences into single items\n(e.g. render_0001-0120.jpg → render_####.jpg)")
+        view_toolbar.addWidget(self.sequence_mode_checkbox)
+        
         view_toolbar.addStretch()
         browser_layout.addLayout(view_toolbar)
         
@@ -1080,6 +1115,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.browse_btn.clicked.connect(self.browse_for_folder)
         self.breadcrumb.path_clicked.connect(self.navigate_to_path)
         self.preview_toggle_btn.clicked.connect(self.toggle_preview_panel)
+        self.sequence_mode_checkbox.stateChanged.connect(self.toggle_sequence_mode)
         self.include_subfolders_checkbox.stateChanged.connect(self.on_subfolder_toggle)
         
         # Search bar connections
@@ -1884,6 +1920,35 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.config.config["preview_panel_visible"] = not is_visible
         self.config.save_config()
     
+    def toggle_sequence_mode(self):
+        """Toggle image sequence grouping mode"""
+        is_checked = self.sequence_mode_checkbox.isChecked()
+        
+        # Update model
+        self.file_model.sequence_mode = is_checked
+        
+        # Clear BOTH thumbnail cache AND directory cache!
+        # This ensures thumbnails are regenerated with correct cache keys
+        # AND the asset list is reloaded from filesystem (not from cached grouped list)
+        self.memory_cache.clear()
+        self.file_model.clear_cache()
+        
+        # Refresh view to apply grouping (force=True bypasses cache)
+        self.file_model.beginResetModel()
+        self.file_model.refresh(force=True)
+        self.file_model.endResetModel()
+        
+        # Update status
+        if is_checked:
+            self.safe_show_status("Sequence mode enabled - Image sequences are grouped")
+        else:
+            self.safe_show_status("Sequence mode disabled - Showing individual files")
+        
+        # Save state to config (UI state, not settings)
+        self.config.config["sequence_mode"] = is_checked
+        self.config.save_config()
+
+    
     def on_item_double_clicked(self, index):
         """Handle double-click on item - navigate into folders or import files"""
         asset = self.file_model.data(index, Qt.UserRole)
@@ -2183,9 +2248,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 if asset and asset.should_generate_thumbnail:
                     file_path_str = str(asset.file_path)
                     
+                    # For sequences, check cache using pattern as key
+                    cache_key = file_path_str
+                    if asset.is_sequence and asset.sequence:
+                        cache_key = str(asset.sequence.pattern)
+                    
                     # CHECK MEMORY CACHE ONLY (fast check, no disk I/O)
-                    if self.memory_cache.get(file_path_str) is None:
-                        visible_items.append((file_path_str, asset.modified_time))
+                    if self.memory_cache.get(cache_key) is None:
+                        visible_items.append((file_path_str, asset.modified_time, asset))
         
         # CLEAR the queue and add ONLY visible items with PRIORITY
         # This ensures we prioritize what user is currently viewing
@@ -2195,8 +2265,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             
             # Add visible items to queue in REVERSE order so they process top-to-bottom
             # (since we pop() from the end, last added = first processed)
-            for file_path, modified_time in reversed(visible_items):
-                self.thumbnail_generator.add_to_queue(file_path, modified_time, priority=True)
+            for file_path, modified_time, asset in reversed(visible_items):
+                self.thumbnail_generator.add_to_queue(file_path, modified_time, priority=True, asset=asset)
         
         # Optionally: add non-visible items with lower priority (background loading)
         # This can be enabled with a config option
@@ -2212,7 +2282,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     if asset and asset.should_generate_thumbnail:
                         self.thumbnail_generator.add_to_queue(
                             str(asset.file_path),
-                            asset.modified_time
+                            asset.modified_time,
+                            asset=asset
                         )
     
     def on_splitter_moved(self, pos, index):

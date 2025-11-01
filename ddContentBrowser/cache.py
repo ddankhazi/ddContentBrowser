@@ -421,8 +421,15 @@ class ThumbnailGenerator(QThread):
         except Exception as e:
             print(f"[Cache] Could not set image allocation limit: {e}")
         
-    def add_to_queue(self, file_path, file_mtime, priority=False):
-        """Add file to generation queue with optional priority"""
+    def add_to_queue(self, file_path, file_mtime, priority=False, asset=None):
+        """Add file to generation queue with optional priority and asset
+        
+        Args:
+            file_path: Path to file
+            file_mtime: File modification time
+            priority: Priority flag (unused, kept for compatibility)
+            asset: Optional AssetItem object (for sequence support)
+        """
         # Check if already in queue
         for item in self.queue:
             if item[0] == file_path:
@@ -430,7 +437,7 @@ class ThumbnailGenerator(QThread):
         
         # Just append to queue - priority is handled by clearing old items
         # Items are added in visible order (top to bottom)
-        self.queue.append((file_path, file_mtime))
+        self.queue.append((file_path, file_mtime, asset))
         self.total_count += 1  # Increment total when adding to queue
     
     def clear_queue(self):
@@ -452,7 +459,15 @@ class ThumbnailGenerator(QThread):
                 continue
             
             # Get next item from queue (pop from END for correct order)
-            file_path, file_mtime = self.queue.pop()  # pop() = pop(-1) = last item
+            queue_item = self.queue.pop()  # pop() = pop(-1) = last item
+            
+            # Extract components (backwards compatible with old tuple format)
+            if len(queue_item) == 3:
+                file_path, file_mtime, asset = queue_item
+            else:
+                file_path, file_mtime = queue_item
+                asset = None
+            
             self.current_file = file_path
             
             # Increment processed count and emit progress
@@ -461,30 +476,39 @@ class ThumbnailGenerator(QThread):
                 self.progress_update.emit(self.processed_count, self.total_count)
             
             try:
+                # For sequences, use pattern as cache key instead of file path
+                cache_key = file_path
+                is_sequence = asset and asset.is_sequence and asset.sequence
+                if is_sequence:
+                    # Use sequence pattern as cache key (e.g. "render_####.jpg")
+                    cache_key = str(asset.sequence.pattern)
+                
                 # Check memory cache first
-                cached = self.memory_cache.get(file_path)
+                cached = self.memory_cache.get(cache_key)
                 if cached:
                     self.cache_status.emit("cache")
                     self.thumbnail_ready.emit(file_path, cached)
                     continue
                 
-                # Check disk cache
-                cached = self.disk_cache.get(file_path, file_mtime)
-                if cached and not cached.isNull():
-                    # Valid cached pixmap
-                    self.cache_status.emit("cache")
-                    self.memory_cache.set(file_path, cached)
-                    self.thumbnail_ready.emit(file_path, cached)
-                    continue
+                # Check disk cache (skip for sequences for now - always regenerate)
+                if not is_sequence:
+                    cached = self.disk_cache.get(file_path, file_mtime)
+                    if cached and not cached.isNull():
+                        # Valid cached pixmap
+                        self.cache_status.emit("cache")
+                        self.memory_cache.set(file_path, cached)
+                        self.thumbnail_ready.emit(file_path, cached)
+                        continue
                 
                 # Generate new thumbnail
                 self.cache_status.emit("generating")
-                pixmap = self._generate_thumbnail(file_path)
+                pixmap = self._generate_thumbnail(file_path, asset)
                 
                 if pixmap and not pixmap.isNull():
                     # Save to caches with configured JPEG quality
-                    self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
-                    self.memory_cache.set(file_path, pixmap)
+                    if not is_sequence:
+                        self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
+                    self.memory_cache.set(cache_key, pixmap)
                     
                     # Emit signal
                     self.thumbnail_ready.emit(file_path, pixmap)
@@ -797,20 +821,35 @@ class ThumbnailGenerator(QThread):
         
         return None
     
-    def _generate_thumbnail(self, file_path):
+    def _generate_thumbnail(self, file_path, asset=None):
         """
         Generate thumbnail from file
         
         For images/PDFs: Load and scale the actual image/first page
+        For sequences: Load middle frame and add badge overlay
         For 3D files: Generate gradient icon (safe mode)
         
         Args:
-            file_path: Path to file
+            file_path: Path to file (or sequence pattern for sequences)
+            asset: Optional AssetItem object (for sequence support)
             
         Returns:
             QPixmap or None
         """
         from .utils import get_thumbnail_method
+        
+        # Check if this is a sequence - use middle frame for thumbnail
+        if asset and asset.is_sequence and asset.sequence:
+            middle_frame_path = asset.sequence.get_middle_frame()
+            if middle_frame_path:
+                # Generate thumbnail from middle frame
+                pixmap = self._generate_image_thumbnail(middle_frame_path)
+                
+                if pixmap and not pixmap.isNull():
+                    # Add badge overlay with frame count
+                    pixmap = self._add_sequence_badge(pixmap, asset.sequence.frame_count)
+                
+                return pixmap
         
         extension = os.path.splitext(str(file_path))[1].lower()
         
@@ -824,6 +863,78 @@ class ThumbnailGenerator(QThread):
         # 3D files and other types - don't generate placeholder in cache
         # The delegate will draw gradient placeholder directly (faster, no scaling)
         return None
+    
+    def _add_sequence_badge(self, pixmap, frame_count):
+        """
+        Add badge overlay to sequence thumbnail showing frame count
+        
+        Args:
+            pixmap: Original thumbnail pixmap
+            frame_count: Number of frames in sequence
+            
+        Returns:
+            QPixmap with badge overlay
+        """
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtGui import QPainter, QColor, QFont, QPen, QBrush
+            from PySide6.QtCore import Qt, QRect
+        else:
+            from PySide2.QtGui import QPainter, QColor, QFont, QPen, QBrush
+            from PySide2.QtCore import Qt, QRect
+        
+        # Create a copy to draw on
+        result = pixmap.copy()
+        
+        # Setup painter
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Badge dimensions
+        badge_height = max(16, int(result.height() * 0.15))
+        badge_margin = 2
+        
+        # Badge text
+        badge_text = f"{frame_count} frames"
+        
+        # Setup font
+        font = QFont()
+        font.setPixelSize(max(9, int(badge_height * 0.6)))
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # Calculate text size
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(badge_text)
+        text_height = metrics.height()
+        
+        # Badge rectangle (bottom of thumbnail)
+        badge_width = text_width + badge_margin * 4
+        badge_rect = QRect(
+            (result.width() - badge_width) // 2,  # Centered horizontally
+            result.height() - badge_height - badge_margin,  # Bottom
+            badge_width,
+            badge_height
+        )
+        
+        # Draw semi-transparent background
+        painter.setPen(Qt.NoPen)
+        bg_color = QColor(0, 0, 0, 180)  # Black with 70% opacity
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(badge_rect, 3, 3)
+        
+        # Draw text
+        painter.setPen(QPen(QColor(255, 255, 255)))  # White text
+        text_rect = QRect(
+            badge_rect.x() + badge_margin * 2,
+            badge_rect.y() + (badge_height - text_height) // 2,
+            text_width,
+            text_height
+        )
+        painter.drawText(text_rect, Qt.AlignCenter, badge_text)
+        
+        painter.end()
+        
+        return result
     
     def _generate_image_thumbnail(self, file_path):
         """
@@ -885,7 +996,15 @@ class ThumbnailGenerator(QThread):
                     else:
                         raise Exception("EXR loader returned null pixmap")
                 except Exception as e:
-                    print(f"[Cache] EXR loading failed: {e}, trying QPixmap fallback...")
+                    error_msg = str(e)
+                    # Deep/volumetric EXR files are not supported
+                    if "deep/volumetric" in error_msg.lower() or "non-numeric dtype" in error_msg:
+                        if DEBUG_MODE:
+                            print(f"[Cache] Deep/volumetric EXR not supported: {Path(file_path).name}")
+                        return self._get_default_icon(file_path)
+                    else:
+                        if DEBUG_MODE:
+                            print(f"[Cache] EXR loading failed: {e}, trying QPixmap fallback...")
                     # Fall through to QPixmap method below
             
             # Special handling for HDR/TIFF/TGA/PSD files - use OpenCV or PIL for better format support
@@ -1038,8 +1157,10 @@ class ThumbnailGenerator(QThread):
                         if pil_image.mode not in ('RGB', 'L'):
                             if DEBUG_MODE:
                                 print(f"[THUMB] Converting {pil_image.mode} to RGB...")
-                                pil_image = pil_image.convert('RGB')
+                            pil_image = pil_image.convert('RGB')
                         elif pil_image.mode == 'L':
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Converting grayscale to RGB...")
                             pil_image = pil_image.convert('RGB')
                         
                         # Resize
@@ -1062,7 +1183,11 @@ class ThumbnailGenerator(QThread):
                             pixmap = QPixmap.fromImage(q_image.copy())
                             if DEBUG_MODE:
                                 print(f"[THUMB] ✓ PIL fallback successful: {width}×{height}")
+                            if pixmap and not pixmap.isNull():
                                 return pixmap
+                        
+                        if DEBUG_MODE:
+                            print(f"[THUMB] PIL unexpected channels={channels}, falling through...")
                     except Exception as pil_error:
                         print(f"[THUMB] PIL fallback also failed: {pil_error}")
                         
@@ -1243,8 +1368,13 @@ class ThumbnailGenerator(QThread):
             pixmap = QPixmap(str(file_path))
             
             if pixmap.isNull():
-                # Failed to load, use default icon
-                print(f"[Cache] QPixmap failed to load: {file_path}")
+                # Failed to load - check if it's a known unsupported format
+                if extension == '.exr':
+                    # Deep EXR already logged above, just return default icon quietly
+                    if DEBUG_MODE:
+                        print(f"[Cache] Using default icon for unsupported EXR: {Path(file_path).name}")
+                else:
+                    print(f"[Cache] QPixmap failed to load: {file_path}")
                 return self._get_default_icon(file_path)
             
             # Scale to thumbnail size (keep aspect ratio)

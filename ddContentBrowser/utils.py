@@ -634,3 +634,182 @@ def get_extensions_for_thumbnail_method(method):
             extensions.append(ext)
     
     return extensions
+
+
+# ============================================================================
+# IMAGE SEQUENCE DETECTION
+# ============================================================================
+
+import re
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+
+
+def detect_sequence_pattern(filename):
+    """
+    Detect if a filename contains a frame number pattern.
+    
+    Supported patterns:
+    - Underscore separator: render_0001.jpg, shot_####.exr
+    - Dot separator: render.0001.jpg, shot.####.exr
+    - Printf style: render%04d.jpg
+    - Mixed: shot_v001_0001.jpg (version + frame)
+    
+    Returns:
+        tuple: (base_name, frame_number, padding, separator) or None if no pattern
+        
+    Examples:
+        'render_0001.jpg' -> ('render', 1, 4, '_')
+        'shot.0123.exr' -> ('shot', 123, 4, '.')
+        'anim####.png' -> ('anim', None, 4, '')
+        'frame%04d.tif' -> ('frame', None, 4, '%')
+    """
+    stem = Path(filename).stem
+    
+    # Pattern 1: name_0001 or name.0001 (most common)
+    match = re.match(r'^(.+?)[_.](\d+)$', stem)
+    if match:
+        base_name = match.group(1)
+        frame_str = match.group(2)
+        separator = stem[len(base_name)]  # Get actual separator
+        return (base_name, int(frame_str), len(frame_str), separator)
+    
+    # Pattern 2: name#### (hash padding)
+    match = re.match(r'^(.+?)(#+)$', stem)
+    if match:
+        base_name = match.group(1).rstrip('_.')  # Remove trailing separator if any
+        padding = len(match.group(2))
+        return (base_name, None, padding, '#')
+    
+    # Pattern 3: name%04d (printf style)
+    match = re.match(r'^(.+?)%0?(\d+)d$', stem)
+    if match:
+        base_name = match.group(1).rstrip('_.')
+        padding = int(match.group(2)) if match.group(2) else 1
+        return (base_name, None, padding, '%')
+    
+    return None
+
+
+def group_image_sequences(file_paths: List[Path]) -> Dict[str, List[Path]]:
+    """
+    Group image files into sequences.
+    
+    Args:
+        file_paths: List of Path objects (images only)
+        
+    Returns:
+        Dict with keys as sequence patterns and values as sorted file lists
+        
+    Example:
+        Input: [render_0001.jpg, render_0002.jpg, other.png]
+        Output: {
+            'render_####.jpg': [render_0001.jpg, render_0002.jpg],
+            'other.png': [other.png]  # Single file
+        }
+    """
+    sequences = {}
+    single_files = {}
+    
+    for path in file_paths:
+        pattern_info = detect_sequence_pattern(path.name)
+        
+        if pattern_info:
+            base_name, frame_num, padding, separator = pattern_info
+            ext = path.suffix
+            
+            # Create sequence key
+            if separator == '#':
+                # Already has hash padding
+                seq_key = f"{base_name}{'#' * padding}{ext}"
+            elif separator == '%':
+                # Printf style
+                seq_key = f"{base_name}%0{padding}d{ext}"
+            else:
+                # Underscore or dot separator with numeric padding
+                seq_key = f"{base_name}{separator}{'#' * padding}{ext}"
+            
+            if seq_key not in sequences:
+                sequences[seq_key] = []
+            sequences[seq_key].append(path)
+        else:
+            # Not a sequence - treat as single file
+            single_files[path.name] = [path]
+    
+    # Sort each sequence by frame number
+    for seq_key, files in sequences.items():
+        sequences[seq_key] = sorted(files, key=lambda p: extract_frame_number(p.name))
+    
+    # Filter out single-file "sequences" - move them to single_files
+    actual_sequences = {}
+    for seq_key, files in sequences.items():
+        if len(files) > 1:
+            actual_sequences[seq_key] = files
+        else:
+            # Only one file - not really a sequence
+            single_files[files[0].name] = files
+    
+    # Merge sequences and single files
+    return {**actual_sequences, **single_files}
+
+
+def extract_frame_number(filename: str) -> int:
+    """
+    Extract frame number from a filename.
+    Returns 0 if no frame number found.
+    """
+    pattern_info = detect_sequence_pattern(filename)
+    if pattern_info and pattern_info[1] is not None:
+        return pattern_info[1]
+    return 0
+
+
+def get_sequence_frame_range(file_paths: List[Path]) -> Tuple[int, int, List[int]]:
+    """
+    Get frame range from a list of sequence files.
+    
+    Returns:
+        tuple: (first_frame, last_frame, missing_frames)
+        
+    Example:
+        [render_0001.jpg, render_0003.jpg] -> (1, 3, [2])
+    """
+    if not file_paths:
+        return (0, 0, [])
+    
+    frame_numbers = []
+    for path in file_paths:
+        pattern_info = detect_sequence_pattern(path.name)
+        if pattern_info and pattern_info[1] is not None:
+            frame_numbers.append(pattern_info[1])
+    
+    if not frame_numbers:
+        return (0, 0, [])
+    
+    frame_numbers.sort()
+    first_frame = frame_numbers[0]
+    last_frame = frame_numbers[-1]
+    
+    # Find missing frames
+    expected_frames = set(range(first_frame, last_frame + 1))
+    actual_frames = set(frame_numbers)
+    missing_frames = sorted(expected_frames - actual_frames)
+    
+    return (first_frame, last_frame, missing_frames)
+
+
+def format_sequence_pattern(base_name: str, padding: int, separator: str, extension: str) -> str:
+    """
+    Format a sequence pattern string.
+    
+    Examples:
+        ('render', 4, '_', '.jpg') -> 'render_####.jpg'
+        ('shot', 4, '.', '.exr') -> 'shot.####.exr'
+    """
+    if separator == '#':
+        return f"{base_name}{'#' * padding}{extension}"
+    elif separator == '%':
+        return f"{base_name}%0{padding}d{extension}"
+    else:
+        return f"{base_name}{separator}{'#' * padding}{extension}"
+

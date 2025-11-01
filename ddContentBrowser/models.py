@@ -48,6 +48,132 @@ def natural_sort_key(text):
     return [convert(c) for c in re.split(r'(\d+)', text)]
 
 
+# ============================================================================
+# IMAGE SEQUENCE
+# ============================================================================
+
+class ImageSequence:
+    """
+    Represents an image sequence (e.g. render_0001.jpg, render_0002.jpg, ...)
+    
+    Attributes:
+        base_name: Base name without frame number (e.g. 'render')
+        pattern: Pattern string (e.g. 'render_####.jpg')
+        first_frame: First frame number
+        last_frame: Last frame number
+        padding: Number of digits in frame number
+        separator: Separator character ('_', '.', '#', '%')
+        extension: File extension (e.g. '.jpg')
+        files: List of Path objects (sorted by frame number)
+        missing_frames: List of missing frame numbers
+    """
+    
+    def __init__(self, pattern: str, files: list):
+        """
+        Initialize image sequence from pattern and file list.
+        
+        Args:
+            pattern: Sequence pattern (e.g. 'render_####.jpg')
+            files: List of Path objects belonging to this sequence
+        """
+        self.pattern = pattern
+        self.files = sorted(files, key=lambda p: self._extract_frame(p.name))
+        
+        if not self.files:
+            raise ValueError("ImageSequence requires at least one file")
+        
+        # Parse pattern to extract metadata
+        from .utils import detect_sequence_pattern, get_sequence_frame_range
+        
+        first_file = self.files[0]
+        pattern_info = detect_sequence_pattern(first_file.name)
+        
+        if pattern_info:
+            self.base_name, _, self.padding, self.separator = pattern_info
+        else:
+            # Fallback for single files treated as sequences
+            self.base_name = first_file.stem
+            self.padding = 0
+            self.separator = ''
+        
+        self.extension = first_file.suffix
+        self.directory = first_file.parent
+        
+        # Calculate frame range
+        self.first_frame, self.last_frame, self.missing_frames = get_sequence_frame_range(self.files)
+        
+        # Frame to file mapping for fast lookup
+        self._frame_map = {}
+        for file_path in self.files:
+            frame_num = self._extract_frame(file_path.name)
+            if frame_num is not None:
+                self._frame_map[frame_num] = file_path
+    
+    def _extract_frame(self, filename: str) -> int:
+        """Extract frame number from filename"""
+        from .utils import extract_frame_number
+        return extract_frame_number(filename)
+    
+    def get_frame_path(self, frame_number: int) -> Path:
+        """
+        Get file path for a specific frame number.
+        Returns None if frame doesn't exist.
+        """
+        return self._frame_map.get(frame_number)
+    
+    def get_frame_index(self, frame_number: int) -> int:
+        """
+        Get list index for a frame number.
+        Returns -1 if frame doesn't exist.
+        """
+        for i, file_path in enumerate(self.files):
+            if self._extract_frame(file_path.name) == frame_number:
+                return i
+        return -1
+    
+    def get_middle_frame(self) -> Path:
+        """Get the middle frame of the sequence (for thumbnails)"""
+        if not self.files:
+            return None
+        middle_index = len(self.files) // 2
+        return self.files[middle_index]
+    
+    def get_first_frame_path(self) -> Path:
+        """Get the first frame file path"""
+        return self.files[0] if self.files else None
+    
+    def get_last_frame_path(self) -> Path:
+        """Get the last frame file path"""
+        return self.files[-1] if self.files else None
+    
+    @property
+    def frame_count(self) -> int:
+        """Total number of frames in sequence"""
+        return len(self.files)
+    
+    @property
+    def is_continuous(self) -> bool:
+        """Check if sequence has no missing frames"""
+        return len(self.missing_frames) == 0
+    
+    @property
+    def total_size(self) -> int:
+        """Total size of all files in bytes"""
+        total = 0
+        for file_path in self.files:
+            try:
+                total += file_path.stat().st_size
+            except:
+                pass
+        return total
+    
+    def __repr__(self):
+        return f"ImageSequence('{self.pattern}', frames={self.frame_count}, range={self.first_frame}-{self.last_frame})"
+    
+    def __len__(self):
+        return len(self.files)
+
+
 class AssetItem:
     """Asset item representation with lazy stat loading"""
     
@@ -56,6 +182,10 @@ class AssetItem:
         self.name = self.file_path.name
         self.is_folder = self.file_path.is_dir()
         self.extension = "" if self.is_folder else self.file_path.suffix.lower()
+        
+        # Image sequence support
+        self.is_sequence = False
+        self.sequence = None  # ImageSequence object if is_sequence=True
         
         # Lazy loading - csak akkor töltjük be a stat infót, ha kell
         self._stat_loaded = False
@@ -129,12 +259,27 @@ class AssetItem:
         
     def get_display_name(self):
         """Get display name"""
+        if self.is_sequence and self.sequence:
+            # Show sequence pattern instead of individual file
+            return self.sequence.pattern
         return self.name
     
     def get_size_string(self):
         """Get size as formatted string"""
         if self.is_folder:
             return "Folder"
+        
+        if self.is_sequence and self.sequence:
+            # Show total sequence size
+            total_size = self.sequence.total_size
+            if total_size < 1024:
+                return f"{total_size} B"
+            elif total_size < 1024 * 1024:
+                return f"{total_size / 1024:.1f} KB"
+            else:
+                return f"{total_size / (1024 * 1024):.1f} MB"
+        
+        # Single file
         if self.size < 1024:
             return f"{self.size} B"
         elif self.size < 1024 * 1024:
@@ -192,6 +337,12 @@ class FileSystemModel(QAbstractListModel):
         # Recursive subfolder browsing
         self.include_subfolders = False
         self.max_recursive_files = 10000  # Limit for performance
+        
+        # Image sequence grouping
+        self.sequence_mode = False  # When True, group image sequences into single items
+        
+        # Limit warning flag
+        self.limit_reached = False  # Set to True when max_recursive_files limit is reached
         
         # Directory cache system - cache AssetItem objects instead of Path objects
         self._dir_cache = {}  # {path_str: {'assets': [AssetItem], 'timestamp': float, 'mtime': float}}
@@ -306,6 +457,9 @@ class FileSystemModel(QAbstractListModel):
         try:
             all_items = []
             
+            # Reset limit flag
+            self.limit_reached = False
+            
             if self.include_subfolders:
                 # Recursive mode - collect files from all subfolders
                 file_count = 0
@@ -336,7 +490,10 @@ class FileSystemModel(QAbstractListModel):
                             
                             # Safety limit
                             if file_count >= self.max_recursive_files:
-                                print(f"[FileSystemModel] Recursive limit reached: {self.max_recursive_files} files")
+                                self.limit_reached = True
+                                print(f"⚠️ [FileSystemModel] Recursive limit reached: {self.max_recursive_files} files")
+                                print(f"   Only first {self.max_recursive_files} files will be loaded.")
+                                print(f"   Increase limit in Settings > Filters if needed.")
                                 break
                     
                     if file_count >= self.max_recursive_files:
@@ -513,8 +670,25 @@ class FileSystemModel(QAbstractListModel):
                 
                 self.assets = filtered_assets
             
+            # Group image sequences if sequence mode is enabled
+            if self.sequence_mode:
+                try:
+                    print(f"[DEBUG] Grouping sequences for {len(self.assets)} assets...")
+                    self._group_sequences()
+                    print(f"[DEBUG] After grouping: {len(self.assets)} assets")
+                except Exception as e:
+                    import traceback
+                    print(f"[ERROR] Sequence grouping failed: {e}")
+                    traceback.print_exc()
+                    # Don't crash, just skip grouping
+            
             # Apply sorting
-            self._sort_assets()
+            try:
+                self._sort_assets()
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] Sorting failed: {e}")
+                traceback.print_exc()
             
             # Add to cache AFTER filtering and sorting (only if we loaded from filesystem)
             if cached_assets is None:
@@ -541,6 +715,71 @@ class FileSystemModel(QAbstractListModel):
             self.assets.sort(key=lambda x: (not x.is_folder, x.modified), reverse=not self.sort_ascending)
         elif self.sort_column == "type":
             self.assets.sort(key=lambda x: (not x.is_folder, x.extension.lower()), reverse=not self.sort_ascending)
+    
+    def _group_sequences(self):
+        """
+        Group image files into sequences.
+        Modifies self.assets in-place to replace sequence files with single sequence items.
+        """
+        from .utils import group_image_sequences
+        
+        # Separate folders and files
+        folders = [asset for asset in self.assets if asset.is_folder]
+        files = [asset for asset in self.assets if not asset.is_folder]
+        
+        # Separate image files from other files
+        image_files = []
+        other_files = []
+        
+        for asset in files:
+            if asset.is_image_file:
+                image_files.append(asset)
+            else:
+                other_files.append(asset)
+        
+        # Group image sequences
+        if image_files:
+            # Convert AssetItems to Path objects
+            image_paths = [asset.file_path for asset in image_files]
+            
+            # Group into sequences
+            sequences_dict = group_image_sequences(image_paths)
+            
+            # Create AssetItems for sequences and single files
+            sequence_assets = []
+            
+            for pattern, file_list in sequences_dict.items():
+                if len(file_list) > 1:
+                    # This is a sequence - create a sequence AssetItem
+                    sequence = ImageSequence(pattern, file_list)
+                    
+                    # Use first file as the base AssetItem
+                    first_file = file_list[0]
+                    asset = AssetItem(first_file, lazy_load=True)
+                    
+                    # Mark as sequence and attach sequence object
+                    asset.is_sequence = True
+                    asset.sequence = sequence
+                    asset.name = pattern  # Display pattern instead of filename
+                    
+                    # Ensure thumbnail generation is enabled for sequences
+                    asset.should_generate_thumbnail = True
+                    
+                    sequence_assets.append(asset)
+                else:
+                    # Single file - keep original AssetItem
+                    # Find original asset
+                    file_path = file_list[0]
+                    for original_asset in image_files:
+                        if original_asset.file_path == file_path:
+                            sequence_assets.append(original_asset)
+                            break
+            
+            # Replace assets list: folders + sequences + other files
+            self.assets = folders + sequence_assets + other_files
+        else:
+            # No image files to group
+            self.assets = folders + other_files
     
     def _matches_search(self, filename, search_text):
         """
@@ -581,12 +820,9 @@ class FileSystemModel(QAbstractListModel):
     
     def setFilterFileTypes(self, types):
         """Set file type filter - list of extensions like ['.ma', '.mb']"""
-        print(f"[DEBUG] setFilterFileTypes called with: {types}")
-        print(f"[DEBUG] Current assets count: {len(self.assets)}")
         self.beginResetModel()
         self.filter_file_types = types
         self.refresh()  # Filters are now properly applied to cached assets
-        print(f"[DEBUG] After refresh, assets count: {len(self.assets)}")
         self.endResetModel()
     
     def setFilterSize(self, min_size=0, max_size=0):
