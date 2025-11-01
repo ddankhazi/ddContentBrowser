@@ -1447,12 +1447,10 @@ class PreviewPanel(QWidget):
                         # Store metadata for info display
                         if metadata:
                             self.original_image_size = (metadata['width'], metadata['height'])
-                            print(f"[Preview] Loaded .tx with OIIO: {resolution}, format={metadata.get('format', 'unknown')}")
                     else:
                         raise Exception("OIIO loader returned null pixmap")
                         
                 except Exception as e:
-                    print(f"[Preview] OIIO .tx loading failed: {e}")
                     # Fallback to Qt
                     self.full_res_pixmap = QPixmap(file_path_str)
             
@@ -1507,7 +1505,6 @@ class PreviewPanel(QWidget):
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
-                        print(f"[Preview] Loading TGA/PSD with PIL: {Path(file_path_str).name}")
                         pil_image = Image.open(file_path_str)
                         
                         # Convert to RGB
@@ -1526,7 +1523,6 @@ class PreviewPanel(QWidget):
                             new_width = int(pil_image.width * scale_factor)
                             new_height = int(pil_image.height * scale_factor)
                             pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                            print(f"[Preview] PIL scaled TGA/PSD from {self.original_image_size[0]}x{self.original_image_size[1]} to {new_width}x{new_height}")
                             
                             # Store scaling info
                             self.is_image_scaled = True
@@ -1543,14 +1539,11 @@ class PreviewPanel(QWidget):
                         bytes_per_line = width * 3
                         q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
                         self.full_res_pixmap = QPixmap.fromImage(q_image.copy())
-                        print(f"[Preview] ✓ TGA loaded with PIL: {width}x{height}")
                     except Exception as pil_error:
-                        print(f"[Preview] PIL TGA/PSD loading failed: {pil_error}")
                         
                         # Special handling for PSD files: try psd-tools first, then embedded thumbnail
                         if file_path_str.lower().endswith('.psd'):
                             try:
-                                print(f"[Preview] Trying to load PSD with psd-tools...")
                                 from .cache import ThumbnailGenerator
                                 thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=2048)
                                 
@@ -1559,21 +1552,16 @@ class PreviewPanel(QWidget):
                                     self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
                                     self.is_image_scaled = False
                                     self.scaled_image_size = None
-                                    print(f"[Preview] ✓ PSD composite loaded: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
                                 else:
-                                    print(f"[Preview] psd-tools failed, trying embedded thumbnail...")
                                     thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=2048)
                                     if thumbnail_pixmap and not thumbnail_pixmap.isNull():
                                         self.full_res_pixmap = thumbnail_pixmap
                                         self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
                                         self.is_image_scaled = False
                                         self.scaled_image_size = None
-                                        print(f"[Preview] ✓ PSD thumbnail extracted: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
                                     else:
-                                        print(f"[Preview] PSD thumbnail extraction returned None")
                                         self.full_res_pixmap = None
                             except Exception as thumb_error:
-                                print(f"[Preview] PSD loading failed: {thumb_error}")
                                 self.full_res_pixmap = None
                         else:
                             self.full_res_pixmap = None
@@ -1600,7 +1588,6 @@ class PreviewPanel(QWidget):
                             new_height = int(image_size.height() * scale_factor)
                             from PySide6.QtCore import QSize
                             image_reader.setScaledSize(QSize(new_width, new_height))
-                            print(f"[Preview] Scaling down {image_size.width()}x{image_size.height()} to {new_width}x{new_height} for zoom mode")
                             
                             # Store scaling info for user feedback
                             self.is_image_scaled = True
@@ -1618,7 +1605,6 @@ class PreviewPanel(QWidget):
                             
                     except Exception as e:
                         # Fallback to standard QPixmap loading
-                        print(f"[Preview] QImageReader failed: {e}, trying PIL fallback...")
                         
                         # Try PIL for TGA/PSD/special formats
                         if file_path_str.lower().endswith(('.tga', '.tiff', '.tif', '.psd')):
@@ -1648,7 +1634,6 @@ class PreviewPanel(QWidget):
                                     new_width = int(pil_image.width * scale_factor)
                                     new_height = int(pil_image.height * scale_factor)
                                     pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                    print(f"[Preview] PIL scaled down {self.original_image_size[0]}x{self.original_image_size[1]} to {new_width}x{new_height}")
                                     
                                     # Store scaling info
                                     self.is_image_scaled = True
@@ -1667,15 +1652,12 @@ class PreviewPanel(QWidget):
                                     bytes_per_line = width * 3
                                     q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
                                     self.full_res_pixmap = QPixmap.fromImage(q_image.copy())
-                                    print(f"[Preview] ✓ PIL fallback successful")
                             except Exception as pil_error:
-                                print(f"[Preview] PIL fallback failed: {pil_error}")
                                 self.full_res_pixmap = QPixmap(file_path_str)
                         else:
                             self.full_res_pixmap = QPixmap(file_path_str)
             
             if self.full_res_pixmap.isNull():
-                print(f"[Preview] Failed to load image for zoom: {file_path_str}")
                 return
             
             self.zoom_mode = True
@@ -2200,12 +2182,10 @@ class PreviewPanel(QWidget):
                                     self.current_pixmap = pixmap
                                     self.add_to_cache(file_path_str, pixmap, resolution_str)
                                     self.fit_pixmap_to_label()
-                                    print(f"[Preview] ✓ .tx loaded with OIIO: {resolution_str}")
                                 else:
                                     raise Exception("OIIO returned null pixmap")
                                     
                             except Exception as e:
-                                print(f"[Preview] OIIO .tx loading failed: {e}")
                                 self.graphics_scene.clear()
                                 self.current_text_item = None
                         # Special handling for 16-bit/32-bit TIFF files - use OpenCV for better support
@@ -2304,7 +2284,6 @@ class PreviewPanel(QWidget):
                                 
                                 from PIL import Image
                                 Image.MAX_IMAGE_PIXELS = None
-                                print(f"[Preview] Loading TGA/PSD with PIL: {Path(file_path_str).name}")
                                 pil_image = Image.open(file_path_str)
                                 
                                 # Get original size for resolution
@@ -2332,14 +2311,11 @@ class PreviewPanel(QWidget):
                                 self.current_pixmap = pixmap
                                 self.add_to_cache(file_path_str, pixmap, resolution_str)
                                 self.fit_pixmap_to_label()
-                                print(f"[Preview] ✓ TGA loaded with PIL: {width}x{height}")
                             except Exception as e:
-                                print(f"[Preview] PIL TGA/PSD loading failed: {e}")
                                 
                                 # Special handling for PSD files: try psd-tools first, then embedded thumbnail
                                 if file_ext.endswith('.psd'):
                                     try:
-                                        print(f"[Preview] Trying to load PSD with psd-tools...")
                                         from .cache import ThumbnailGenerator
                                         thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=1024)
                                         
@@ -2348,22 +2324,17 @@ class PreviewPanel(QWidget):
                                             self.current_pixmap = thumbnail_pixmap
                                             self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
                                             self.fit_pixmap_to_label()
-                                            print(f"[Preview] ✓ PSD composite loaded: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
                                         else:
-                                            print(f"[Preview] psd-tools failed, trying embedded thumbnail...")
                                             thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=1024)
                                             if thumbnail_pixmap and not thumbnail_pixmap.isNull():
                                                 resolution_str = f"{thumbnail_pixmap.width()} x {thumbnail_pixmap.height()} (thumbnail)"
                                                 self.current_pixmap = thumbnail_pixmap
                                                 self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
                                                 self.fit_pixmap_to_label()
-                                                print(f"[Preview] ✓ PSD thumbnail extracted: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
                                             else:
-                                                print(f"[Preview] PSD thumbnail extraction returned None")
                                                 self.graphics_scene.clear()
                                                 self.current_text_item = None
                                     except Exception as thumb_error:
-                                        print(f"[Preview] PSD loading failed: {thumb_error}")
                                         self.graphics_scene.clear()
                                         self.current_text_item = None
                                 else:
