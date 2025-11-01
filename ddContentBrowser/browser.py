@@ -2917,6 +2917,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             
             menu.addSeparator()
             
+            # Open current folder in Explorer
+            if self.file_model.current_path:
+                open_explorer_action = menu.addAction("📁 Open in Explorer")
+                open_explorer_action.triggered.connect(lambda: self.open_folder_in_explorer(self.file_model.current_path))
+            
+            menu.addSeparator()
+            
             paste_action = menu.addAction("📋 Paste Path and Navigate")
             paste_action.triggered.connect(self.paste_path_from_clipboard)
             
@@ -2946,6 +2953,27 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.safe_show_status(f"Opened in Explorer: {path.name}")
         except Exception as e:
             self.safe_show_status(f"Could not open in Explorer: {e}")
+    
+    def open_folder_in_explorer(self, folder_path):
+        """Open folder in system file explorer (not selecting it, but opening it)"""
+        import subprocess
+        
+        folder_path = Path(folder_path)
+        
+        try:
+            if sys.platform == 'win32':
+                # Windows - just open the folder without /select
+                subprocess.Popen(['explorer', str(folder_path)])
+            elif sys.platform == 'darwin':
+                # macOS - open the folder
+                subprocess.Popen(['open', str(folder_path)])
+            else:
+                # Linux
+                subprocess.Popen(['xdg-open', str(folder_path)])
+            
+            self.safe_show_status(f"Opened folder in Explorer: {folder_path.name}")
+        except Exception as e:
+            self.safe_show_status(f"Could not open folder in Explorer: {e}")
     
     def show_in_content_browser(self, file_path):
         """Navigate to the file's parent directory and select the file in content browser"""
