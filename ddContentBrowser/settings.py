@@ -79,17 +79,6 @@ class SettingsManager:
                 "regex_search": False,
                 "max_recursive_files": 10000  # Maximum files when browsing subfolders
             },
-            # Browser state - saved on exit, restored on startup
-            "browser_state": {
-                "sort_column": "name",  # name, size, date, type
-                "sort_ascending": True,
-                "filter_file_types": [],  # Empty = all types shown
-                "show_folders": True,
-                "filter_min_size": 0,
-                "filter_max_size": 0,
-                "filter_date_from": None,  # ISO format string or None
-                "filter_date_to": None     # ISO format string or None
-            },
             # Advanced Filters - saved filter presets
             "advanced_filters": {
                 "saved_presets": []  # List of saved filter preset configurations
@@ -406,16 +395,26 @@ class ThumbnailSettingsTab(QWidget):
         layout = QVBoxLayout(self)
         
         # Size group
-        size_group = QGroupBox("Thumbnail Size")
+        size_group = QGroupBox("Thumbnail Generation Size")
         size_layout = QVBoxLayout()
+        
+        # Add explanation label
+        explanation = QLabel(
+            "Set the resolution of generated thumbnail files (cached to disk).\n"
+            "Higher = better quality when zooming, but larger cache size.\n"
+            "Note: Grid/List display size is adjusted separately with the toolbar slider."
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("QLabel { color: #888; font-size: 10px; padding: 5px; }")
+        size_layout.addWidget(explanation)
         
         slider_layout = QHBoxLayout()
         slider_layout.addWidget(QLabel("Size:"))
         
-        # Define discrete thumbnail sizes
-        self.size_values = [32, 64, 128, 256, 512]
+        # Define discrete thumbnail sizes (max 256px - matches browser slider max)
+        self.size_values = [32, 64, 128, 256]
         
-        # Create slider with indices (0-4)
+        # Create slider with indices (0-3)
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(0, len(self.size_values) - 1)
         

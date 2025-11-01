@@ -398,11 +398,12 @@ class ThumbnailGenerator(QThread):
     generation_failed = Signal(str, str)    # (file_path, error_message)
     cache_status = Signal(str)             # Status message: "cache" or "generating"
     
-    def __init__(self, memory_cache, disk_cache, thumbnail_size=128):
+    def __init__(self, memory_cache, disk_cache, thumbnail_size=128, jpeg_quality=85):
         super().__init__()
         self.memory_cache = memory_cache
         self.disk_cache = disk_cache
         self.thumbnail_size = thumbnail_size
+        self.jpeg_quality = jpeg_quality  # JPEG quality for disk cache (0-100)
         self.queue = []
         self.is_running = True
         self.current_file = None
@@ -481,8 +482,8 @@ class ThumbnailGenerator(QThread):
                 pixmap = self._generate_thumbnail(file_path)
                 
                 if pixmap and not pixmap.isNull():
-                    # Save to caches
-                    self.disk_cache.set(file_path, file_mtime, pixmap)
+                    # Save to caches with configured JPEG quality
+                    self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
                     self.memory_cache.set(file_path, pixmap)
                     
                     # Emit signal
@@ -496,6 +497,39 @@ class ThumbnailGenerator(QThread):
             
             finally:
                 self.current_file = None
+    
+    def _get_opencv_imread_flags(self):
+        """
+        Calculate optimal OpenCV imread flags based on thumbnail size.
+        Uses IMREAD_REDUCED_* for faster decoding of large TIFF/HDR images.
+        
+        Returns:
+            OpenCV imread flags (int)
+        """
+        import cv2
+        
+        # For small thumbnails, use aggressive downsampling during decode
+        # This is MUCH faster for large TIFF files (2-8× speedup)
+        if self.thumbnail_size <= 64:
+            # 1/8 scale - fastest for tiny thumbnails
+            if DEBUG_MODE:
+                print(f"[OPENCV] Using 1/8 scale (IMREAD_REDUCED_COLOR_8) for thumbnail_size={self.thumbnail_size}")
+            return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
+        elif self.thumbnail_size <= 128:
+            # 1/4 scale - good balance for default size
+            if DEBUG_MODE:
+                print(f"[OPENCV] Using 1/4 scale (IMREAD_REDUCED_COLOR_4) for thumbnail_size={self.thumbnail_size}")
+            return cv2.IMREAD_REDUCED_COLOR_4 | cv2.IMREAD_ANYDEPTH
+        elif self.thumbnail_size <= 256:
+            # 1/2 scale - still faster than full resolution
+            if DEBUG_MODE:
+                print(f"[OPENCV] Using 1/2 scale (IMREAD_REDUCED_COLOR_2) for thumbnail_size={self.thumbnail_size}")
+            return cv2.IMREAD_REDUCED_COLOR_2 | cv2.IMREAD_ANYDEPTH
+        else:
+            # Full resolution for larger thumbnails (256+)
+            if DEBUG_MODE:
+                print(f"[OPENCV] Using full resolution (IMREAD_UNCHANGED) for thumbnail_size={self.thumbnail_size}")
+            return cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR
     
     def _generate_thumbnail(self, file_path):
         """
@@ -585,6 +619,9 @@ class ThumbnailGenerator(QThread):
                     import cv2
                     import numpy as np
                     
+                    # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
+                    imread_flags = self._get_opencv_imread_flags()
+                    
                     # OpenCV can't handle Unicode paths, check for non-ASCII first
                     file_path_str = str(file_path)
                     has_non_ascii = any(ord(c) > 127 for c in file_path_str)
@@ -594,17 +631,19 @@ class ThumbnailGenerator(QThread):
                         # Use buffer method for non-ASCII paths (ékezetes karakterek)
                         try:
                             if DEBUG_MODE:
-                                print(f"[THUMB] Using buffer method (non-ASCII path)")
+                                print(f"[THUMB] Using buffer method (non-ASCII path) with flags={imread_flags}")
                             with open(file_path_str, 'rb') as f:
                                 file_bytes = np.frombuffer(f.read(), np.uint8)
-                            img = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                            img = cv2.imdecode(file_bytes, imread_flags)
                         except Exception as e:
                             if DEBUG_MODE:
                                 print(f"[THUMB] Buffer decode failed: {e}")
                     else:
-                        # ASCII-only path, use direct imread
+                        # ASCII-only path, use direct imread with optimized flags
                         try:
-                            img = cv2.imread(file_path_str, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                            if DEBUG_MODE:
+                                print(f"[THUMB] Using imread with optimized flags={imread_flags}")
+                            img = cv2.imread(file_path_str, imread_flags)
                         except Exception as e:
                             if DEBUG_MODE:
                                 print(f"[THUMB] OpenCV imread failed: {e}")
@@ -856,7 +895,50 @@ class ThumbnailGenerator(QThread):
             except Exception as e:
                 print(f"[Cache] OpenCV loading failed for large JPG: {e}, trying QPixmap...")
             
-            # Fallback to standard QPixmap loading
+            # OPTIMIZED: Use QImageReader with scaled size for fast thumbnail generation
+            # This loads only the necessary data at thumbnail size, not the full image
+            # Works best for: JPEG (uses DCT subsampling), PNG (progressive decode), standard 8-bit images
+            try:
+                if PYSIDE_VERSION == 6:
+                    from PySide6.QtGui import QImageReader, QImage
+                    from PySide6.QtCore import QSize
+                else:
+                    from PySide2.QtGui import QImageReader, QImage
+                    from PySide2.QtCore import QSize
+                
+                reader = QImageReader(str(file_path))
+                
+                # Get original size
+                original_size = reader.size()
+                if original_size.isValid():
+                    # Calculate scaled size maintaining aspect ratio
+                    scaled_size = original_size.scaled(
+                        self.thumbnail_size, 
+                        self.thumbnail_size, 
+                        Qt.KeepAspectRatio
+                    )
+                    # Tell reader to decode at this smaller size (FAST!)
+                    # For JPEG: uses DCT coefficient subsampling (4-6× faster)
+                    # For PNG: progressive decode, only loads what's needed
+                    reader.setScaledSize(scaled_size)
+                
+                # Read the already-scaled image (no separate scaling step needed!)
+                image = reader.read()
+                
+                if not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    if not pixmap.isNull():
+                        return pixmap
+                
+                # If reader failed, print error and fall through to old method
+                if DEBUG_MODE:
+                    print(f"[Cache] QImageReader failed: {reader.errorString()}, using fallback...")
+                
+            except Exception as e:
+                if DEBUG_MODE:
+                    print(f"[Cache] QImageReader exception: {e}, using fallback...")
+            
+            # Fallback to standard QPixmap loading (slower, but always works)
             pixmap = QPixmap(str(file_path))
             
             if pixmap.isNull():

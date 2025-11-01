@@ -328,16 +328,24 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Initialize cache systems
         self.memory_cache = ThumbnailCache(self.config.config["thumbnail_cache_size"])
-        self.disk_cache = ThumbnailDiskCache(
-            max_size_mb=self.config.config.get("thumbnail_disk_cache_mb", 500)
-        )
+        disk_cache_size_mb = self.settings_manager.get("thumbnails", "cache_size_mb", 500)
+        self.disk_cache = ThumbnailDiskCache(max_size_mb=disk_cache_size_mb)
         
-        # Initialize thumbnail generator
-        thumbnail_size = self.config.config.get("thumbnail_size", 128)
+        # Initialize thumbnail generator with size and quality from settings (not config!)
+        # This is the GENERATION size (how big thumbnails are created and cached)
+        # Display size (grid/list slider) is separate and stored in config.json
+        thumbnail_generation_size = self.settings_manager.get("thumbnails", "size", 128)
+        
+        # Get JPEG quality from settings and convert to numeric value
+        quality_str = self.settings_manager.get("thumbnails", "quality", "medium")
+        quality_map = {"low": 60, "medium": 85, "high": 95}
+        jpeg_quality = quality_map.get(quality_str, 85)
+        
         self.thumbnail_generator = ThumbnailGenerator(
             self.memory_cache,
             self.disk_cache,
-            thumbnail_size
+            thumbnail_generation_size,
+            jpeg_quality
         )
         
         # Connect thumbnail generator signals
@@ -2335,9 +2343,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if DEBUG_MODE:
                 print(f"[Browser] Preview resolution set to {preview_resolution}px, HDR cache size: {hdr_cache_size}")
         
-        # Apply thumbnail settings - REMOVED: now handled by view mode switching
-        # Thumbnail sizes are now separate for grid/list mode and managed by set_view_mode()
-        # Do not override here to prevent overwriting the correct size for current view mode
+        # Apply thumbnail generation size and quality from settings
+        thumbnail_generation_size = self.settings_manager.get("thumbnails", "size", 128)
+        quality_str = self.settings_manager.get("thumbnails", "quality", "medium")
+        quality_map = {"low": 60, "medium": 85, "high": 95}
+        jpeg_quality = quality_map.get(quality_str, 85)
+        
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.thumbnail_size = thumbnail_generation_size
+            self.thumbnail_generator.jpeg_quality = jpeg_quality
+            if DEBUG_MODE:
+                print(f"[Browser] Updated thumbnail generation: size={thumbnail_generation_size}px, quality={jpeg_quality}")
+        
+        # Note: Grid/List display sizes (toolbar slider) are separate and stored in config.json
+        # Those are managed by set_view_mode() and update_thumbnail_size()
         
         # Apply search/filter settings to file model
         case_sensitive = self.settings_manager.get("filters", "case_sensitive_search", False)
@@ -2373,17 +2392,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if not hasattr(self, 'file_model'):
             return
         
-        # Restore sort settings
-        sort_column = self.settings_manager.get("browser_state", "sort_column", "name")
-        sort_ascending = self.settings_manager.get("browser_state", "sort_ascending", True)
+        # Restore sort settings from config.json (session state)
+        sort_column = self.config.config.get("sort_column", "name")
+        sort_ascending = self.config.config.get("sort_ascending", True)
         self.file_model.sort_column = sort_column
         self.file_model.sort_ascending = sort_ascending
         
-        # Restore filter settings
-        filter_file_types = self.settings_manager.get("browser_state", "filter_file_types", [])
-        show_folders = self.settings_manager.get("browser_state", "show_folders", True)
-        filter_min_size = self.settings_manager.get("browser_state", "filter_min_size", 0)
-        filter_max_size = self.settings_manager.get("browser_state", "filter_max_size", 0)
+        # Restore filter settings from config.json (session state)
+        filter_file_types = self.config.config.get("filter_file_types", [])
+        show_folders = self.config.config.get("show_folders", True)
+        filter_min_size = self.config.config.get("filter_min_size", 0)
+        filter_max_size = self.config.config.get("filter_max_size", 0)
         
         self.file_model.filter_file_types = filter_file_types
         self.file_model.show_folders = show_folders
@@ -2391,8 +2410,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_model.filter_max_size = filter_max_size
         
         # Restore date filters (convert from ISO string to datetime)
-        date_from_str = self.settings_manager.get("browser_state", "filter_date_from", None)
-        date_to_str = self.settings_manager.get("browser_state", "filter_date_to", None)
+        date_from_str = self.config.config.get("filter_date_from", None)
+        date_to_str = self.config.config.get("filter_date_to", None)
         
         if date_from_str:
             try:
@@ -2643,22 +2662,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             nav_splitter_state = self.nav_splitter.saveState().toBase64().data().decode()
             self.config.config["nav_splitter_position"] = nav_splitter_state
         
-        # Save sort and filter state to settings
+        # Save sort and filter state to config.json (session state)
         if hasattr(self, 'file_model'):
-            self.settings_manager.set("browser_state", "sort_column", self.file_model.sort_column)
-            self.settings_manager.set("browser_state", "sort_ascending", self.file_model.sort_ascending)
-            self.settings_manager.set("browser_state", "filter_file_types", self.file_model.filter_file_types)
-            self.settings_manager.set("browser_state", "show_folders", self.file_model.show_folders)
-            self.settings_manager.set("browser_state", "filter_min_size", self.file_model.filter_min_size)
-            self.settings_manager.set("browser_state", "filter_max_size", self.file_model.filter_max_size)
+            self.config.config["sort_column"] = self.file_model.sort_column
+            self.config.config["sort_ascending"] = self.file_model.sort_ascending
+            self.config.config["filter_file_types"] = self.file_model.filter_file_types
+            self.config.config["show_folders"] = self.file_model.show_folders
+            self.config.config["filter_min_size"] = self.file_model.filter_min_size
+            self.config.config["filter_max_size"] = self.file_model.filter_max_size
             
             # Convert datetime to ISO string for JSON serialization
             date_from_str = self.file_model.filter_date_from.isoformat() if self.file_model.filter_date_from else None
             date_to_str = self.file_model.filter_date_to.isoformat() if self.file_model.filter_date_to else None
-            self.settings_manager.set("browser_state", "filter_date_from", date_from_str)
-            self.settings_manager.set("browser_state", "filter_date_to", date_to_str)
-            
-            self.settings_manager.save()
+            self.config.config["filter_date_from"] = date_from_str
+            self.config.config["filter_date_to"] = date_to_str
         
         self.config.save_config()
         

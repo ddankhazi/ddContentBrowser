@@ -21,20 +21,47 @@ class ContentBrowserConfig:
         supported_formats = get_all_supported_extensions()
         
         self.default_config = {
+            # Session State - Navigation & Bookmarks
             "recent_paths": [],
             "favorites": [],
-            "thumbnail_size": 128,
-            "thumbnail_quality": 85,
-            "thumbnail_disk_cache_mb": 500,
-            "thumbnail_cache_size": 2000,  # Increased from 200 to handle large folders
-            "thumbnails_enabled": True,
-            "auto_refresh": True,
-            "supported_formats": supported_formats,  # Now from registry
-            "show_images": True,
             "last_path": str(Path.home()),
+            
+            # Session State - Window Layout
             "window_geometry": None,
+            "splitter_position": None,
+            "nav_splitter_position": None,
+            "preview_splitter_position": None,
+            
+            # Session State - View Mode
             "view_mode": "grid",  # "grid" or "list"
-            "preview_panel_visible": True  # Show preview panel by default
+            "preview_panel_visible": True,
+            "grid_thumbnail_size": 128,
+            "list_thumbnail_size": 24,
+            "thumbnails_enabled": True,
+            
+            # Session State - UI Organization
+            "nav_top_tabs_order": ["Favourites", "Folders"],
+            "nav_tabs_order": ["Collections", "Advanced Filters"],
+            
+            # Session State - Quick View
+            "quick_view_width": 800,
+            "quick_view_height": 600,
+            "quick_view_x": 100,
+            "quick_view_y": 100,
+            "quick_view_layout_mode": "fit",
+            
+            # Session State - Browser State (sorting/filtering)
+            "sort_column": "name",
+            "sort_ascending": True,
+            "filter_file_types": [],
+            "show_folders": True,
+            "filter_min_size": 0,
+            "filter_max_size": 0,
+            "filter_date_from": None,
+            "filter_date_to": None,
+            
+            # Runtime data (generated, not persisted preferences)
+            "supported_formats": supported_formats  # Dynamically loaded from registry
         }
         self.config = self.load_config()
     
