@@ -42,4 +42,4 @@ __all__ = [
     'show_content_browser',
 ]
 
-__version__ = '1.0'
+__version__ = '1.2.0'

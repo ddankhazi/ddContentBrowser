@@ -673,9 +673,9 @@ class FileSystemModel(QAbstractListModel):
             # Group image sequences if sequence mode is enabled
             if self.sequence_mode:
                 try:
-                    print(f"[DEBUG] Grouping sequences for {len(self.assets)} assets...")
+                    # print(f"[DEBUG] Grouping sequences for {len(self.assets)} assets...")
                     self._group_sequences()
-                    print(f"[DEBUG] After grouping: {len(self.assets)} assets")
+                    # print(f"[DEBUG] After grouping: {len(self.assets)} assets")
                 except Exception as e:
                     import traceback
                     print(f"[ERROR] Sequence grouping failed: {e}")

@@ -80,6 +80,10 @@ except ImportError:
     OPENEXR_AVAILABLE = False
     print("[Preview Panel] Info: OpenEXR not available - EXR support disabled")
 
+# Import sequence frame cache
+# Cache system temporarily disabled
+# from .sequence_cache import SequenceFrameCache, SequencePreloader
+
 # Check for PyMuPDF (for PDF preview)
 try:
     import fitz  # PyMuPDF
@@ -443,15 +447,127 @@ class FlowLayout(QtWidgets.QLayout):
                 item.widget().deleteLater()
 
 
+class CachedFrameSlider(QSlider):
+    """Custom slider that visualizes cached frames with colored indicators"""
+    
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.cached_frames = set()  # Set of cached frame indices
+        self.is_dragging = False  # Track if user is dragging the slider
+        self.setMinimumHeight(22)
+        self.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #555;
+                height: 4px;
+                background: #2a2a2a;
+                margin: 2px 0;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5DADE2, stop:1 #2E86C1);
+                border: 1px solid #1B4F72;
+                width: 12px;
+                margin: -5px 0;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #85C1E9, stop:1 #5DADE2);
+            }
+        """)
+    
+    def set_cached_frames(self, cached_indices):
+        """Set which frames are cached"""
+        self.cached_frames = cached_indices
+        self.update()  # Repaint
+    
+    def mousePressEvent(self, event):
+        """Jump to clicked position and allow immediate dragging (like video players)"""
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = True  # Start drag
+            
+            # Calculate clicked position
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            
+            groove_rect = self.style().subControlRect(
+                QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self
+            )
+            
+            # Calculate value from mouse position
+            pos = event.pos().x()
+            groove_left = groove_rect.left()
+            groove_width = groove_rect.width()
+            
+            if groove_width > 0:
+                ratio = (pos - groove_left) / groove_width
+                ratio = max(0.0, min(1.0, ratio))  # Clamp to 0-1
+                
+                value = int(self.minimum() + ratio * (self.maximum() - self.minimum()))
+                self.setValue(value)
+            
+            # Now pass to default handler to enable dragging from here
+            super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release - trigger cache recalculation"""
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False  # End drag
+            # Emit signal to notify that drag ended (parent will recalculate cache)
+            self.sliderReleased.emit()
+        
+        super().mouseReleaseEvent(event)
+    
+    def paintEvent(self, event):
+        """Custom paint to show cached frames"""
+        # Draw standard slider first
+        super().paintEvent(event)
+        
+        # Draw cache indicators
+        if not self.cached_frames or self.maximum() == 0:
+            return
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Get groove rectangle (where the slider track is)
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove_rect = self.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self
+        )
+        
+        # Draw small dots/rectangles for cached frames inside the groove
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(80, 200, 120)))  # Green
+        
+        groove_width = groove_rect.width()
+        groove_left = groove_rect.left()
+        groove_center_y = groove_rect.center().y()
+        
+        for frame_index in self.cached_frames:
+            if frame_index > self.maximum():
+                continue
+            
+            # Calculate position along slider
+            ratio = frame_index / self.maximum() if self.maximum() > 0 else 0
+            x = int(groove_left + ratio * groove_width)
+            
+            # Draw small filled circle (dot) - subtle and clean
+            dot_radius = 2
+            painter.drawEllipse(QPoint(x, groove_center_y), dot_radius, dot_radius)
+
+
 class SequencePlaybackWidget(QWidget):
     """Playback controls for image sequences
     
     Features:
-    - Play/Pause button
-    - Timeline slider
+    - First/Previous/Play/Pause/Stop/Next/Last buttons
+    - Timeline slider with cache visualization
     - Frame counter
     - FPS selector
-    - Keyboard shortcuts (Space, Arrow keys)
+    - Keyboard shortcuts (Space, Arrow keys, Home/End)
     
     Signals:
         frame_changed(int): Emitted when frame changes (0-based index)
@@ -465,6 +581,7 @@ class SequencePlaybackWidget(QWidget):
         self.current_frame_index = 0  # 0-based index into sequence.files
         self.is_playing = False
         self.fps = 24  # Default FPS
+        self.cache = None  # Reference to SequenceFrameCache (set externally)
         
         # Playback timer
         self.playback_timer = QtCore.QTimer()
@@ -474,41 +591,98 @@ class SequencePlaybackWidget(QWidget):
     
     def setup_ui(self):
         """Setup playback controls UI"""
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 2, 5, 2)
-        layout.setSpacing(5)
+        layout.setSpacing(3)
         
-        # Play/Pause button
+        # Top row: Transport buttons
+        transport_layout = QHBoxLayout()
+        transport_layout.setSpacing(2)
+        
+        # First frame button
+        self.first_button = QToolButton()
+        self.first_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipBackward))
+        self.first_button.setToolTip("First Frame (Home)")
+        self.first_button.setFixedSize(28, 28)
+        self.first_button.clicked.connect(self.go_to_first)
+        transport_layout.addWidget(self.first_button)
+        
+        # Previous frame button
+        self.prev_button = QToolButton()
+        self.prev_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
+        self.prev_button.setToolTip("Previous Frame (Left Arrow)")
+        self.prev_button.setFixedSize(28, 28)
+        self.prev_button.clicked.connect(self.go_to_previous)
+        transport_layout.addWidget(self.prev_button)
+        
+        # Play/Pause button (larger)
         self.play_button = QToolButton()
         self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.play_button.setToolTip("Play/Pause (Space)")
-        self.play_button.setFixedSize(32, 32)
+        self.play_button.setFixedSize(36, 28)
         self.play_button.clicked.connect(self.toggle_play_pause)
-        layout.addWidget(self.play_button)
+        transport_layout.addWidget(self.play_button)
         
-        # Frame counter label (before slider)
+        # Stop button
+        self.stop_button = QToolButton()
+        self.stop_button.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+        self.stop_button.setToolTip("Stop and Reset")
+        self.stop_button.setFixedSize(28, 28)
+        self.stop_button.clicked.connect(self.stop)
+        transport_layout.addWidget(self.stop_button)
+        
+        # Next frame button
+        self.next_button = QToolButton()
+        self.next_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.next_button.setToolTip("Next Frame (Right Arrow)")
+        self.next_button.setFixedSize(28, 28)
+        self.next_button.clicked.connect(self.go_to_next)
+        transport_layout.addWidget(self.next_button)
+        
+        # Last frame button
+        self.last_button = QToolButton()
+        self.last_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipForward))
+        self.last_button.setToolTip("Last Frame (End)")
+        self.last_button.setFixedSize(28, 28)
+        self.last_button.clicked.connect(self.go_to_last)
+        transport_layout.addWidget(self.last_button)
+        
+        transport_layout.addSpacing(10)
+        
+        # Frame counter label
         self.frame_label = QLabel("Frame: - / -")
-        self.frame_label.setMinimumWidth(100)
+        self.frame_label.setMinimumWidth(120)
         self.frame_label.setStyleSheet(f"font-family: {UI_FONT}; color: #aaa;")
-        layout.addWidget(self.frame_label)
+        transport_layout.addWidget(self.frame_label)
         
-        # Timeline slider
-        self.timeline_slider = QtWidgets.QSlider(Qt.Horizontal)
-        self.timeline_slider.setMinimum(0)
-        self.timeline_slider.setMaximum(0)
-        self.timeline_slider.setValue(0)
-        self.timeline_slider.setTickPosition(QtWidgets.QSlider.NoTicks)
-        self.timeline_slider.valueChanged.connect(self.on_slider_changed)
-        layout.addWidget(self.timeline_slider, 1)  # Stretch factor 1
+        transport_layout.addStretch()
         
         # FPS selector
-        layout.addWidget(QLabel("FPS:"))
+        transport_layout.addWidget(QLabel("FPS:"))
         self.fps_combo = QComboBox()
         self.fps_combo.addItems(["24", "25", "30", "60"])
         self.fps_combo.setCurrentText("24")
         self.fps_combo.setMaximumWidth(60)
         self.fps_combo.currentTextChanged.connect(self.on_fps_changed)
-        layout.addWidget(self.fps_combo)
+        transport_layout.addWidget(self.fps_combo)
+        
+        layout.addLayout(transport_layout)
+        
+        # Bottom row: Timeline slider
+        slider_layout = QHBoxLayout()
+        slider_layout.setSpacing(5)
+        
+        # Timeline slider with custom style for cache visualization
+        self.timeline_slider = CachedFrameSlider(Qt.Horizontal)
+        self.timeline_slider.setMinimum(0)
+        self.timeline_slider.setMaximum(0)
+        self.timeline_slider.setValue(0)
+        self.timeline_slider.setTickPosition(QtWidgets.QSlider.NoTicks)
+        self.timeline_slider.valueChanged.connect(self.on_slider_changed)
+        self.timeline_slider.sliderReleased.connect(self.on_slider_released)
+        slider_layout.addWidget(self.timeline_slider, 1)
+        
+        layout.addLayout(slider_layout)
     
     def set_sequence(self, sequence):
         """Set the image sequence to play
@@ -576,6 +750,10 @@ class SequencePlaybackWidget(QWidget):
         self.update_frame_label()
         self.frame_changed.emit(value)
     
+    def on_slider_released(self):
+        """Handle slider release after drag - trigger cache recalculation"""
+        # No cache recalculation needed (cache system removed)
+    
     def on_fps_changed(self, fps_str):
         """Handle FPS change"""
         try:
@@ -620,14 +798,33 @@ class SequencePlaybackWidget(QWidget):
         new_index = max(self.current_frame_index - 1, 0)
         self.timeline_slider.setValue(new_index)
     
-    def go_to_first_frame(self):
+    def go_to_first(self):
         """Go to first frame"""
-        self.timeline_slider.setValue(0)
+        if self.sequence and self.sequence.files:
+            self.timeline_slider.setValue(0)
     
-    def go_to_last_frame(self):
+    def go_to_last(self):
         """Go to last frame"""
         if self.sequence and self.sequence.files:
             self.timeline_slider.setValue(len(self.sequence.files) - 1)
+    
+    def go_to_previous(self):
+        """Go to previous frame (alias for step_backward)"""
+        self.step_backward()
+    
+    def go_to_next(self):
+        """Go to next frame (alias for step_forward)"""
+        self.step_forward()
+    
+    def stop(self):
+        """Stop playback and return to first frame"""
+        self.pause()
+        self.go_to_first()
+    
+    def update_cache_visualization(self):
+        """Update slider with cached frame positions"""
+        # No cache visualization for now
+        pass
     
     def keyPressEvent(self, event):
         """Handle keyboard shortcuts"""
@@ -708,8 +905,16 @@ class PreviewPanel(QWidget):
         self.scrub_start_pos = None  # Mouse position when scrubbing started
         self.scrub_start_frame = 0  # Frame index when scrubbing started
         
+        # Simple frame cache (will be implemented later if needed)
+        # For now: no caching, just direct loading
+        
         self.setMinimumWidth(250)  # Minimum width when visible
         self.setup_ui()
+    
+    def cleanup(self):
+        """Cleanup resources (call before closing)"""
+        # No thread to cleanup for now
+        pass
     
     def _load_background_setting(self):
         """Load background mode from settings"""
@@ -947,6 +1152,8 @@ class PreviewPanel(QWidget):
         
         # === Sequence Playback Controls (only visible for image sequences) ===
         self.sequence_playback = SequencePlaybackWidget()
+        # Cache disabled for now
+        # self.sequence_playback.cache = self.sequence_frame_cache
         self.sequence_playback.frame_changed.connect(self.on_sequence_frame_changed)
         preview_layout.addWidget(self.sequence_playback)
         self.sequence_playback.hide()  # Hidden by default, shown only for sequences
@@ -1537,9 +1744,28 @@ class PreviewPanel(QWidget):
         
         # Handle image-specific events (zoom mode)
         
-        # Double-click - enter/exit zoom mode
-        if event_type == QEvent.MouseButtonDblClick:
-            if self.current_image_path and Path(self.current_image_path).exists():
+        # Double-click - enter/exit zoom mode (works for both single images and sequences)
+        if event_type == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+            # For sequences, check if we have files
+            is_sequence = (self.current_assets and len(self.current_assets) == 1 and 
+                          self.current_assets[0].is_sequence and self.current_assets[0].sequence)
+            
+            if is_sequence and self.current_assets[0].sequence.files:
+                # Sequence: use current frame as zoom source
+                if not self.zoom_mode:
+                    # Cancel any ongoing scrubbing
+                    self.is_scrubbing = False
+                    self.scrub_start_pos = None
+                    
+                    current_frame_index = self.sequence_playback.current_frame_index
+                    current_frame_path = self.current_assets[0].sequence.files[current_frame_index]
+                    self.current_image_path = current_frame_path
+                    self.enter_zoom_mode()
+                else:
+                    self.exit_zoom_mode()
+                return True  # Event handled
+            elif self.current_image_path and Path(self.current_image_path).exists():
+                # Single image
                 if not self.zoom_mode:
                     self.enter_zoom_mode()
                 else:
@@ -1591,32 +1817,29 @@ class PreviewPanel(QWidget):
             self.show_background_menu(event.globalPos() if hasattr(event, 'globalPos') else event.globalPosition().toPoint())
             return True  # Event handled
         
-        # === SEQUENCE SCRUBBING (Middle Mouse or Ctrl+Left Mouse) ===
+        # === SEQUENCE SCRUBBING (LMB drag) ===
         # Check if we're viewing a sequence
         is_sequence = (self.current_assets and len(self.current_assets) == 1 and 
                       self.current_assets[0].is_sequence and self.current_assets[0].sequence)
         
-        if is_sequence and not self.zoom_mode:
-            # Mouse press - start scrubbing
-            if event_type == QEvent.MouseButtonPress:
-                # Middle mouse button OR Ctrl+Left mouse
-                if (event.button() == Qt.MiddleButton or 
-                    (event.button() == Qt.LeftButton and QtWidgets.QApplication.keyboardModifiers() == Qt.ControlModifier)):
-                    
-                    try:
-                        self.scrub_start_pos = event.globalPosition().toPoint()
-                    except AttributeError:
-                        self.scrub_start_pos = event.globalPos()
-                    
-                    self.scrub_start_frame = self.sequence_playback.current_frame_index
-                    self.is_scrubbing = True
-                    
-                    # Pause playback while scrubbing
-                    if self.sequence_playback.is_playing:
-                        self.sequence_playback.pause()
-                    
-                    self.graphics_view.setCursor(Qt.SizeHorCursor)
-                    return True  # Event handled
+        # Scrubbing: LMB drag (works in both normal and zoom mode)
+        if is_sequence:
+            # Mouse press - start scrubbing (LMB)
+            if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                try:
+                    self.scrub_start_pos = event.globalPosition().toPoint()
+                except AttributeError:
+                    self.scrub_start_pos = event.globalPos()
+                
+                self.scrub_start_frame = self.sequence_playback.current_frame_index
+                self.is_scrubbing = True
+                
+                # Pause playback while scrubbing
+                if self.sequence_playback.is_playing:
+                    self.sequence_playback.pause()
+                
+                self.graphics_view.setCursor(Qt.SizeHorCursor)
+                return True  # Event handled
             
             # Mouse move - scrub through frames
             if event_type == QEvent.MouseMove and self.is_scrubbing and self.scrub_start_pos is not None:
@@ -1625,17 +1848,21 @@ class PreviewPanel(QWidget):
                 except AttributeError:
                     current_pos = event.globalPos()
                 
-                # Calculate horizontal offset in pixels
+                # Calculate horizontal offset in pixels (relative to start)
                 delta_x = current_pos.x() - self.scrub_start_pos.x()
                 
-                # Convert pixels to frames (every 10 pixels = 1 frame)
-                scrub_sensitivity = 10  # Lower = more sensitive
-                frame_offset = delta_x // scrub_sensitivity
-                
-                # Calculate new frame index
+                # Get viewport width and frame count
+                viewport_width = self.graphics_view.viewport().width()
                 sequence = self.current_assets[0].sequence
+                frame_count = len(sequence.files)
+                
+                # Map viewport width to frame range
+                # If you drag the full viewport width, you go through all frames
+                frame_offset = int((delta_x / viewport_width) * frame_count)
+                
+                # Calculate new frame index (relative to start frame)
                 new_frame_index = self.scrub_start_frame + frame_offset
-                new_frame_index = max(0, min(new_frame_index, len(sequence.files) - 1))
+                new_frame_index = max(0, min(new_frame_index, frame_count - 1))
                 
                 # Update frame if changed
                 if new_frame_index != self.sequence_playback.current_frame_index:
@@ -1643,18 +1870,20 @@ class PreviewPanel(QWidget):
                 
                 return True  # Event handled
             
-            # Mouse release - stop scrubbing
+            # Mouse release - stop scrubbing (LMB)
             if event_type == QEvent.MouseButtonRelease:
-                if ((event.button() == Qt.MiddleButton or event.button() == Qt.LeftButton) and 
-                    self.is_scrubbing):
+                if event.button() == Qt.LeftButton and self.is_scrubbing:
                     
                     self.is_scrubbing = False
                     self.scrub_start_pos = None
                     self.graphics_view.setCursor(Qt.ArrowCursor)
+                    
+                    # No cache recalculation needed (cache system removed)
+                    
                     return True  # Event handled
         
-        # Mouse press - start panning in zoom mode
-        if event_type == QEvent.MouseButtonPress and self.zoom_mode and event.button() == Qt.LeftButton:
+        # Mouse press - start panning in zoom mode (MMB)
+        if event_type == QEvent.MouseButtonPress and self.zoom_mode and event.button() == Qt.MiddleButton:
             try:
                 self.last_mouse_pos = event.globalPosition().toPoint()
             except AttributeError:
@@ -1682,8 +1911,8 @@ class PreviewPanel(QWidget):
             
             return True  # Event handled
         
-        # Mouse release - stop panning
-        if event_type == QEvent.MouseButtonRelease and self.zoom_mode and event.button() == Qt.LeftButton:
+        # Mouse release - stop panning (MMB)
+        if event_type == QEvent.MouseButtonRelease and self.zoom_mode and event.button() == Qt.MiddleButton:
             self.last_mouse_pos = None
             self.graphics_view.setCursor(Qt.OpenHandCursor)
             return True  # Event handled
@@ -1988,8 +2217,22 @@ class PreviewPanel(QWidget):
             self.pan_offset = QPoint(0, 0)
             self.zoom_label.setText("")
             
+            # Reset graphics view transform
+            self.graphics_view.resetTransform()
+            
+            # Temporarily disable scrollbars for accurate fitting
+            self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            
             # Hide zoom controls
             self.zoom_controls.hide()
+            
+            # Force layout update
+            self.layout().invalidate()
+            self.layout().activate()
+            self.updateGeometry()
+            QtCore.QCoreApplication.processEvents()
+            self.graphics_view.updateGeometry()
             
             # Restore PDF overlay controls if we were viewing a PDF
             if self.is_showing_pdf:
@@ -1998,9 +2241,27 @@ class PreviewPanel(QWidget):
                 self.pdf_page_overlay.show()
                 self.update_pdf_overlay_positions()
             
-            # Restore preview
+            # For sequences, reload the current frame at preview quality
+            if self.current_assets and len(self.current_assets) == 1:
+                asset = self.current_assets[0]
+                if asset.is_sequence and asset.sequence:
+                    # Reload current frame at preview resolution
+                    current_frame_index = self.sequence_playback.current_frame_index
+                    if current_frame_index < len(asset.sequence.files):
+                        frame_path = asset.sequence.files[current_frame_index]
+                        self.load_sequence_frame(frame_path, asset)
+                    # Restore scrollbar policy
+                    self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                    self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                    return
+            
+            # For single images, restore preview
             if self.current_pixmap:
                 self.fit_pixmap_to_label()
+            
+            # Restore scrollbar policy
+            self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             
             # Reset cursor
             self.graphics_view.setCursor(Qt.ArrowCursor)
@@ -2392,6 +2653,40 @@ class PreviewPanel(QWidget):
                 self.sequence_playback.current_frame_index = 0
                 self.sequence_playback.timeline_slider.setValue(0)
                 self.sequence_playback.update_frame_label()
+            
+            # Add metadata for sequence before returning
+            self.add_metadata_row("📄", "Name", asset.name)
+            seq = asset.sequence
+            self.add_metadata_row("🎬", "Sequence", f"{seq.frame_count} frames")
+            self.add_metadata_row("📊", "Frame Range", f"{seq.first_frame}-{seq.last_frame}")
+            if not seq.is_continuous and seq.missing_frames:
+                missing_count = len(seq.missing_frames)
+                self.add_metadata_row("⚠️", "Missing", f"{missing_count} frames")
+            self.add_metadata_row("💾", "Total Size", self.format_file_size(seq.total_size))
+            
+            # File type
+            file_type = asset.extension.upper() + " sequence"
+            self.add_metadata_row("🗂️", "Type", file_type)
+            
+            # Modified date
+            try:
+                mod_time = datetime.fromtimestamp(asset.file_path.stat().st_mtime)
+                date_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
+                self.add_metadata_row("📅", "Modified", date_str)
+            except:
+                pass
+            
+            # Path (shortened)
+            path_str = str(asset.file_path)
+            if len(path_str) > 50:
+                path_str = "..." + path_str[-47:]
+            self.add_metadata_row("📂", "Path", path_str)
+            
+            # Add tags display in metadata (read-only)
+            self.add_metadata_tags_display([asset])
+            
+            # Load tags for this asset (in Tags tab)
+            self.load_tags(asset)
             
             # Don't load individual file preview for sequences
             return
@@ -5414,8 +5709,71 @@ class PreviewPanel(QWidget):
         # Get the frame Path object (sequence.files is a list of Path objects)
         frame_path = sequence.files[frame_index]
         
-        # Load and display this frame
-        self.load_sequence_frame(frame_path, asset)
+        # If in zoom mode, load the new frame directly into zoom without resetting
+        if self.zoom_mode:
+            # Update current_image_path to new frame
+            self.current_image_path = frame_path
+            
+            # Load the new frame at full resolution
+            file_path_str = str(frame_path)
+            file_ext = file_path_str.lower()
+            
+            # Load based on file type (same logic as enter_zoom_mode)
+            new_pixmap = None
+            
+            # Standard images
+            if file_ext.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tga', '.psd')):
+                # Simple load for standard formats
+                new_pixmap = QPixmap(file_path_str)
+            # TIFF
+            elif file_ext.endswith(('.tif', '.tiff')):
+                try:
+                    import cv2
+                    import numpy as np
+                    img = cv2.imread(file_path_str, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+                    if img is not None:
+                        if img.dtype == np.uint16:
+                            img = (img / 256).astype(np.uint8)
+                        elif img.dtype == np.float32 or img.dtype == np.float64:
+                            img = np.clip(img, 0, 1)
+                            img = (img * 255).astype(np.uint8)
+                        if len(img.shape) == 2:
+                            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                        elif len(img.shape) == 3 and img.shape[2] == 4:
+                            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+                        elif len(img.shape) == 3 and img.shape[2] == 3:
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        height, width, channels = img.shape
+                        bytes_per_line = width * channels
+                        q_image = QImage(img.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                        new_pixmap = QPixmap.fromImage(q_image.copy())
+                except:
+                    new_pixmap = QPixmap(file_path_str)
+            # HDR/EXR
+            elif file_ext.endswith(('.hdr', '.exr')):
+                try:
+                    from .preview_panel import load_hdr_exr_image
+                    new_pixmap, _ = load_hdr_exr_image(file_path_str, max_size=4096, exposure=self.hdr_exposure if hasattr(self, 'hdr_exposure') else 0.0)
+                except:
+                    new_pixmap = QPixmap(file_path_str)
+            else:
+                # Fallback
+                new_pixmap = QPixmap(file_path_str)
+            
+            # Replace the pixmap in zoom mode
+            if new_pixmap and not new_pixmap.isNull():
+                self.full_res_pixmap = new_pixmap
+                
+                # Update the scene with new pixmap (keeping zoom and pan)
+                if self.pixmap_item:
+                    self.pixmap_item.setPixmap(new_pixmap)
+                else:
+                    self.graphics_scene.clear()
+                    self.pixmap_item = self.graphics_scene.addPixmap(new_pixmap)
+                    self.pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        else:
+            # Normal mode: just load the frame
+            self.load_sequence_frame(frame_path, asset)
     
     def load_sequence_frame(self, frame_path, asset):
         """Load and display a specific frame from a sequence
@@ -5431,6 +5789,21 @@ class PreviewPanel(QWidget):
         file_path_str = str(frame_path)
         file_ext = file_path_str.lower()
         
+        # Get sequence info for cache key
+        sequence = asset.sequence if asset and asset.sequence else None
+        if not sequence:
+            return
+        
+        # Find frame index in sequence
+        frame_index = None
+        for idx, seq_file in enumerate(sequence.files):
+            if str(seq_file) == file_path_str:
+                frame_index = idx
+                break
+        
+        if frame_index is None:
+            return
+        
         # Check if this is HDR/EXR
         is_hdr_exr = file_ext.endswith('.hdr') or file_ext.endswith('.exr')
         
@@ -5443,17 +5816,9 @@ class PreviewPanel(QWidget):
             self.current_hdr_path = None
             self.exposure_controls.hide()
         
-        # Try to load from cache first (for non-HDR)
+        # Load the frame directly (no caching for now)
         pixmap = None
         resolution_str = None
-        
-        if not is_hdr_exr and file_path_str in self.preview_cache:
-            pixmap, resolution_str = self.preview_cache[file_path_str]
-            self.current_pixmap = pixmap
-            self.fit_pixmap_to_label()
-            return
-        
-        # Load the frame
         try:
             if is_hdr_exr:
                 # Load HDR/EXR with exposure
@@ -5566,11 +5931,16 @@ class PreviewPanel(QWidget):
                 
                 if pixmap and not pixmap.isNull():
                     self.current_pixmap = pixmap
-                    self.add_to_cache(file_path_str, pixmap, resolution_str)
                     self.fit_pixmap_to_label()
         
         except Exception as e:
             print(f"Error loading sequence frame {frame_path}: {e}")
             self.graphics_scene.clear()
             self.current_text_item = None
+    
+    # Cache system removed for simplification
+    # Will be reimplemented if needed
+
+
+
 
