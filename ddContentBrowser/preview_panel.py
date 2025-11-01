@@ -1430,6 +1430,32 @@ class PreviewPanel(QWidget):
                     print("Failed to load high-res PDF page")
                     return
             
+            # === RenderMan .tx files with OpenImageIO ===
+            elif file_ext.endswith('.tx'):
+                try:
+                    from .widgets import load_oiio_image
+                    # Load full resolution (mip_level=0) for zoom mode
+                    pixmap, resolution, metadata = load_oiio_image(
+                        file_path_str,
+                        max_size=4096,  # High quality zoom
+                        mip_level=0,
+                        exposure=0.0
+                    )
+                    
+                    if pixmap and not pixmap.isNull():
+                        self.full_res_pixmap = pixmap
+                        # Store metadata for info display
+                        if metadata:
+                            self.original_image_size = (metadata['width'], metadata['height'])
+                            print(f"[Preview] Loaded .tx with OIIO: {resolution}, format={metadata.get('format', 'unknown')}")
+                    else:
+                        raise Exception("OIIO loader returned null pixmap")
+                        
+                except Exception as e:
+                    print(f"[Preview] OIIO .tx loading failed: {e}")
+                    # Fallback to Qt
+                    self.full_res_pixmap = QPixmap(file_path_str)
+            
             # === TIFF with OpenCV ===
             elif (file_ext.endswith('.tif') or file_ext.endswith('.tiff')) and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
                 try:
@@ -2128,9 +2154,32 @@ class PreviewPanel(QWidget):
                         self.current_hdr_path = None
                         self.exposure_controls.hide()  # Hide exposure slider for non-HDR
                         
-                        # Special handling for 16-bit/32-bit TIFF files - use OpenCV for better support
+                        # Special handling for RenderMan .tx files - use OpenImageIO
                         file_ext = file_path_str.lower()
-                        if (file_ext.endswith('.tif') or file_ext.endswith('.tiff')) and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
+                        if file_ext.endswith('.tx'):
+                            try:
+                                from .widgets import load_oiio_image
+                                pixmap, resolution_str, metadata = load_oiio_image(
+                                    file_path_str,
+                                    max_size=1024,  # Preview size
+                                    mip_level=0,
+                                    exposure=0.0
+                                )
+                                
+                                if pixmap and not pixmap.isNull():
+                                    self.current_pixmap = pixmap
+                                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                                    self.fit_pixmap_to_label()
+                                    print(f"[Preview] ✓ .tx loaded with OIIO: {resolution_str}")
+                                else:
+                                    raise Exception("OIIO returned null pixmap")
+                                    
+                            except Exception as e:
+                                print(f"[Preview] OIIO .tx loading failed: {e}")
+                                self.graphics_scene.clear()
+                                self.current_text_item = None
+                        # Special handling for 16-bit/32-bit TIFF files - use OpenCV for better support
+                        elif (file_ext.endswith('.tif') or file_ext.endswith('.tiff')) and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
                             try:
                                 import cv2
                                 import numpy as np

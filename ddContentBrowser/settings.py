@@ -11,15 +11,19 @@ try:
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                                    QWidget, QLabel, QLineEdit, QPushButton, QCheckBox,
                                    QComboBox, QSlider, QSpinBox, QGroupBox, QFileDialog,
-                                   QDialogButtonBox, QMessageBox)
+                                   QDialogButtonBox, QMessageBox, QTableWidget, QTableWidgetItem,
+                                   QHeaderView, QAbstractItemView, QColorDialog, QStyledItemDelegate, QStyle)
     from PySide6.QtCore import Qt, Signal
+    from PySide6.QtGui import QColor, QLinearGradient, QPen
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                                    QWidget, QLabel, QLineEdit, QPushButton, QCheckBox,
                                    QComboBox, QSlider, QSpinBox, QGroupBox, QFileDialog,
-                                   QDialogButtonBox, QMessageBox)
+                                   QDialogButtonBox, QMessageBox, QTableWidget, QTableWidgetItem,
+                                   QHeaderView, QAbstractItemView, QColorDialog, QStyledItemDelegate, QStyle)
     from PySide2.QtCore import Qt, Signal
+    from PySide2.QtGui import QColor, QLinearGradient, QPen
     PYSIDE_VERSION = 2
 
 # Debug flag - set to False to disable verbose logging
@@ -655,22 +659,29 @@ class FiltersSettingsTab(QWidget):
         self.init_ui()
     
     def _generate_supported_formats_html(self):
-        """Generate HTML description of supported formats from FILE_TYPE_REGISTRY"""
-        from .utils import FILE_TYPE_REGISTRY
+        """Generate HTML description of supported formats from config"""
+        from .utils import ensure_file_formats_config, get_extensions_by_category
+        
+        config = ensure_file_formats_config()
+        categories = config.get('categories', {})
         
         # Import & Reference capable formats (importable=True)
         importable_html = "<b>🔵 Import & Reference to Maya:</b><br>"
-        for cat_name, cat_data in FILE_TYPE_REGISTRY.items():
-            if cat_data['importable']:
-                ext_list = ", ".join(cat_data['extensions'])
-                importable_html += f"• <b>{cat_data['label']}:</b> {ext_list}<br>"
+        for cat_name, cat_data in categories.items():
+            if cat_data.get('importable', False):
+                extensions = get_extensions_by_category(cat_name)
+                if extensions:
+                    ext_list = ", ".join(sorted(extensions))
+                    importable_html += f"• <b>{cat_data.get('name', cat_name)}:</b> {ext_list}<br>"
         
         # Browse & Preview only formats (importable=False)
         browse_html = "<b>⚪ Browse & Preview Only:</b><br>"
-        for cat_name, cat_data in FILE_TYPE_REGISTRY.items():
-            if not cat_data['importable']:
-                ext_list = ", ".join(cat_data['extensions'])
-                browse_html += f"• <b>{cat_data['label']}:</b> {ext_list}<br>"
+        for cat_name, cat_data in categories.items():
+            if not cat_data.get('importable', False):
+                extensions = get_extensions_by_category(cat_name)
+                if extensions:
+                    ext_list = ", ".join(sorted(extensions))
+                    browse_html += f"• <b>{cat_data.get('name', cat_name)}:</b> {ext_list}<br>"
         
         return importable_html, browse_html
     
@@ -681,58 +692,32 @@ class FiltersSettingsTab(QWidget):
         types_group = QGroupBox("Supported File Types")
         types_layout = QVBoxLayout()
         
-        # Generate HTML from registry
+        # Generate HTML from config
         import_html, browse_html = self._generate_supported_formats_html()
         
-        # Import & Reference capable formats
-        import_label = QLabel(import_html)
-        import_label.setWordWrap(True)
-        import_label.setStyleSheet("QLabel { color: #4CAF50; font-size: 11px; padding: 5px; }")
-        types_layout.addWidget(import_label)
+        # Import & Reference capable formats (store reference for refresh)
+        self.import_label = QLabel(import_html)
+        self.import_label.setWordWrap(True)
+        self.import_label.setStyleSheet("QLabel { color: #4CAF50; font-size: 11px; padding: 5px; }")
+        types_layout.addWidget(self.import_label)
         
-        # Browse/Preview only formats
-        browse_label = QLabel(browse_html)
-        browse_label.setWordWrap(True)
-        browse_label.setStyleSheet("QLabel { color: #888; font-size: 11px; padding: 5px; }")
-        types_layout.addWidget(browse_label)
+        # Browse/Preview only formats (store reference for refresh)
+        self.browse_label = QLabel(browse_html)
+        self.browse_label.setWordWrap(True)
+        self.browse_label.setStyleSheet("QLabel { color: #888; font-size: 11px; padding: 5px; }")
+        types_layout.addWidget(self.browse_label)
         
         types_group.setLayout(types_layout)
         layout.addWidget(types_group)
         
-        # Custom extensions group
-        custom_group = QGroupBox("Custom File Extensions")
-        custom_layout = QVBoxLayout()
-        
-        # Description
-        desc_label = QLabel(
-            "Add custom file extensions to display (comma-separated).<br>"
-            "Example: <code>.gltf, .blend, .max</code>"
+        # Info label - redirect to File Formats tab
+        info_label = QLabel(
+            "💡 <b>To add new file formats:</b> Go to the <b>File Formats</b> tab where you can "
+            "add/edit/remove formats with full control over colors, thumbnails, and categories."
         )
-        desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("QLabel { color: #888; font-size: 9px; padding: 5px; }")
-        custom_layout.addWidget(desc_label)
-        
-        # Input field for custom extensions
-        input_layout = QHBoxLayout()
-        self.custom_ext_input = QLineEdit()
-        self.custom_ext_input.setPlaceholderText(".gltf, .blend, .max")
-        
-        # Load existing custom extensions
-        current_extensions = self.settings.get("filters", "custom_extensions", [])
-        if current_extensions:
-            self.custom_ext_input.setText(", ".join(current_extensions))
-        
-        input_layout.addWidget(QLabel("Extensions:"))
-        input_layout.addWidget(self.custom_ext_input)
-        custom_layout.addLayout(input_layout)
-        
-        # Current custom extensions display
-        self.custom_ext_label = QLabel()
-        self.update_custom_ext_display()
-        custom_layout.addWidget(self.custom_ext_label)
-        
-        custom_group.setLayout(custom_layout)
-        layout.addWidget(custom_group)
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("QLabel { color: #5dade2; font-size: 10px; padding: 10px; background-color: rgba(93, 173, 226, 0.1); border-radius: 5px; }")
+        layout.addWidget(info_label)
         
         # Visibility group
         visibility_group = QGroupBox("Visibility")
@@ -789,40 +774,639 @@ class FiltersSettingsTab(QWidget):
         
         layout.addStretch()
     
-    def update_custom_ext_display(self):
-        """Update display of current custom extensions"""
-        current_extensions = self.settings.get("filters", "custom_extensions", [])
-        if current_extensions:
-            ext_text = ", ".join(current_extensions)
-            self.custom_ext_label.setText(f"<b>Active custom extensions:</b> {ext_text}")
-            self.custom_ext_label.setStyleSheet("QLabel { color: #5dade2; font-size: 9px; padding: 5px; }")
-        else:
-            self.custom_ext_label.setText("<i>No custom extensions added</i>")
-            self.custom_ext_label.setStyleSheet("QLabel { color: #666; font-size: 9px; padding: 5px; }")
+    def refresh_formats_display(self):
+        """Refresh the supported formats display from current config"""
+        from .utils import reload_file_formats_config
+        
+        # Force reload config
+        reload_file_formats_config()
+        
+        # Regenerate HTML
+        import_html, browse_html = self._generate_supported_formats_html()
+        
+        # Update labels
+        self.import_label.setText(import_html)
+        self.browse_label.setText(browse_html)
     
     def save_settings(self):
         """Save settings from UI to settings manager"""
-        # Parse custom extensions from input
-        ext_text = self.custom_ext_input.text().strip()
-        if ext_text:
-            # Split by comma, clean up, and ensure they start with dot
-            extensions = []
-            for ext in ext_text.split(','):
-                ext = ext.strip()
-                if ext:
-                    # Add dot if missing
-                    if not ext.startswith('.'):
-                        ext = '.' + ext
-                    extensions.append(ext.lower())
-            self.settings.set("filters", "custom_extensions", extensions)
-        else:
-            self.settings.set("filters", "custom_extensions", [])
-        
-        # Save other settings
+        # Save settings
         self.settings.set("filters", "show_hidden", self.show_hidden_cb.isChecked())
         self.settings.set("filters", "case_sensitive_search", self.case_sensitive_cb.isChecked())
         self.settings.set("filters", "regex_search", self.regex_search_cb.isChecked())
         self.settings.set("filters", "max_recursive_files", self.max_recursive_spin.value())
+
+
+class FileFormatEditDialog(QDialog):
+    """Dialog for adding/editing file format configuration"""
+    
+    def __init__(self, parent=None, edit_mode=False, extension="", config_data=None):
+        super().__init__(parent)
+        self.edit_mode = edit_mode
+        self.extension = extension
+        self.config_data = config_data or {}
+        
+        self.setWindowTitle("Edit Format" if edit_mode else "Add Format")
+        self.resize(500, 600)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Extension
+        ext_layout = QHBoxLayout()
+        ext_layout.addWidget(QLabel("Extension:"))
+        self.ext_input = QLineEdit()
+        self.ext_input.setPlaceholderText(".ext")
+        if self.edit_mode:
+            self.ext_input.setText(self.extension)
+            self.ext_input.setReadOnly(True)  # Can't change extension when editing
+        ext_layout.addWidget(self.ext_input)
+        layout.addLayout(ext_layout)
+        
+        # Category
+        cat_layout = QHBoxLayout()
+        cat_layout.addWidget(QLabel("Category:"))
+        self.category_combo = QComboBox()
+        self.category_combo.addItems([
+            "maya", "models", "images", "scripts", "pdf", "text", "other"
+        ])
+        current_category = self.config_data.get('category', 'other')
+        index = self.category_combo.findText(current_category)
+        if index >= 0:
+            self.category_combo.setCurrentIndex(index)
+        cat_layout.addWidget(self.category_combo)
+        layout.addLayout(cat_layout)
+        
+        # Enabled
+        self.enabled_cb = QCheckBox("Enabled (show in browser)")
+        self.enabled_cb.setChecked(self.config_data.get('enabled', True))
+        layout.addWidget(self.enabled_cb)
+        
+        # Show in filters
+        self.show_filters_cb = QCheckBox("Show in file type filters")
+        self.show_filters_cb.setChecked(self.config_data.get('show_in_filters', True))
+        layout.addWidget(self.show_filters_cb)
+        
+        # Icon colors group
+        colors_group = QGroupBox("Icon Colors")
+        colors_layout = QVBoxLayout()
+        
+        # Primary color
+        primary_layout = QHBoxLayout()
+        primary_layout.addWidget(QLabel("Primary Color:"))
+        self.primary_btn = QPushButton()
+        self.primary_color = QColor(*self.config_data.get('icon_color_primary', [100, 100, 100]))
+        self.update_color_button(self.primary_btn, self.primary_color)
+        self.primary_btn.clicked.connect(lambda: self.pick_color('primary'))
+        primary_layout.addWidget(self.primary_btn)
+        primary_layout.addStretch()
+        colors_layout.addLayout(primary_layout)
+        
+        # Secondary color
+        secondary_layout = QHBoxLayout()
+        secondary_layout.addWidget(QLabel("Secondary Color:"))
+        self.secondary_btn = QPushButton()
+        self.secondary_color = QColor(*self.config_data.get('icon_color_secondary', [150, 150, 150]))
+        self.update_color_button(self.secondary_btn, self.secondary_color)
+        self.secondary_btn.clicked.connect(lambda: self.pick_color('secondary'))
+        secondary_layout.addWidget(self.secondary_btn)
+        secondary_layout.addStretch()
+        colors_layout.addLayout(secondary_layout)
+        
+        colors_group.setLayout(colors_layout)
+        layout.addWidget(colors_group)
+        
+        # Thumbnail settings group
+        thumb_group = QGroupBox("Thumbnail Generation")
+        thumb_layout = QVBoxLayout()
+        
+        self.thumb_generate_cb = QCheckBox("Generate thumbnails")
+        thumb_config = self.config_data.get('thumbnail', {})
+        self.thumb_generate_cb.setChecked(thumb_config.get('generate', False))
+        thumb_layout.addWidget(self.thumb_generate_cb)
+        
+        # Thumbnail method
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Method:"))
+        self.thumb_method_combo = QComboBox()
+        
+        # Add methods with tooltips
+        methods = [
+            ("none", "No thumbnail generation (show icon only)"),
+            ("qimage", "Standard Qt image loader (JPG, PNG, BMP, GIF)"),
+            ("qimage_optimized", "⭐ RECOMMENDED for JPG/PNG/GIF - Fast scaled loading (4-5× faster)"),
+            ("opencv", "OpenCV loader (TIFF, HDR, TGA, advanced formats)"),
+            ("opencv_optimized", "⭐ RECOMMENDED for TIFF - DCT subsampling (2-8× faster)"),
+            ("openexr", "OpenEXR loader (EXR files with HDR)"),
+            ("pymupdf", "PyMuPDF loader (PDF first page)"),
+            ("oiio", "⭐ RECOMMENDED for .tx - OpenImageIO (RenderMan textures, all compressions)")
+        ]
+        
+        for method, tooltip in methods:
+            self.thumb_method_combo.addItem(method)
+            self.thumb_method_combo.setItemData(
+                self.thumb_method_combo.count() - 1, 
+                tooltip, 
+                Qt.ToolTipRole
+            )
+        
+        current_method = thumb_config.get('method', 'none')
+        index = self.thumb_method_combo.findText(current_method)
+        if index >= 0:
+            self.thumb_method_combo.setCurrentIndex(index)
+        
+        # Set tooltip for the combo itself
+        self.thumb_method_combo.setToolTip(
+            "Thumbnail generation method:\n"
+            "• qimage_optimized - Best for JPG/PNG/GIF (fast)\n"
+            "• opencv_optimized - Best for TIFF (fast)\n"
+            "• oiio - Best for .tx RenderMan textures\n"
+            "• none - No thumbnails (show colored icon only)"
+        )
+        
+        method_layout.addWidget(self.thumb_method_combo)
+        
+        # Help button for method info
+        help_btn = QPushButton("?")
+        help_btn.setMaximumWidth(30)
+        help_btn.setToolTip("Show detailed method recommendations")
+        help_btn.clicked.connect(self.show_method_help)
+        method_layout.addWidget(help_btn)
+        
+        thumb_layout.addLayout(method_layout)
+        
+        # Max size MB
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Max Size (MB):"))
+        self.thumb_size_spin = QSpinBox()
+        self.thumb_size_spin.setRange(0, 1000)
+        self.thumb_size_spin.setSpecialValueText("No limit")
+        max_size = thumb_config.get('max_size_mb')
+        self.thumb_size_spin.setValue(max_size if max_size else 0)
+        size_layout.addWidget(self.thumb_size_spin)
+        size_layout.addStretch()
+        thumb_layout.addLayout(size_layout)
+        
+        thumb_group.setLayout(thumb_layout)
+        layout.addWidget(thumb_group)
+        
+        # Maya import type
+        maya_layout = QHBoxLayout()
+        maya_layout.addWidget(QLabel("Maya Import Type:"))
+        self.maya_import_combo = QComboBox()
+        self.maya_import_combo.addItems(["None", "OBJ", "FBX", "Alembic", "USD"])
+        current_maya = self.config_data.get('maya_import_type')
+        if current_maya:
+            index = self.maya_import_combo.findText(current_maya)
+            if index >= 0:
+                self.maya_import_combo.setCurrentIndex(index)
+        maya_layout.addWidget(self.maya_import_combo)
+        layout.addLayout(maya_layout)
+        
+        layout.addStretch()
+        
+        # Dialog buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def update_color_button(self, button, color):
+        """Update button appearance with color"""
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgb({color.red()}, {color.green()}, {color.blue()});
+                border: 2px solid #555;
+                min-width: 100px;
+                min-height: 30px;
+            }}
+        """)
+        button.setText(f"RGB({color.red()}, {color.green()}, {color.blue()})")
+    
+    def pick_color(self, color_type):
+        """Open color picker dialog"""
+        current_color = self.primary_color if color_type == 'primary' else self.secondary_color
+        
+        color = QColorDialog.getColor(current_color, self, "Choose Color")
+        
+        if color.isValid():
+            if color_type == 'primary':
+                self.primary_color = color
+                self.update_color_button(self.primary_btn, color)
+            else:
+                self.secondary_color = color
+                self.update_color_button(self.secondary_btn, color)
+    
+    def show_method_help(self):
+        """Show detailed help for thumbnail methods"""
+        help_text = """
+<h3>Thumbnail Generation Methods</h3>
+
+<p><b>Recommended Methods:</b></p>
+
+<table border="1" cellpadding="5" cellspacing="0">
+<tr><th>Format</th><th>Best Method</th><th>Speed Gain</th></tr>
+<tr><td>JPG, PNG, GIF</td><td><b>qimage_optimized</b></td><td>4-5× faster</td></tr>
+<tr><td>TIFF</td><td><b>opencv_optimized</b></td><td>2-8× faster</td></tr>
+<tr><td>RenderMan .tx</td><td><b>oiio</b></td><td>All compressions</td></tr>
+<tr><td>EXR</td><td><b>openexr</b></td><td>HDR support</td></tr>
+<tr><td>PDF</td><td><b>pymupdf</b></td><td>First page</td></tr>
+</table>
+
+<p><b>Method Details:</b></p>
+
+<ul>
+<li><b>none</b> - No thumbnail, show colored icon only (fastest, no preview)</li>
+<li><b>qimage</b> - Standard Qt loader (works for most images, slower)</li>
+<li><b>qimage_optimized</b> ⭐ - Fast scaled loading using Qt (JPG DCT subsampling, PNG progressive decode)</li>
+<li><b>opencv</b> - OpenCV loader (16/32-bit TIFF, HDR, advanced formats)</li>
+<li><b>opencv_optimized</b> ⭐ - OpenCV with IMREAD_REDUCED_* flags (2-8× faster for TIFF)</li>
+<li><b>openexr</b> - Native EXR loader with HDR tone mapping</li>
+<li><b>pymupdf</b> - PDF renderer (first page only)</li>
+<li><b>oiio</b> ⭐ - OpenImageIO (RenderMan .tx with all compressions, mipmaps, HDR)</li>
+</ul>
+
+<p><b>Performance Tips:</b></p>
+<ul>
+<li>Use <b>optimized</b> methods when available (huge speed boost!)</li>
+<li>Set <b>max_size_mb</b> limit for large files (skip thumbnails > limit)</li>
+<li>Use <b>none</b> for 3D models (they need special rendering)</li>
+</ul>
+        """
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Thumbnail Method Help")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(help_text)
+        msg.setIcon(QMessageBox.Information)
+        msg.exec_()
+    
+    def validate_and_accept(self):
+        """Validate input and accept dialog"""
+        # Validate extension
+        ext = self.ext_input.text().strip()
+        if not ext:
+            QMessageBox.warning(self, "Invalid Input", "Extension cannot be empty!")
+            return
+        
+        if not ext.startswith('.'):
+            QMessageBox.warning(self, "Invalid Input", "Extension must start with a dot (e.g., .ext)")
+            return
+        
+        self.accept()
+    
+    def get_extension(self):
+        """Get extension string"""
+        return self.ext_input.text().strip().lower()
+    
+    def get_config_data(self):
+        """Get configuration data dict"""
+        max_size_mb = self.thumb_size_spin.value()
+        maya_import = self.maya_import_combo.currentText()
+        
+        return {
+            "category": self.category_combo.currentText(),
+            "enabled": self.enabled_cb.isChecked(),
+            "show_in_filters": self.show_filters_cb.isChecked(),
+            "icon_color_primary": [self.primary_color.red(), self.primary_color.green(), self.primary_color.blue()],
+            "icon_color_secondary": [self.secondary_color.red(), self.secondary_color.green(), self.secondary_color.blue()],
+            "thumbnail": {
+                "generate": self.thumb_generate_cb.isChecked(),
+                "method": self.thumb_method_combo.currentText(),
+                "max_size_mb": max_size_mb if max_size_mb > 0 else None
+            },
+            "maya_import_type": maya_import if maya_import != "None" else None
+        }
+
+
+class ColorPreviewDelegate(QStyledItemDelegate):
+    """Custom delegate to show color preview in table cell"""
+    
+    def paint(self, painter, option, index):
+        """Custom paint to show gradient color preview"""
+        # Get color data from item
+        color_text = index.data(Qt.DisplayRole)
+        
+        if color_text and "RGB(" in color_text:
+            # Parse primary and secondary colors from text
+            try:
+                parts = color_text.split("→")
+                primary_part = parts[0].strip()
+                secondary_part = parts[1].strip() if len(parts) > 1 else primary_part
+                
+                # Extract RGB values
+                import re
+                primary_match = re.search(r'RGB\((\d+),(\d+),(\d+)\)', primary_part)
+                secondary_match = re.search(r'RGB\((\d+),(\d+),(\d+)\)', secondary_part)
+                
+                if primary_match:
+                    primary_color = QColor(int(primary_match.group(1)), 
+                                          int(primary_match.group(2)), 
+                                          int(primary_match.group(3)))
+                    
+                    if secondary_match:
+                        secondary_color = QColor(int(secondary_match.group(1)), 
+                                                int(secondary_match.group(2)), 
+                                                int(secondary_match.group(3)))
+                    else:
+                        secondary_color = primary_color
+                    
+                    # Draw gradient background (always visible, even when selected)
+                    painter.save()
+                    
+                    gradient = QLinearGradient(option.rect.topLeft(), option.rect.bottomRight())
+                    gradient.setColorAt(0, primary_color)
+                    gradient.setColorAt(1, secondary_color)
+                    
+                    painter.fillRect(option.rect, gradient)
+                    
+                    # Draw text with contrasting color
+                    text_color = QColor(255, 255, 255) if primary_color.lightness() < 128 else QColor(0, 0, 0)
+                    painter.setPen(text_color)
+                    painter.drawText(option.rect, Qt.AlignCenter, color_text)
+                    
+                    # Draw selection border if selected (instead of background)
+                    if option.state & QStyle.State_Selected:
+                        painter.setPen(QPen(option.palette.highlight().color(), 2))
+                        painter.drawRect(option.rect.adjusted(1, 1, -1, -1))
+                    
+                    painter.restore()
+                    return
+            except:
+                pass
+        
+        # Fallback to default painting
+        super().paint(painter, option, index)
+
+
+class FileFormatsSettingsTab(QWidget):
+    """File Formats settings tab - manage supported file formats"""
+    
+    def __init__(self, settings_manager, parent=None):
+        super().__init__(parent)
+        self.settings = settings_manager
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Description
+        desc = QLabel(
+            "Manage supported file formats, colors, and categories.<br>"
+            "Changes are saved to <b>file_formats.json</b> and apply immediately."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("QLabel { color: #888; font-size: 9px; padding: 5px; }")
+        layout.addWidget(desc)
+        
+        # Toolbar
+        toolbar = QHBoxLayout()
+        
+        self.add_btn = QPushButton("Add Format")
+        self.add_btn.clicked.connect(self.add_format)
+        toolbar.addWidget(self.add_btn)
+        
+        self.edit_btn = QPushButton("Edit Selected")
+        self.edit_btn.clicked.connect(self.edit_format)
+        toolbar.addWidget(self.edit_btn)
+        
+        self.remove_btn = QPushButton("Remove Selected")
+        self.remove_btn.clicked.connect(self.remove_format)
+        toolbar.addWidget(self.remove_btn)
+        
+        toolbar.addStretch()
+        
+        self.import_btn = QPushButton("Import...")
+        self.import_btn.clicked.connect(self.import_config)
+        toolbar.addWidget(self.import_btn)
+        
+        self.export_btn = QPushButton("Export...")
+        self.export_btn.clicked.connect(self.export_config)
+        toolbar.addWidget(self.export_btn)
+        
+        layout.addLayout(toolbar)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels([
+            "Extension", "Category", "Enabled", "Icon Colors", "Thumbnail Method"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.itemDoubleClicked.connect(self.edit_format)
+        
+        # Set custom delegate for Icon Colors column (column 3)
+        self.color_delegate = ColorPreviewDelegate(self.table)
+        self.table.setItemDelegateForColumn(3, self.color_delegate)
+        
+        layout.addWidget(self.table)
+        
+        # Load current formats
+        self.load_formats()
+    
+    def load_formats(self):
+        """Load file formats from config and populate table"""
+        from .utils import ensure_file_formats_config
+        
+        config = ensure_file_formats_config()
+        extensions = config.get('extensions', {})
+        
+        self.table.setRowCount(len(extensions))
+        
+        for row, (ext, ext_config) in enumerate(sorted(extensions.items())):
+            # Extension
+            ext_item = QTableWidgetItem(ext)
+            ext_item.setFlags(ext_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, ext_item)
+            
+            # Category
+            category_item = QTableWidgetItem(ext_config.get('category', 'unknown'))
+            category_item.setFlags(category_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 1, category_item)
+            
+            # Enabled checkbox
+            enabled_item = QTableWidgetItem()
+            enabled_item.setFlags(enabled_item.flags() | Qt.ItemIsUserCheckable)
+            enabled_item.setFlags(enabled_item.flags() & ~Qt.ItemIsEditable)
+            enabled_item.setCheckState(Qt.Checked if ext_config.get('enabled', True) else Qt.Unchecked)
+            self.table.setItem(row, 2, enabled_item)
+            
+            # Icon colors (visual preview) - delegate will handle rendering
+            color_primary = ext_config.get('icon_color_primary', [100, 100, 100])
+            color_secondary = ext_config.get('icon_color_secondary', [150, 150, 150])
+            color_text = f"RGB({color_primary[0]},{color_primary[1]},{color_primary[2]}) → RGB({color_secondary[0]},{color_secondary[1]},{color_secondary[2]})"
+            color_item = QTableWidgetItem(color_text)
+            color_item.setFlags(color_item.flags() & ~Qt.ItemIsEditable)
+            # Don't set background - ColorPreviewDelegate will handle rendering
+            self.table.setItem(row, 3, color_item)
+            
+            # Thumbnail method
+            thumb_method = ext_config.get('thumbnail', {}).get('method', 'none')
+            method_item = QTableWidgetItem(thumb_method)
+            method_item.setFlags(method_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 4, method_item)
+    
+    def add_format(self):
+        """Add new file format"""
+        dialog = FileFormatEditDialog(parent=self, edit_mode=False)
+        if dialog.exec_():
+            # Get new format data
+            ext = dialog.get_extension()
+            config_data = dialog.get_config_data()
+            
+            # Add to config
+            from .utils import ensure_file_formats_config, save_file_formats_config
+            config = ensure_file_formats_config()
+            
+            if ext in config.get('extensions', {}):
+                QMessageBox.warning(self, "Duplicate", f"Format <b>{ext}</b> already exists!")
+                return
+            
+            config['extensions'][ext] = config_data
+            
+            if save_file_formats_config(config):
+                QMessageBox.information(self, "Success", f"Format <b>{ext}</b> added successfully!")
+                self.load_formats()  # Reload table
+            else:
+                QMessageBox.warning(self, "Error", "Failed to save config!")
+    
+    def edit_format(self):
+        """Edit selected format"""
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "No Selection", "Please select a format to edit.")
+            return
+        
+        ext = self.table.item(current_row, 0).text()
+        
+        # Load current config
+        from .utils import ensure_file_formats_config, save_file_formats_config
+        config = ensure_file_formats_config()
+        ext_config = config['extensions'].get(ext)
+        
+        if not ext_config:
+            QMessageBox.warning(self, "Error", f"Config for <b>{ext}</b> not found!")
+            return
+        
+        # Open edit dialog
+        dialog = FileFormatEditDialog(parent=self, edit_mode=True, extension=ext, config_data=ext_config)
+        if dialog.exec_():
+            # Update config
+            updated_config = dialog.get_config_data()
+            config['extensions'][ext] = updated_config
+            
+            if save_file_formats_config(config):
+                QMessageBox.information(self, "Success", f"Format <b>{ext}</b> updated successfully!")
+                self.load_formats()  # Reload table
+            else:
+                QMessageBox.warning(self, "Error", "Failed to save config!")
+    
+    def remove_format(self):
+        """Remove selected format"""
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "No Selection", "Please select a format to remove.")
+            return
+        
+        ext = self.table.item(current_row, 0).text()
+        reply = QMessageBox.question(
+            self, "Remove Format",
+            f"Remove format <b>{ext}</b>?<br>This will remove it from file_formats.json.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            from .utils import ensure_file_formats_config, save_file_formats_config
+            config = ensure_file_formats_config()
+            
+            if ext in config.get('extensions', {}):
+                del config['extensions'][ext]
+                
+                if save_file_formats_config(config):
+                    QMessageBox.information(self, "Success", f"Format <b>{ext}</b> removed successfully!")
+                    self.load_formats()  # Reload table
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to save config!")
+            else:
+                QMessageBox.warning(self, "Error", f"Format <b>{ext}</b> not found in config!")
+    
+    def import_config(self):
+        """Import file_formats.json from file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import File Formats Config",
+            "", "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            try:
+                import json
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    imported_config = json.load(f)
+                
+                # Validate structure
+                if 'extensions' not in imported_config or 'categories' not in imported_config:
+                    QMessageBox.warning(self, "Invalid Config", "Invalid file_formats.json structure!")
+                    return
+                
+                # Save imported config
+                from .utils import save_file_formats_config
+                if save_file_formats_config(imported_config):
+                    QMessageBox.information(
+                        self, "Success", 
+                        f"Imported {len(imported_config['extensions'])} formats successfully!"
+                    )
+                    self.load_formats()  # Reload table
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to save imported config!")
+                    
+            except Exception as e:
+                QMessageBox.warning(self, "Import Error", f"Failed to import config:\n{e}")
+    
+    def export_config(self):
+        """Export file_formats.json to file"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export File Formats Config",
+            "file_formats.json", "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            try:
+                from .utils import ensure_file_formats_config
+                import json
+                
+                config = ensure_file_formats_config()
+                
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                QMessageBox.information(
+                    self, "Success",
+                    f"Exported {len(config['extensions'])} formats to:\n{file_path}"
+                )
+                
+            except Exception as e:
+                QMessageBox.warning(self, "Export Error", f"Failed to export config:\n{e}")
+    
+    def save_settings(self):
+        """Save settings (enabled state changes)"""
+        from .utils import ensure_file_formats_config, save_file_formats_config
+        
+        config = ensure_file_formats_config()
+        
+        # Update enabled states from table checkboxes
+        for row in range(self.table.rowCount()):
+            ext = self.table.item(row, 0).text()
+            enabled_item = self.table.item(row, 2)
+            
+            if ext in config['extensions']:
+                config['extensions'][ext]['enabled'] = (enabled_item.checkState() == Qt.Checked)
+        
+        save_file_formats_config(config)
 
 
 class SettingsDialog(QDialog):
@@ -848,11 +1432,16 @@ class SettingsDialog(QDialog):
         self.thumbnail_tab = ThumbnailSettingsTab(self.settings)
         self.preview_tab = PreviewSettingsTab(self.settings)
         self.filters_tab = FiltersSettingsTab(self.settings)
+        self.file_formats_tab = FileFormatsSettingsTab(self.settings)
         
         self.tab_widget.addTab(self.general_tab, "General")
         self.tab_widget.addTab(self.thumbnail_tab, "Thumbnails")
         self.tab_widget.addTab(self.preview_tab, "Preview")
         self.tab_widget.addTab(self.filters_tab, "Filters")
+        self.tab_widget.addTab(self.file_formats_tab, "File Formats")
+        
+        # Connect tab changed signal to refresh Filters tab when switching to it
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         
         layout.addWidget(self.tab_widget)
         
@@ -865,6 +1454,12 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(button_box)
     
+    def on_tab_changed(self, index):
+        """Handle tab change - refresh Filters tab if switching to it"""
+        # Index 3 is Filters tab (0=General, 1=Thumbnails, 2=Preview, 3=Filters, 4=File Formats)
+        if index == 3:
+            self.filters_tab.refresh_formats_display()
+    
     def accept_settings(self):
         """Save all settings and close dialog"""
         # Save settings from all tabs
@@ -872,6 +1467,10 @@ class SettingsDialog(QDialog):
         self.thumbnail_tab.save_settings()
         self.preview_tab.save_settings()
         self.filters_tab.save_settings()
+        self.file_formats_tab.save_settings()
+        
+        # Refresh Filters tab display with updated file formats
+        self.filters_tab.refresh_formats_display()
         
         # Save to disk
         if self.settings.save():

@@ -45,8 +45,8 @@ def qt_message_handler(msg_type, context, message):
 # Install the message handler
 qInstallMessageHandler(qt_message_handler)
 
-# Import HDR/EXR and PDF loading from widgets
-from .widgets import load_hdr_exr_image, load_pdf_page, load_pdf_page_normalized
+# Import HDR/EXR, OIIO and PDF loading from widgets
+from .widgets import load_hdr_exr_image, load_oiio_image, load_pdf_page, load_pdf_page_normalized
 
 # UI Font - will be set by browser at runtime
 UI_FONT = "Segoe UI"
@@ -1032,7 +1032,7 @@ class QuickViewWindow(QDialog):
         
         # Check if it's an image
         image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tga', '.tif', '.tiff', 
-                           '.exr', '.hdr', '.gif', '.webp', '.psd']
+                           '.exr', '.hdr', '.gif', '.webp', '.psd', '.tx']
         
         if file_path.suffix.lower() in image_extensions:
             self.show_image_preview(file_path)
@@ -1070,9 +1070,14 @@ class QuickViewWindow(QDialog):
                 #     print(f"[QuickView] Same image already loaded, preserving state: {file_path.name}")
                 return
             
-            # Load image - use HDR/EXR loader for .exr and .hdr files
+            # Load image - use OIIO for .tx, HDR/EXR loader for .exr and .hdr files
             pixmap = None
-            if file_path.suffix.lower() in ['.exr', '.hdr']:
+            if file_path.suffix.lower() == '.tx':
+                # RenderMan .tx files - use OpenImageIO
+                result = load_oiio_image(str(file_path), max_size=4096)
+                if result and result[0]:
+                    pixmap = result[0]  # Extract pixmap from tuple
+            elif file_path.suffix.lower() in ['.exr', '.hdr']:
                 # if DEBUG_MODE:
                 #     print(f"[QuickView] Loading HDR/EXR using load_hdr_exr_image: {file_path.name}")
                 # Use the same HDR/EXR loader as PreviewPanel
@@ -1332,9 +1337,9 @@ class QuickViewWindow(QDialog):
             self.pdf_page_count = page_count
             self.pdf_canvas_size = canvas_size  # Store normalized canvas size for consistent rendering
             
-            # Don't create navigation overlay on first load - let _refit_on_first_show do it with correct viewport size
-            # Only create it if this is NOT the first show (window already visible)
-            if page_count > 1 and hasattr(self, '_first_show_done') and self._first_show_done:
+            # Create navigation overlay if multi-page PDF
+            # This handles both first load and navigation back to PDF
+            if page_count > 1:
                 self.create_pdf_navigation_overlay(pixmap_rect, fit_scale)
             
             # if DEBUG_MODE:

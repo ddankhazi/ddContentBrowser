@@ -47,41 +47,11 @@ class ThumbnailDelegate(QStyledItemDelegate):
     
     def draw_gradient_placeholder(self, painter, rect, extension):
         """Draw attractive gradient placeholder for file type"""
-        # Color mapping for different file types (gradient colors)
-        color_schemes = {
-            # Maya scene files - Cyan/Turquoise (Maya branding colors)
-            '.ma': (QColor(50, 150, 180), QColor(80, 200, 230)),   # Cyan gradient
-            '.mb': (QColor(40, 130, 160), QColor(70, 180, 210)),   # Dark cyan gradient
-            # 3D formats
-            '.obj': (QColor(150, 80, 150), QColor(200, 130, 200)),  # Purple gradient
-            '.fbx': (QColor(200, 180, 60), QColor(255, 220, 100)),  # Yellow gradient
-            '.abc': (QColor(80, 150, 80), QColor(120, 200, 120)),   # Green gradient
-            '.usd': (QColor(200, 80, 80), QColor(255, 120, 120)),   # Red gradient
-            '.vdb': (QColor(100, 100, 200), QColor(150, 150, 255)), # Blue-purple gradient
-            '.hda': (QColor(180, 100, 60), QColor(220, 140, 100)),  # Orange-brown (Houdini)
-            '.blend': (QColor(50, 120, 200), QColor(80, 160, 240)), # Blue gradient (Blender)
-            '.sbsar': (QColor(220, 120, 40), QColor(255, 160, 80)), # Orange gradient (Substance)
-            '.dae': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
-            '.stl': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
-            # Image formats
-            '.tif': (QColor(100, 180, 220), QColor(140, 210, 255)),  # Light blue
-            '.tiff': (QColor(100, 180, 220), QColor(140, 210, 255)), # Light blue
-            '.jpg': (QColor(220, 180, 100), QColor(255, 210, 140)),  # Light orange
-            '.jpeg': (QColor(220, 180, 100), QColor(255, 210, 140)), # Light orange
-            '.png': (QColor(180, 220, 180), QColor(210, 255, 210)),  # Light green
-            '.hdr': (QColor(255, 200, 100), QColor(255, 230, 150)),  # Golden
-            '.exr': (QColor(220, 140, 220), QColor(255, 180, 255)),  # Light magenta
-            '.tga': (QColor(180, 180, 220), QColor(210, 210, 255)),  # Light purple
-            # Script files
-            '.py': (QColor(60, 120, 180), QColor(100, 160, 220)),    # Python blue
-            '.mel': (QColor(70, 160, 100), QColor(100, 200, 140)),   # Maya green (Maya native)
-            '.txt': (QColor(160, 160, 160), QColor(200, 200, 200)),  # Gray (plain text)
-            # PDF files
-            '.pdf': (QColor(200, 50, 50), QColor(255, 100, 100)),    # Red gradient (Adobe PDF)
-        }
+        from .utils import get_icon_colors
         
-        colors = color_schemes.get(extension.lower(), 
-                                   (QColor(100, 100, 100), QColor(150, 150, 150)))
+        # Get colors from config
+        color_primary, color_secondary = get_icon_colors(extension)
+        colors = (QColor(*color_primary), QColor(*color_secondary))
         
         # Create gradient
         gradient = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())

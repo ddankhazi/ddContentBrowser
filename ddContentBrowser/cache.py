@@ -544,22 +544,20 @@ class ThumbnailGenerator(QThread):
         Returns:
             QPixmap or None
         """
+        from .utils import get_thumbnail_method
+        
         extension = os.path.splitext(str(file_path))[1].lower()
         
-        # Image files and PDF - load actual image/first page
-        if extension in ['.tif', '.tiff', '.jpg', '.jpeg', '.png', '.hdr', '.exr', '.tga', '.pdf']:
+        # Get thumbnail method from config
+        thumbnail_method = get_thumbnail_method(extension)
+        
+        if thumbnail_method != 'none':
+            # Generate actual thumbnail from file
             return self._generate_image_thumbnail(file_path)
         
         # 3D files and other types - don't generate placeholder in cache
         # The delegate will draw gradient placeholder directly (faster, no scaling)
         return None
-        
-        # TODO Phase 3: Implement safe playblast generation for Maya files
-        # This requires:
-        # 1. Main thread execution (Maya API not thread-safe)
-        # 2. Proper scene state management
-        # 3. User confirmation before opening files
-        # 4. Optional: Use mayapy subprocess for isolation
     
     def _generate_image_thumbnail(self, file_path):
         """
@@ -594,6 +592,20 @@ class ThumbnailGenerator(QThread):
                     # Only print error for non-encrypted PDFs
                     if "encrypted" not in str(e).lower():
                         print(f"[Cache] PDF loading failed: {e}, using default icon...")
+                    return self._get_default_icon(file_path)
+            
+            # Special handling for .tx files - use OpenImageIO
+            if extension == '.tx':
+                try:
+                    from .widgets import load_oiio_image
+                    # Load mip level 1 for fast thumbnail (half resolution)
+                    pixmap, _, _ = load_oiio_image(file_path, max_size=self.thumbnail_size, mip_level=1)
+                    if pixmap and not pixmap.isNull():
+                        return pixmap
+                    else:
+                        raise Exception("OIIO loader returned null pixmap")
+                except Exception as e:
+                    print(f"[Cache] OIIO .tx loading failed: {e}, using default icon...")
                     return self._get_default_icon(file_path)
             
             # Special handling for EXR files - use dedicated EXR loader
@@ -965,44 +977,20 @@ class ThumbnailGenerator(QThread):
         Get attractive default icon based on file type
         Creates gradient-based icon with file extension
         """
+        from .utils import get_icon_colors
+        
         extension = os.path.splitext(str(file_path))[1].lower()
         
         # Create pixmap
         pixmap = QPixmap(self.thumbnail_size, self.thumbnail_size)
         pixmap.fill(Qt.transparent)
         
-        # Color mapping for different file types (gradient colors)
-        color_schemes = {
-            '.ma': (QColor(70, 130, 220), QColor(100, 170, 255)),   # Blue gradient
-            '.mb': (QColor(50, 100, 180), QColor(80, 140, 220)),    # Dark blue gradient
-            '.obj': (QColor(150, 80, 150), QColor(200, 130, 200)),  # Purple gradient
-            '.fbx': (QColor(200, 180, 60), QColor(255, 220, 100)),  # Yellow gradient
-            '.abc': (QColor(80, 150, 80), QColor(120, 200, 120)),   # Green gradient
-            '.usd': (QColor(200, 80, 80), QColor(255, 120, 120)),   # Red gradient
-            '.hda': (QColor(180, 100, 60), QColor(220, 140, 100)),  # Orange-brown (Houdini)
-            '.blend': (QColor(50, 120, 200), QColor(80, 160, 240)), # Blue gradient (Blender)
-            '.sbsar': (QColor(220, 120, 40), QColor(255, 160, 80)), # Orange gradient (Substance)
-            '.dae': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
-            '.stl': (QColor(150, 80, 150), QColor(200, 130, 200)), # Purple gradient
-            # Image formats (lighter, image-like colors)
-            '.tif': (QColor(100, 180, 220), QColor(140, 210, 255)),  # Light blue (TIFF)
-            '.tiff': (QColor(100, 180, 220), QColor(140, 210, 255)), # Light blue (TIFF)
-            '.jpg': (QColor(220, 180, 100), QColor(255, 210, 140)),  # Light orange (JPEG)
-            '.jpeg': (QColor(220, 180, 100), QColor(255, 210, 140)), # Light orange (JPEG)
-            '.png': (QColor(180, 220, 180), QColor(210, 255, 210)),  # Light green (PNG)
-            '.hdr': (QColor(255, 200, 100), QColor(255, 230, 150)),  # Golden (HDR)
-            '.exr': (QColor(220, 140, 220), QColor(255, 180, 255)),  # Light magenta (EXR)
-            '.tga': (QColor(180, 180, 220), QColor(210, 210, 255)),  # Light purple (TGA)
-            # PDF files
-            '.pdf': (QColor(200, 50, 50), QColor(255, 100, 100)),    # Red gradient (Adobe PDF)
-            # Script/text files
-            '.py': (QColor(60, 120, 180), QColor(100, 160, 220)),    # Python blue
-            '.mel': (QColor(70, 160, 100), QColor(100, 200, 140)),   # Maya green (Maya native)
-            '.txt': (QColor(160, 160, 160), QColor(200, 200, 200)),  # Gray (plain text)
-        }
-        
-        colors = color_schemes.get(extension, 
-                                   (QColor(100, 100, 100), QColor(150, 150, 150)))
+        # Get colors from config
+        color_primary, color_secondary = get_icon_colors(extension)
+        colors = (
+            QColor(*color_primary),   # Convert [R,G,B] to QColor
+            QColor(*color_secondary)
+        )
         
         # Create gradient background
         painter = QPainter(pixmap)

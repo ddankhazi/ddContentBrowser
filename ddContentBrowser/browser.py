@@ -99,7 +99,9 @@ class SortHeaderWidget(QtWidgets.QWidget):
             menu.addSeparator()
             
             # Then file type filters - using central registry
-            from .utils import get_filter_groups
+            from .utils import reload_file_formats_config, get_filter_groups
+            reload_file_formats_config()  # Force reload to get latest config
+            
             current_types = self.browser.file_model.filter_file_types
             
             file_type_groups = get_filter_groups()
@@ -321,6 +323,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Configuration and cache
         self.config = ContentBrowserConfig()
+        
+        # Ensure file formats config exists (auto-generates on first run)
+        from .utils import ensure_file_formats_config
+        self.file_formats_config = ensure_file_formats_config()
+        if DEBUG_MODE:
+            print(f"[Browser] File formats config loaded: {len(self.file_formats_config.get('extensions', {}))} extensions")
         
         # Sync memory cache size from settings to config (settings takes precedence)
         memory_cache_size = self.settings_manager.get("thumbnails", "memory_cache_size", 2000)
@@ -2009,32 +2017,27 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     
                 else:
                     # Other 3D file types (OBJ, FBX, ABC, USD, DAE, STL, etc.)
-                    file_path = str(asset.file_path)
-                    file_lower = file_path.lower()
+                    from .utils import get_maya_import_type
                     
-                    # Determine file type for Maya import
-                    if file_lower.endswith('.obj'):
-                        file_type = 'OBJ'
-                    elif file_lower.endswith('.fbx'):
-                        file_type = 'FBX'
-                    elif file_lower.endswith('.abc'):
-                        file_type = 'Alembic'
-                    elif file_lower.endswith('.usd'):
-                        file_type = 'USD Import'
-                    elif file_lower.endswith('.dae'):
-                        file_type = 'DAE_FBX'
-                    elif file_lower.endswith('.stl'):
-                        file_type = 'STL'
+                    file_path = str(asset.file_path)
+                    
+                    # Get Maya import type from config
+                    file_type = get_maya_import_type(asset.extension)
+                    
+                    if file_type:
+                        # Import with type specification
+                        cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
+                                 mergeNamespacesOnClash=False, namespace=':',
+                                 options='v=0', preserveReferences=True)
+                        imported_count += 1
                     else:
                         # Unknown 3D format, try without type specification
-                        cmds.file(file_path, i=True)
-                        imported_count += 1
-                        continue
-                    
-                    cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
-                             mergeNamespacesOnClash=False, namespace=':',
-                             options='v=0', preserveReferences=True)
-                    imported_count += 1
+                        try:
+                            cmds.file(file_path, i=True)
+                            imported_count += 1
+                        except:
+                            # Skip if import fails
+                            pass
                     
             except Exception as e:
                 error_count += 1
@@ -2330,6 +2333,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.memory_cache.max_size = memory_cache_size
             if DEBUG_MODE:
                 print(f"[Browser] Updated memory cache size to {memory_cache_size}")
+        
+        # Rebuild filter panel with updated file formats
+        if hasattr(self, 'filter_panel'):
+            self.filter_panel.rebuild_type_filters()
+            if DEBUG_MODE:
+                print("[Browser] Rebuilt filter panel with updated formats")
         
         # Apply preview settings to PreviewPanel
         preview_resolution = self.settings_manager.get("preview", "resolution", 1024)

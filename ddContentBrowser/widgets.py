@@ -649,8 +649,8 @@ class FilterPanel(QWidget):
         content_layout.setSpacing(10)
         
         # === COLUMN 1: File Types (Compact 2-row grid) ===
-        type_group = QGroupBox("File Types")
-        type_grid = QtWidgets.QGridLayout(type_group)
+        self.type_group = QGroupBox("File Types")
+        type_grid = QtWidgets.QGridLayout(self.type_group)
         type_grid.setSpacing(3)
         type_grid.setContentsMargins(5, 8, 5, 5)
         
@@ -671,9 +671,9 @@ class FilterPanel(QWidget):
             self.type_checkboxes[ext] = cb
             type_grid.addWidget(cb, row, col)
         
-        type_group.setMaximumWidth(220)  # Wider for more items
-        type_group.setMaximumHeight(140)  # Taller for more rows
-        content_layout.addWidget(type_group)
+        self.type_group.setMaximumWidth(220)  # Wider for more items
+        self.type_group.setMaximumHeight(140)  # Taller for more rows
+        content_layout.addWidget(self.type_group)
         
         # === COLUMN 2: Size Filter (Compact) ===
         size_group = QGroupBox("File Size")
@@ -919,6 +919,35 @@ class FilterPanel(QWidget):
         self.show_scripts_check.setChecked(True)
         
         self.on_filter_changed()
+    
+    def rebuild_type_filters(self):
+        """Rebuild file type checkboxes from current config"""
+        # Force reload config to get latest changes
+        from .utils import reload_file_formats_config, get_simple_filter_types
+        reload_file_formats_config()
+        
+        # Get current layout
+        layout = self.type_group.layout()
+        
+        # Clear existing checkboxes
+        for cb in self.type_checkboxes.values():
+            layout.removeWidget(cb)
+            cb.deleteLater()
+        self.type_checkboxes.clear()
+        
+        # Get updated file types from config
+        file_types = get_simple_filter_types()
+        
+        # Rebuild grid
+        cols = 3
+        for idx, (ext, label) in enumerate(file_types):
+            row = idx // cols
+            col = idx % cols
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            cb.stateChanged.connect(self.on_filter_changed)
+            self.type_checkboxes[ext] = cb
+            layout.addWidget(cb, row, col)
 
 
 def load_hdr_exr_raw(file_path, max_size=2048):
@@ -2000,14 +2029,19 @@ class MayaStyleListView(QListView):
             return
         
         try:
+            from ddContentBrowser.utils import get_extensions_by_category
+            from pathlib import Path
+            
             imported_count = 0
             failed_count = 0
-            image_exts = ['.tif', '.tiff', '.jpg', '.jpeg', '.png', '.hdr', '.exr', '.tga', '.bmp', '.iff', '.dds']
+            
+            # Get image extensions from config
+            image_exts = get_extensions_by_category('images')
             
             for file_path in paths:
                 try:
-                    file_lower = file_path.lower()
-                    is_image = any(file_lower.endswith(ext) for ext in image_exts)
+                    file_ext = Path(file_path).suffix.lower()
+                    is_image = file_ext in image_exts
                     
                     if is_image:
                         # Create texture node
@@ -2038,37 +2072,31 @@ class MayaStyleListView(QListView):
                         imported_count += 1
                     else:
                         # Import 3D file
-                        file_type = None
-                        if file_lower.endswith('.ma'):
-                            file_type = 'mayaAscii'
-                        elif file_lower.endswith('.mb'):
-                            file_type = 'mayaBinary'
-                        elif file_lower.endswith('.obj'):
-                            file_type = 'OBJ'
-                        elif file_lower.endswith('.fbx'):
-                            file_type = 'FBX'
-                        elif file_lower.endswith('.abc'):
-                            file_type = 'Alembic'
-                        elif file_lower.endswith('.usd'):
-                            file_type = 'USD Import'
-                        elif file_lower.endswith('.dae') or file_lower.endswith('.stl'):
-                            # DAE/STL: Let Maya auto-detect (no explicit type needed)
-                            file_type = None
-                        else:
-                            # Skip unsupported file types
-                            continue
+                        from ddContentBrowser.utils import get_maya_import_type
                         
-                        # Import with or without type specification
+                        # Get extension
+                        file_ext = Path(file_path).suffix.lower()
+                        
+                        # Get Maya import type from config
+                        file_type = get_maya_import_type(file_ext)
+                        
                         if file_type:
+                            # Import with type specification
                             cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
                                      mergeNamespacesOnClash=False, namespace=':',
                                      options='v=0', preserveReferences=True)
+                            imported_count += 1
                         else:
-                            # Auto-detect format (for DAE, STL, etc.)
-                            cmds.file(file_path, i=True, ignoreVersion=True,
-                                     mergeNamespacesOnClash=False, namespace=':',
-                                     preserveReferences=True)
-                        imported_count += 1
+                            # Unknown format or no import type - try auto-detect
+                            try:
+                                cmds.file(file_path, i=True, ignoreVersion=True,
+                                         mergeNamespacesOnClash=False, namespace=':',
+                                         preserveReferences=True)
+                                imported_count += 1
+                            except:
+                                # Skip unsupported file types
+                                failed_count += 1
+                                continue
                     
                 except Exception as e:
                     failed_count += 1
@@ -2205,6 +2233,146 @@ class DragDropCollectionListWidget(QListWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+
+def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
+    """
+    Load image using OpenImageIO (supports .tx, .exr, .hdr, and many other formats)
+    
+    Args:
+        file_path: Path to image file
+        max_size: Maximum width/height for preview
+        mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.)
+        exposure: Exposure compensation in stops (0.0 = neutral)
+        
+    Returns:
+        tuple: (QPixmap, resolution_string, metadata_dict) or (None, None, None) on failure
+    """
+    try:
+        import sys
+        import os
+        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        if external_libs not in sys.path:
+            sys.path.insert(0, external_libs)
+        
+        from OpenImageIO import ImageInput, ImageBuf, ImageSpec
+        import numpy as np
+        
+        file_path_str = str(file_path)
+        
+        # Open image
+        inp = ImageInput.open(file_path_str)
+        if not inp:
+            return None, None, None
+        
+        # Get image spec (metadata)
+        spec = inp.spec()
+        width = spec.width
+        height = spec.height
+        channels = spec.nchannels
+        
+        # Get metadata
+        metadata = {
+            'width': width,
+            'height': height,
+            'channels': channels,
+            'format': str(spec.format),  # TypeDesc needs str() conversion
+            'compression': spec.get_string_attribute('compression', 'unknown'),
+            'color_space': spec.get_string_attribute('oiio:ColorSpace', 'unknown'),
+        }
+        
+        # If mipmap requested and available
+        if mip_level > 0 and spec.get_int_attribute('miplevels', 1) > mip_level:
+            inp.seek_subimage(0, mip_level)
+            spec = inp.spec()
+            width = spec.width
+            height = spec.height
+        
+        resolution_str = f"{width} x {height}"
+        
+        # Read pixels
+        pixels = inp.read_image()
+        inp.close()
+        
+        if pixels is None:
+            return None, None, None
+        
+        # Convert to numpy array
+        img = np.array(pixels, dtype=np.float32)
+        
+        # Handle different channel counts
+        if channels == 1:
+            # Grayscale -> RGB
+            img = np.stack([img, img, img], axis=2)
+        elif channels == 2:
+            # Grayscale + Alpha -> RGB
+            img = np.stack([img[:,:,0], img[:,:,0], img[:,:,0]], axis=2)
+        elif channels == 4:
+            # RGBA -> RGB (drop alpha)
+            img = img[:, :, :3]
+        elif channels == 3:
+            # RGB - keep as is
+            pass
+        else:
+            # More than 4 channels - take first 3
+            img = img[:, :, :3]
+        
+        # Scale if needed
+        if width > max_size or height > max_size:
+            scale = min(max_size / width, max_size / height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            import cv2
+            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            width, height = new_width, new_height
+        
+        # Apply exposure compensation
+        if exposure != 0.0:
+            exposure_multiplier = pow(2.0, exposure)
+            img = img * exposure_multiplier
+        
+        # Tone mapping for HDR images (check if values > 1.0)
+        if img.max() > 1.0:
+            # ACES Filmic tone mapping
+            a = 2.51
+            b = 0.03
+            c = 2.43
+            d = 0.59
+            e = 0.14
+            img = np.clip((img * (a * img + b)) / (img * (c * img + d) + e), 0, 1)
+        
+        # Ensure values are in [0, 1]
+        img = np.clip(img, 0, 1)
+        
+        # Gamma correction (2.2 for sRGB)
+        gamma = 1.0 / 2.2
+        img = np.power(img, gamma)
+        
+        # Convert to 8-bit
+        img_8bit = (img * 255).astype(np.uint8)
+        
+        # Create QImage
+        try:
+            from PySide6.QtGui import QImage, QPixmap
+        except ImportError:
+            from PySide2.QtGui import QImage, QPixmap
+        
+        bytes_per_line = width * 3
+        q_image = QImage(img_8bit.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+        q_image = q_image.copy()
+        
+        # Convert to QPixmap
+        pixmap = QPixmap.fromImage(q_image)
+        
+        return pixmap, resolution_str, metadata
+        
+    except Exception as e:
+        print(f"[OIIO] Failed to load {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None
+
 
 
 
