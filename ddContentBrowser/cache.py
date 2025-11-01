@@ -531,6 +531,272 @@ class ThumbnailGenerator(QThread):
                 print(f"[OPENCV] Using full resolution (IMREAD_UNCHANGED) for thumbnail_size={self.thumbnail_size}")
             return cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR
     
+    @staticmethod
+    def _load_psd_composite(file_path, max_size=None):
+        """
+        Load full PSD composite image using psd-tools library (STATIC METHOD)
+        
+        This loads the full-resolution flattened/composite image from a PSD file,
+        including support for 32-bit PSDs that PIL cannot handle.
+        
+        Args:
+            file_path: Path to PSD file
+            max_size: Optional max dimension (for thumbnails/previews)
+            
+        Returns:
+            QPixmap or None
+        """
+        import sys
+        import os
+        
+        # Add external_libs to path
+        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        if external_libs not in sys.path:
+            sys.path.insert(0, external_libs)
+        
+        try:
+            from psd_tools import PSDImage
+            from PIL import Image
+            
+            if DEBUG_MODE:
+                print(f"[PSD] Loading composite with psd-tools: {Path(file_path).name}")
+            
+            # Open PSD
+            psd = PSDImage.open(str(file_path))
+            
+            if DEBUG_MODE:
+                print(f"[PSD] PSD size: {psd.width}x{psd.height}, depth={psd.depth}-bit")
+            
+            # Get composite (flattened) image as PIL Image
+            composite = psd.composite()
+            
+            if composite is None:
+                if DEBUG_MODE:
+                    print(f"[PSD] No composite available")
+                return None
+            
+            # Convert to RGB if needed
+            if composite.mode not in ('RGB', 'L'):
+                if DEBUG_MODE:
+                    print(f"[PSD] Converting {composite.mode} → RGB")
+                composite = composite.convert('RGB')
+            elif composite.mode == 'L':
+                composite = composite.convert('RGB')
+            
+            # Resize if max_size specified
+            if max_size:
+                composite.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                if DEBUG_MODE:
+                    print(f"[PSD] Resized to: {composite.size}")
+            
+            # Convert PIL Image to QPixmap
+            import numpy as np
+            img_array = np.array(composite)
+            height, width = img_array.shape[:2]
+            
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtGui import QImage
+            else:
+                from PySide2.QtGui import QImage
+            
+            bytes_per_line = width * 3
+            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+            
+            if DEBUG_MODE:
+                print(f"[PSD] ✓ Composite loaded: {width}x{height}")
+            
+            return QPixmap.fromImage(q_image.copy())
+            
+        except ImportError:
+            if DEBUG_MODE:
+                print(f"[PSD] psd-tools not available, falling back to thumbnail extraction")
+            return None
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[PSD] Failed to load composite: {e}")
+            return None
+    
+    @staticmethod
+    def _extract_psd_thumbnail(file_path, thumbnail_size=256):
+        """
+        Extract embedded thumbnail from PSD file (STATIC METHOD)
+        
+        Many PSD files (especially 32-bit) contain embedded JPEG/PNG thumbnails
+        that can be extracted without loading the full image data.
+        
+        Args:
+            file_path: Path to PSD file
+            thumbnail_size: Max dimension for the thumbnail
+            
+        Returns:
+            QPixmap or None
+        """
+        import struct
+        from io import BytesIO
+        import sys
+        import os
+        
+        # Add external_libs to path for PIL import
+        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        if external_libs not in sys.path:
+            sys.path.insert(0, external_libs)
+        
+        try:
+            with open(str(file_path), 'rb') as f:
+                # Read PSD header
+                signature = f.read(4)
+                if signature != b'8BPS':
+                    return None
+                
+                version = struct.unpack('>H', f.read(2))[0]
+                f.read(6)  # Reserved
+                channels = struct.unpack('>H', f.read(2))[0]
+                height = struct.unpack('>I', f.read(4))[0]
+                width = struct.unpack('>I', f.read(4))[0]
+                depth = struct.unpack('>H', f.read(2))[0]
+                color_mode = struct.unpack('>H', f.read(2))[0]
+                
+                # Skip color mode data section
+                color_mode_data_len = struct.unpack('>I', f.read(4))[0]
+                f.read(color_mode_data_len)
+                
+                # Read image resources section (contains thumbnails)
+                image_resources_len = struct.unpack('>I', f.read(4))[0]
+                resources_start = f.tell()
+                resources_end = resources_start + image_resources_len
+                
+                # Look for thumbnail resources
+                # Resource ID 1033 = Thumbnail (Photoshop 5.0+, JPEG)
+                # Resource ID 1036 = Thumbnail (Photoshop 4.0, RGB)
+                while f.tell() < resources_end:
+                    try:
+                        # Read resource block
+                        res_signature = f.read(4)
+                        if res_signature != b'8BIM':
+                            break
+                        
+                        res_id = struct.unpack('>H', f.read(2))[0]
+                        
+                        # Read pascal string name (padded to even length)
+                        name_len = struct.unpack('B', f.read(1))[0]
+                        if name_len > 0:
+                            f.read(name_len)
+                        if (name_len + 1) % 2 != 0:
+                            f.read(1)  # Padding
+                        
+                        # Read resource data size
+                        res_size = struct.unpack('>I', f.read(4))[0]
+                        res_data_start = f.tell()
+                        
+                        # Check if this is a thumbnail resource
+                        if res_id in [1033, 1036]:
+                            if DEBUG_MODE:
+                                print(f"[PSD] Found thumbnail resource ID {res_id}, size={res_size}")
+                            
+                            if res_id == 1033:
+                                # JPEG thumbnail (Photoshop 5.0+)
+                                # Skip format (4), width (4), height (4), widthbytes (4), 
+                                # total size (4), compressed size (4), bpp (2), planes (2) = 28 bytes
+                                f.read(28)
+                                jpeg_data = f.read(res_size - 28)
+                                
+                                # Load JPEG thumbnail
+                                from PIL import Image
+                                thumb_img = Image.open(BytesIO(jpeg_data))
+                                
+                                # Resize to thumbnail size
+                                thumb_img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
+                                
+                                # Convert to QPixmap
+                                import numpy as np
+                                img_array = np.array(thumb_img.convert('RGB'))
+                                height, width = img_array.shape[:2]
+                                
+                                if PYSIDE_VERSION == 6:
+                                    from PySide6.QtGui import QImage
+                                else:
+                                    from PySide2.QtGui import QImage
+                                
+                                bytes_per_line = width * 3
+                                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                return QPixmap.fromImage(q_image.copy())
+                            
+                            elif res_id == 1036:
+                                # RGB thumbnail (Photoshop 4.0)
+                                # Format: format (4), width (4), height (4), widthbytes (4), 
+                                # total size (4), compressed size (4), bpp (2), planes (2) = 28 bytes
+                                # Then raw RGB data OR JPEG data (check compressed_size)
+                                if DEBUG_MODE:
+                                    print(f"[PSD] Processing resource 1036 (Photoshop 4.0 RGB thumbnail)")
+                                
+                                thumb_format = struct.unpack('>I', f.read(4))[0]  # 1 = kRawRGB
+                                thumb_width = struct.unpack('>I', f.read(4))[0]
+                                thumb_height = struct.unpack('>I', f.read(4))[0]
+                                widthbytes = struct.unpack('>I', f.read(4))[0]
+                                total_size = struct.unpack('>I', f.read(4))[0]
+                                compressed_size = struct.unpack('>I', f.read(4))[0]
+                                bpp = struct.unpack('>H', f.read(2))[0]
+                                planes = struct.unpack('>H', f.read(2))[0]
+                                
+                                if DEBUG_MODE:
+                                    print(f"[PSD] Thumb size: {thumb_width}x{thumb_height}, format={thumb_format}, bpp={bpp}")
+                                    print(f"[PSD] Total size: {total_size}, Compressed: {compressed_size}")
+                                
+                                # Read thumbnail data (remaining bytes after header)
+                                rgb_data_size = res_size - 28
+                                rgb_data = f.read(rgb_data_size)
+                                
+                                # Check if it's compressed (JPEG)
+                                from PIL import Image
+                                try:
+                                    if compressed_size > 0 and compressed_size < total_size:
+                                        # Compressed thumbnail (usually JPEG)
+                                        if DEBUG_MODE:
+                                            print(f"[PSD] Thumbnail is compressed (JPEG), size={compressed_size}")
+                                        thumb_img = Image.open(BytesIO(rgb_data))
+                                    else:
+                                        # Uncompressed RGB data
+                                        if DEBUG_MODE:
+                                            print(f"[PSD] Thumbnail is raw RGB data")
+                                        thumb_img = Image.frombytes('RGB', (thumb_width, thumb_height), rgb_data)
+                                    
+                                    # Resize to thumbnail size
+                                    thumb_img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
+                                    
+                                    # Convert to QPixmap
+                                    import numpy as np
+                                    img_array = np.array(thumb_img.convert('RGB'))
+                                    height, width = img_array.shape[:2]
+                                    
+                                    if PYSIDE_VERSION == 6:
+                                        from PySide6.QtGui import QImage
+                                    else:
+                                        from PySide2.QtGui import QImage
+                                    
+                                    bytes_per_line = width * 3
+                                    q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                    if DEBUG_MODE:
+                                        print(f"[PSD] ✓ Resource 1036 thumbnail extracted: {width}x{height}")
+                                    return QPixmap.fromImage(q_image.copy())
+                                except Exception as rgb_error:
+                                    if DEBUG_MODE:
+                                        print(f"[PSD] Failed to decode RGB thumbnail: {rgb_error}")
+                        
+                        # Skip to next resource (data is padded to even length)
+                        f.seek(res_data_start + res_size)
+                        if res_size % 2 != 0:
+                            f.read(1)  # Padding
+                            
+                    except struct.error:
+                        break
+                
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[PSD] Thumbnail extraction error: {e}")
+            return None
+        
+        return None
+    
     def _generate_thumbnail(self, file_path):
         """
         Generate thumbnail from file
@@ -622,8 +888,8 @@ class ThumbnailGenerator(QThread):
                     print(f"[Cache] EXR loading failed: {e}, trying QPixmap fallback...")
                     # Fall through to QPixmap method below
             
-            # Special handling for HDR/TIFF/TGA files - use OpenCV for better format support
-            elif extension in ['.hdr', '.tif', '.tiff', '.tga']:
+            # Special handling for HDR/TIFF/TGA/PSD files - use OpenCV or PIL for better format support
+            elif extension in ['.hdr', '.tif', '.tiff', '.tga', '.psd']:
                 if DEBUG_MODE:
                     print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
                 try:
@@ -799,6 +1065,29 @@ class ThumbnailGenerator(QThread):
                                 return pixmap
                     except Exception as pil_error:
                         print(f"[THUMB] PIL fallback also failed: {pil_error}")
+                        
+                        # Special handling for PSD files: try psd-tools first, then embedded thumbnail
+                        if extension == '.psd':
+                            try:
+                                if DEBUG_MODE:
+                                    print(f"[THUMB] Trying to load PSD composite with psd-tools...")
+                                pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=self.thumbnail_size)
+                                if pixmap and not pixmap.isNull():
+                                    if DEBUG_MODE:
+                                        print(f"[THUMB] ✓ PSD composite loaded successfully")
+                                    return pixmap
+                                else:
+                                    if DEBUG_MODE:
+                                        print(f"[THUMB] psd-tools failed, trying embedded thumbnail...")
+                                    pixmap = ThumbnailGenerator._extract_psd_thumbnail(file_path, thumbnail_size=self.thumbnail_size)
+                                    if pixmap and not pixmap.isNull():
+                                        if DEBUG_MODE:
+                                            print(f"[THUMB] ✓ PSD thumbnail extracted successfully")
+                                        return pixmap
+                            except Exception as thumb_error:
+                                if DEBUG_MODE:
+                                    print(f"[THUMB] PSD loading failed: {thumb_error}")
+                        
                         # Check if it's an unsupported multi-channel TIFF
                         if "unknown pixel mode" in str(pil_error) or "KeyError" in str(pil_error):
                             if DEBUG_MODE:

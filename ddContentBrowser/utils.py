@@ -100,9 +100,9 @@ FILE_TYPE_REGISTRY = {
         "is_3d": False
     },
     "images": {
-        "extensions": [".tif", ".tiff", ".jpg", ".jpeg", ".png", ".hdr", ".exr", ".tga"],
+        "extensions": [".tif", ".tiff", ".jpg", ".jpeg", ".png", ".hdr", ".exr", ".tga", ".psd", ".tx", ".gif"],
         "label": "Images",
-        "filter_label": "Images (.tif/.jpg/.png/.hdr/.exr)",
+        "filter_label": "Images (.tif/.jpg/.png/.hdr/.exr/.psd/.tx/.gif)",
         "importable": True,
         "generate_thumbnail": True,
         "is_3d": False
@@ -352,6 +352,9 @@ def get_default_icon_colors(extension):
         '.hdr': ([255, 200, 100], [255, 230, 150]),  # Golden (HDR)
         '.exr': ([220, 140, 220], [255, 180, 255]),  # Light magenta (EXR)
         '.tga': ([180, 180, 220], [210, 210, 255]),  # Light purple (TGA)
+        '.psd': ([49, 168, 255], [89, 198, 255]),    # Photoshop blue
+        '.tx': ([180, 100, 220], [210, 140, 255]),   # Purple-magenta (RenderMan)
+        '.gif': ([100, 220, 180], [140, 255, 210]),  # Cyan-green (animated)
         # PDF files
         '.pdf': ([200, 50, 50], [255, 100, 100]),    # Red gradient (Adobe PDF)
         # Script/text files
@@ -390,6 +393,12 @@ def get_default_thumbnail_method(extension):
         return 'openexr'
     elif extension == '.pdf':
         return 'pymupdf'
+    elif extension == '.psd':
+        return 'opencv'  # Falls back to psd-tools automatically
+    elif extension == '.tx':
+        return 'openimageio'
+    elif extension == '.gif':
+        return 'qimage_optimized'
     else:
         return 'none'
 

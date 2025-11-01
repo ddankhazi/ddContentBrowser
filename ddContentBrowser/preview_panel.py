@@ -1495,8 +1495,8 @@ class PreviewPanel(QWidget):
             
             # === Standard images (JPG, PNG, etc.) ===
             else:
-                # For large TGA files, use PIL directly (Qt has allocation limit issues)
-                if file_path_str.lower().endswith('.tga'):
+                # For large TGA/PSD files, use PIL directly (Qt has allocation limit issues)
+                if file_path_str.lower().endswith(('.tga', '.psd')):
                     try:
                         import sys
                         import os
@@ -1507,7 +1507,7 @@ class PreviewPanel(QWidget):
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
-                        print(f"[Preview] Loading TGA with PIL: {Path(file_path_str).name}")
+                        print(f"[Preview] Loading TGA/PSD with PIL: {Path(file_path_str).name}")
                         pil_image = Image.open(file_path_str)
                         
                         # Convert to RGB
@@ -1526,7 +1526,7 @@ class PreviewPanel(QWidget):
                             new_width = int(pil_image.width * scale_factor)
                             new_height = int(pil_image.height * scale_factor)
                             pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                            print(f"[Preview] PIL scaled TGA from {self.original_image_size[0]}x{self.original_image_size[1]} to {new_width}x{new_height}")
+                            print(f"[Preview] PIL scaled TGA/PSD from {self.original_image_size[0]}x{self.original_image_size[1]} to {new_width}x{new_height}")
                             
                             # Store scaling info
                             self.is_image_scaled = True
@@ -1545,8 +1545,38 @@ class PreviewPanel(QWidget):
                         self.full_res_pixmap = QPixmap.fromImage(q_image.copy())
                         print(f"[Preview] ✓ TGA loaded with PIL: {width}x{height}")
                     except Exception as pil_error:
-                        print(f"[Preview] PIL TGA loading failed: {pil_error}")
-                        self.full_res_pixmap = None
+                        print(f"[Preview] PIL TGA/PSD loading failed: {pil_error}")
+                        
+                        # Special handling for PSD files: try psd-tools first, then embedded thumbnail
+                        if file_path_str.lower().endswith('.psd'):
+                            try:
+                                print(f"[Preview] Trying to load PSD with psd-tools...")
+                                from .cache import ThumbnailGenerator
+                                thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=2048)
+                                
+                                if thumbnail_pixmap and not thumbnail_pixmap.isNull():
+                                    self.full_res_pixmap = thumbnail_pixmap
+                                    self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
+                                    self.is_image_scaled = False
+                                    self.scaled_image_size = None
+                                    print(f"[Preview] ✓ PSD composite loaded: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
+                                else:
+                                    print(f"[Preview] psd-tools failed, trying embedded thumbnail...")
+                                    thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=2048)
+                                    if thumbnail_pixmap and not thumbnail_pixmap.isNull():
+                                        self.full_res_pixmap = thumbnail_pixmap
+                                        self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
+                                        self.is_image_scaled = False
+                                        self.scaled_image_size = None
+                                        print(f"[Preview] ✓ PSD thumbnail extracted: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
+                                    else:
+                                        print(f"[Preview] PSD thumbnail extraction returned None")
+                                        self.full_res_pixmap = None
+                            except Exception as thumb_error:
+                                print(f"[Preview] PSD loading failed: {thumb_error}")
+                                self.full_res_pixmap = None
+                        else:
+                            self.full_res_pixmap = None
                 else:
                     # Non-TGA files: Use QImageReader for consistency with normal preview (handles EXIF orientation automatically)
                     try:
@@ -1590,8 +1620,8 @@ class PreviewPanel(QWidget):
                         # Fallback to standard QPixmap loading
                         print(f"[Preview] QImageReader failed: {e}, trying PIL fallback...")
                         
-                        # Try PIL for TGA/special formats
-                        if file_path_str.lower().endswith(('.tga', '.tiff', '.tif')):
+                        # Try PIL for TGA/PSD/special formats
+                        if file_path_str.lower().endswith(('.tga', '.tiff', '.tif', '.psd')):
                             try:
                                 import sys
                                 import os
@@ -2263,8 +2293,8 @@ class PreviewPanel(QWidget):
                                 else:
                                     self.graphics_scene.clear()
                                     self.current_text_item = None
-                        elif file_ext.endswith('.tga'):
-                            # TGA files - use PIL (Qt has allocation issues)
+                        elif file_ext.endswith(('.tga', '.psd')):
+                            # TGA/PSD files - use PIL (Qt has allocation issues)
                             try:
                                 import sys
                                 import os
@@ -2274,7 +2304,7 @@ class PreviewPanel(QWidget):
                                 
                                 from PIL import Image
                                 Image.MAX_IMAGE_PIXELS = None
-                                print(f"[Preview] Loading TGA with PIL: {Path(file_path_str).name}")
+                                print(f"[Preview] Loading TGA/PSD with PIL: {Path(file_path_str).name}")
                                 pil_image = Image.open(file_path_str)
                                 
                                 # Get original size for resolution
@@ -2304,9 +2334,41 @@ class PreviewPanel(QWidget):
                                 self.fit_pixmap_to_label()
                                 print(f"[Preview] ✓ TGA loaded with PIL: {width}x{height}")
                             except Exception as e:
-                                print(f"[Preview] PIL TGA loading failed: {e}")
-                                self.graphics_scene.clear()
-                                self.current_text_item = None
+                                print(f"[Preview] PIL TGA/PSD loading failed: {e}")
+                                
+                                # Special handling for PSD files: try psd-tools first, then embedded thumbnail
+                                if file_ext.endswith('.psd'):
+                                    try:
+                                        print(f"[Preview] Trying to load PSD with psd-tools...")
+                                        from .cache import ThumbnailGenerator
+                                        thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=1024)
+                                        
+                                        if thumbnail_pixmap and not thumbnail_pixmap.isNull():
+                                            resolution_str = f"{thumbnail_pixmap.width()} x {thumbnail_pixmap.height()}"
+                                            self.current_pixmap = thumbnail_pixmap
+                                            self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
+                                            self.fit_pixmap_to_label()
+                                            print(f"[Preview] ✓ PSD composite loaded: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
+                                        else:
+                                            print(f"[Preview] psd-tools failed, trying embedded thumbnail...")
+                                            thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=1024)
+                                            if thumbnail_pixmap and not thumbnail_pixmap.isNull():
+                                                resolution_str = f"{thumbnail_pixmap.width()} x {thumbnail_pixmap.height()} (thumbnail)"
+                                                self.current_pixmap = thumbnail_pixmap
+                                                self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
+                                                self.fit_pixmap_to_label()
+                                                print(f"[Preview] ✓ PSD thumbnail extracted: {thumbnail_pixmap.width()}x{thumbnail_pixmap.height()}")
+                                            else:
+                                                print(f"[Preview] PSD thumbnail extraction returned None")
+                                                self.graphics_scene.clear()
+                                                self.current_text_item = None
+                                    except Exception as thumb_error:
+                                        print(f"[Preview] PSD loading failed: {thumb_error}")
+                                        self.graphics_scene.clear()
+                                        self.current_text_item = None
+                                else:
+                                    self.graphics_scene.clear()
+                                    self.current_text_item = None
                         else:
                             # Standard 8-bit image formats (PNG, JPG, etc.) - use QImageReader
                             image_reader = QImageReader(file_path_str)

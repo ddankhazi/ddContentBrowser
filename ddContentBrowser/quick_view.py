@@ -1092,8 +1092,8 @@ class QuickViewWindow(QDialog):
                 #         print(f"[QuickView] HDR/EXR load failed or returned None")
             else:
                 # Standard image formats (JPG, PNG, etc.)
-                # For large TGA files, use PIL directly (Qt has allocation limit issues)
-                if str(file_path).lower().endswith('.tga'):
+                # For large TGA/PSD files, use PIL directly (Qt has allocation limit issues)
+                if str(file_path).lower().endswith(('.tga', '.psd')):
                     try:
                         import sys
                         import os
@@ -1104,7 +1104,7 @@ class QuickViewWindow(QDialog):
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
-                        print(f"[QuickView] Loading TGA with PIL: {file_path.name}")
+                        print(f"[QuickView] Loading TGA/PSD with PIL: {file_path.name}")
                         pil_image = Image.open(str(file_path))
                         
                         # Convert to RGB
@@ -1133,8 +1133,30 @@ class QuickViewWindow(QDialog):
                         pixmap = QPixmap.fromImage(q_image.copy())
                         print(f"[QuickView] ✓ TGA loaded with PIL: {width}x{height}")
                     except Exception as pil_error:
-                        print(f"[QuickView] PIL TGA loading failed: {pil_error}")
-                        pixmap = None
+                        print(f"[QuickView] PIL TGA/PSD loading failed: {pil_error}")
+                        
+                        # Special handling for PSD files: try psd-tools first, then embedded thumbnail
+                        if str(file_path).lower().endswith('.psd'):
+                            try:
+                                print(f"[QuickView] Trying to load PSD with psd-tools...")
+                                from .cache import ThumbnailGenerator
+                                pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=2048)
+                                
+                                if pixmap and not pixmap.isNull():
+                                    print(f"[QuickView] ✓ PSD composite loaded: {pixmap.width()}x{pixmap.height()}")
+                                else:
+                                    print(f"[QuickView] psd-tools failed, trying embedded thumbnail...")
+                                    pixmap = ThumbnailGenerator._extract_psd_thumbnail(file_path, thumbnail_size=2048)
+                                    if pixmap and not pixmap.isNull():
+                                        print(f"[QuickView] ✓ PSD thumbnail extracted: {pixmap.width()}x{pixmap.height()}")
+                                    else:
+                                        print(f"[QuickView] PSD thumbnail extraction returned None")
+                                        pixmap = None
+                            except Exception as thumb_error:
+                                print(f"[QuickView] PSD loading failed: {thumb_error}")
+                                pixmap = None
+                        else:
+                            pixmap = None
                 else:
                     # Non-TGA files: Try QImageReader first for size limiting (better memory handling for 16K+ images)
                     try:
@@ -1170,8 +1192,8 @@ class QuickViewWindow(QDialog):
                         # Fallback to standard QPixmap loading
                         print(f"[QuickView] QImageReader failed: {e}, trying PIL fallback...")
                         
-                        # Try PIL for TGA/special formats
-                        if str(file_path).lower().endswith(('.tga', '.tiff', '.tif')):
+                        # Try PIL for TGA/PSD/special formats
+                        if str(file_path).lower().endswith(('.tga', '.tiff', '.tif', '.psd')):
                             try:
                                 import sys
                                 import os
@@ -1766,8 +1788,8 @@ class QuickViewWindow(QDialog):
                     if result and result[0]:
                         pixmap = result[0]
                     canvas_size = None  # Not a PDF
-                elif file_path.suffix.lower() == '.tga':
-                    # Use PIL for TGA files (Qt has allocation issues)
+                elif file_path.suffix.lower() in ['.tga', '.psd']:
+                    # Use PIL for TGA files, psd-tools for PSD files
                     try:
                         import sys
                         import os
@@ -1775,25 +1797,57 @@ class QuickViewWindow(QDialog):
                         if external_libs not in sys.path:
                             sys.path.insert(0, external_libs)
                         
-                        from PIL import Image
-                        Image.MAX_IMAGE_PIXELS = None
-                        pil_image = Image.open(str(file_path))
-                        
-                        if pil_image.mode not in ('RGB', 'L'):
-                            pil_image = pil_image.convert('RGB')
-                        elif pil_image.mode == 'L':
-                            pil_image = pil_image.convert('RGB')
-                        
-                        import numpy as np
-                        img_array = np.array(pil_image)
-                        height, width = img_array.shape[:2]
-                        
-                        from PySide6.QtGui import QImage
-                        bytes_per_line = width * 3
-                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                        pixmap = QPixmap.fromImage(q_image.copy())
+                        # Try psd-tools first for PSD files
+                        if file_path.suffix.lower() == '.psd':
+                            try:
+                                from .cache import ThumbnailGenerator
+                                pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=None)  # Full resolution for grid
+                                if pixmap and not pixmap.isNull():
+                                    canvas_size = None
+                                else:
+                                    raise Exception("psd-tools failed, trying PIL")
+                            except:
+                                # Fallback to PIL for PSD
+                                from PIL import Image
+                                Image.MAX_IMAGE_PIXELS = None
+                                pil_image = Image.open(str(file_path))
+                                
+                                if pil_image.mode not in ('RGB', 'L'):
+                                    pil_image = pil_image.convert('RGB')
+                                elif pil_image.mode == 'L':
+                                    pil_image = pil_image.convert('RGB')
+                                
+                                import numpy as np
+                                img_array = np.array(pil_image)
+                                height, width = img_array.shape[:2]
+                                
+                                from PySide6.QtGui import QImage
+                                bytes_per_line = width * 3
+                                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                pixmap = QPixmap.fromImage(q_image.copy())
+                                canvas_size = None
+                        else:
+                            # TGA files - use PIL
+                            from PIL import Image
+                            Image.MAX_IMAGE_PIXELS = None
+                            pil_image = Image.open(str(file_path))
+                            
+                            if pil_image.mode not in ('RGB', 'L'):
+                                pil_image = pil_image.convert('RGB')
+                            elif pil_image.mode == 'L':
+                                pil_image = pil_image.convert('RGB')
+                            
+                            import numpy as np
+                            img_array = np.array(pil_image)
+                            height, width = img_array.shape[:2]
+                            
+                            from PySide6.QtGui import QImage
+                            bytes_per_line = width * 3
+                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                            pixmap = QPixmap.fromImage(q_image.copy())
+                            canvas_size = None
                     except Exception as e:
-                        print(f"[QuickView Grid] PIL TGA load failed: {e}")
+                        print(f"[QuickView Grid] TGA/PSD load failed: {e}")
                         pixmap = None
                     canvas_size = None  # Not a PDF
                 else:
