@@ -464,7 +464,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def setup_ui(self):
         """Setup UI"""
-        self.setWindowTitle("Content Browser for Maya 1.0 by Denes Dankhazi")
+        self.setWindowTitle("Content Browser for Maya | v1.1.1 | by Denes Dankhazi")
         self.setMinimumSize(800, 600)
         
         # Create menu bar
