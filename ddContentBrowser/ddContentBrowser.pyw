@@ -4,7 +4,7 @@ Launch the content browser without Maya - no console window
 
 Usage:
     Double-click this file
-    OR: pythonw standalone_launcher_portable_noconsole.pyw
+    OR: pythonw ddContentBrowser.pyw
 """
 
 import sys
@@ -162,7 +162,7 @@ def main():
     
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser (Standalone - PORTABLE)")
+    browser.setWindowTitle("DD Content Browser v1.2.0 (Standalone - PORTABLE)")
     
     # Set window icon for browser window too
     try:

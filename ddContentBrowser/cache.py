@@ -985,12 +985,11 @@ class ThumbnailGenerator(QThread):
                     print(f"[Cache] OIIO .tx loading failed: {e}, using default icon...")
                     return self._get_default_icon(file_path)
             
-            # Special handling for EXR files - use dedicated EXR loader
+            # Special handling for EXR files - OPTIMIZED fast thumbnail generation
             if extension == '.exr':
-                # Use the same EXR loading logic as the preview panel
+                # Use optimized EXR thumbnail loader (much faster than full loader)
                 try:
-                    from .widgets import load_hdr_exr_image
-                    pixmap, _ = load_hdr_exr_image(file_path, max_size=self.thumbnail_size)
+                    pixmap = self._generate_exr_thumbnail_optimized(file_path)
                     if pixmap and not pixmap.isNull():
                         return pixmap
                     else:
@@ -1011,8 +1010,22 @@ class ThumbnailGenerator(QThread):
             elif extension in ['.hdr', '.tif', '.tiff', '.tga', '.psd']:
                 if DEBUG_MODE:
                     print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
+                
+                # OPTIMIZED: Use dedicated fast thumbnail generator for HDR files
+                if extension == '.hdr':
+                    try:
+                        pixmap = self._generate_hdr_thumbnail_optimized(file_path)
+                        if pixmap and not pixmap.isNull():
+                            return pixmap
+                        else:
+                            if DEBUG_MODE:
+                                print(f"[THUMB] HDR optimized loader failed, trying fallback...")
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            print(f"[THUMB] HDR optimized loader exception: {e}, trying fallback...")
+                
                 try:
-                    # Try OpenCV first for 16-bit/32-bit TIFF and HDR/EXR support
+                    # Try OpenCV first for 16-bit/32-bit TIFF and TGA support
                     import cv2
                     import numpy as np
                     
@@ -1189,7 +1202,8 @@ class ThumbnailGenerator(QThread):
                         if DEBUG_MODE:
                             print(f"[THUMB] PIL unexpected channels={channels}, falling through...")
                     except Exception as pil_error:
-                        print(f"[THUMB] PIL fallback also failed: {pil_error}")
+                        if DEBUG_MODE:
+                            print(f"[THUMB] PIL fallback also failed: {pil_error}")
                         
                         # Special handling for PSD files: try psd-tools first, then embedded thumbnail
                         if extension == '.psd':
@@ -1390,6 +1404,394 @@ class ThumbnailGenerator(QThread):
         except Exception as e:
             print(f"Error loading image thumbnail {file_path}: {e}")
             return self._get_default_icon(file_path)
+    
+    def _generate_exr_thumbnail_optimized(self, file_path):
+        """
+        OPTIMIZED: Fast EXR thumbnail generation for cache
+        
+        Much faster than full EXR loader used in preview panel because:
+        1. Loads at reduced resolution (uses downsampling)
+        2. Simplified tone mapping (no exposure control)
+        3. Only loads RGB channels (no alpha/AOVs)
+        
+        Args:
+            file_path: Path to EXR file
+            
+        Returns:
+            QPixmap or None
+        """
+        import sys
+        import os
+        
+        # Add external_libs to path
+        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        if external_libs not in sys.path:
+            sys.path.insert(0, external_libs)
+        
+        try:
+            import numpy as np
+            
+            # Try OpenEXR library first (fast, native)
+            try:
+                import OpenEXR
+                
+                if DEBUG_MODE:
+                    print(f"[EXR-OPT] Loading EXR with OpenEXR library: {Path(file_path).name}")
+                
+                # Open EXR file
+                with OpenEXR.File(str(file_path)) as exr_file:
+                    # Get header info
+                    header = exr_file.header()
+                    dw = header['dataWindow']
+                    width = dw[1][0] - dw[0][0] + 1
+                    height = dw[1][1] - dw[0][1] + 1
+                    
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] Original size: {width}x{height}")
+                    
+                    # List all available channels (DEBUG)
+                    channels = exr_file.channels()
+                    if DEBUG_MODE:
+                        channel_list = list(channels.keys())
+                        print(f"[EXR-OPT] Available channels: {', '.join(channel_list)}")
+                    
+                    # Read RGB channels
+                    channels = exr_file.channels()
+                    rgb = None
+                    
+                    # Try multiple naming conventions (same as full loader)
+                    # 1. Try standard interleaved RGB or RGBA
+                    if "RGB" in channels:
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Using interleaved RGB channel")
+                        rgb_data = channels["RGB"].pixels
+                        if rgb_data is not None:
+                            # If RGBA, drop alpha channel
+                            if rgb_data.ndim == 3 and rgb_data.shape[2] >= 3:
+                                rgb = rgb_data[:, :, :3]
+                            else:
+                                rgb = rgb_data
+                    elif "RGBA" in channels:
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Using interleaved RGBA channel (dropping alpha)")
+                        rgba_data = channels["RGBA"].pixels
+                        if rgba_data is not None:
+                            rgb = rgba_data[:, :, :3]  # Drop alpha, keep RGB only
+                    
+                    # 2. Try separate R, G, B channels
+                    elif all(c in channels for c in ["R", "G", "B"]):
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Using separate R, G, B channels")
+                        r = channels["R"].pixels
+                        g = channels["G"].pixels
+                        b = channels["B"].pixels
+                        if r is not None and g is not None and b is not None:
+                            rgb = np.stack([r, g, b], axis=2)
+                    
+                    # 3. Try Beauty pass (common in render layers)
+                    elif all(c in channels for c in ["Beauty.R", "Beauty.G", "Beauty.B"]):
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Using Beauty.R/G/B channels")
+                        r = channels["Beauty.R"].pixels
+                        g = channels["Beauty.G"].pixels
+                        b = channels["Beauty.B"].pixels
+                        if r is not None and g is not None and b is not None:
+                            rgb = np.stack([r, g, b], axis=2)
+                    
+                    # 4. Try first layer with .R .G .B (generic multi-layer)
+                    if rgb is None:
+                        channel_names = list(channels.keys())
+                        layer_prefixes = set()
+                        for name in channel_names:
+                            if '.' in name:
+                                prefix = name.rsplit('.', 1)[0]
+                                layer_prefixes.add(prefix)
+                        
+                        # Try each layer prefix
+                        for prefix in sorted(layer_prefixes):
+                            r_name = f"{prefix}.R"
+                            g_name = f"{prefix}.G"
+                            b_name = f"{prefix}.B"
+                            if all(c in channels for c in [r_name, g_name, b_name]):
+                                r = channels[r_name].pixels
+                                g = channels[g_name].pixels
+                                b = channels[b_name].pixels
+                                if r is not None and g is not None and b is not None:
+                                    rgb = np.stack([r, g, b], axis=2)
+                                    if DEBUG_MODE:
+                                        print(f"[EXR-OPT] Using layer: {prefix}")
+                                    break
+                    
+                    # 5. If still no RGB, try single channel (grayscale)
+                    if rgb is None:
+                        single_channels = ["Y", "Z", "depth", "A", "alpha", "luminance"]
+                        for ch_name in single_channels:
+                            if ch_name in channels:
+                                gray = channels[ch_name].pixels
+                                if gray is not None:
+                                    # Convert to RGB by repeating channel
+                                    if gray.ndim == 2:
+                                        rgb = np.stack([gray, gray, gray], axis=2)
+                                    else:
+                                        # Already 3D, just use it
+                                        rgb = gray
+                                    if DEBUG_MODE:
+                                        print(f"[EXR-OPT] Using single channel: {ch_name}")
+                                    break
+                    
+                    # 6. Last resort: use ANY available channel as grayscale
+                    if rgb is None and len(channels) > 0:
+                        first_channel_name = list(channels.keys())[0]
+                        gray = channels[first_channel_name].pixels
+                        
+                        if gray is not None:
+                            # Convert to RGB by repeating channel
+                            if gray.ndim == 2:
+                                rgb = np.stack([gray, gray, gray], axis=2)
+                            elif gray.ndim == 3 and gray.shape[2] == 1:
+                                # Single channel as 3D array
+                                rgb = np.concatenate([gray, gray, gray], axis=2)
+                            else:
+                                rgb = gray
+                            if DEBUG_MODE:
+                                print(f"[EXR-OPT] Using first available channel: {first_channel_name}")
+                    
+                    if rgb is None:
+                        raise Exception("No usable channels found")
+                    
+                    # Debug: Show what we loaded
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] → Loaded data: shape={rgb.shape}, dtype={rgb.dtype}")
+                    
+                    # Check if dtype is numeric (deep EXR returns object arrays)
+                    if rgb.dtype == np.object_ or not np.issubdtype(rgb.dtype, np.number):
+                        raise Exception(f"Non-numeric dtype: {rgb.dtype} (deep/volumetric EXR not supported)")
+                    
+                    # Convert float16 to float32 (OpenCV resize needs float32)
+                    if rgb.dtype == np.float16:
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Converting float16 to float32 (OpenCV compatibility)")
+                        rgb = rgb.astype(np.float32)
+                    
+                    # OPTIMIZATION 1: Downsample BEFORE tone mapping (much faster!)
+                    # Use area interpolation for best quality at reduced size
+                    import cv2
+                    if width > self.thumbnail_size or height > self.thumbnail_size:
+                        scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                        new_width = int(width * scale)
+                        new_height = int(height * scale)
+                        
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Downsampling to {new_width}x{new_height} (scale={scale:.3f})")
+                        
+                        # Use INTER_AREA for downsampling (best quality, fast)
+                        rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                        width, height = new_width, new_height
+                    else:
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → No downsampling needed (already small)")
+                    
+                    # OPTIMIZATION 2: Simplified tone mapping (no exposure control)
+                    # Simple Reinhard tone mapping: L_out = L_in / (1 + L_in)
+                    # Much faster than ACES filmic, good enough for thumbnails
+                    if DEBUG_MODE:
+                        min_val = np.min(rgb)
+                        max_val = np.max(rgb)
+                        mean_val = np.mean(rgb)
+                        print(f"[EXR-OPT] → HDR range before tone mapping: min={min_val:.3f}, max={max_val:.3f}, mean={mean_val:.3f}")
+                    
+                    rgb = np.clip(rgb, 0, None)  # Clamp negatives
+                    rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                    
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] → Applied Reinhard tone mapping")
+                    
+                    # Gamma correction (2.2 for sRGB)
+                    gamma = 1.0 / 2.2
+                    rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+                    
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] → Applied gamma correction (2.2)")
+                    
+                    # Convert to 8-bit
+                    rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+                    
+                    # Create QImage
+                    if PYSIDE_VERSION == 6:
+                        from PySide6.QtGui import QImage
+                    else:
+                        from PySide2.QtGui import QImage
+                    
+                    bytes_per_line = width * 3
+                    q_image = QImage(rgb_8bit.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                    q_image = q_image.copy()
+                    
+                    # Convert to QPixmap
+                    pixmap = QPixmap.fromImage(q_image)
+                    
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] ✓ Thumbnail generated: {width}x{height}")
+                    
+                    return pixmap
+                    
+            except ImportError:
+                if DEBUG_MODE:
+                    print(f"[EXR-OPT] OpenEXR library not available, trying OpenImageIO...")
+                # Fall through to OIIO method
+            
+            # Fallback: Try OpenImageIO (slower but more compatible)
+            try:
+                from .widgets import load_oiio_image
+                
+                if DEBUG_MODE:
+                    print(f"[EXR-OPT] Loading EXR with OpenImageIO: {Path(file_path).name}")
+                
+                # Load with OIIO at reduced size
+                pixmap, _, _ = load_oiio_image(file_path, max_size=self.thumbnail_size)
+                if pixmap and not pixmap.isNull():
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] ✓ OIIO thumbnail loaded")
+                    return pixmap
+                else:
+                    raise Exception("OIIO loader returned null pixmap")
+                    
+            except Exception as oiio_error:
+                if DEBUG_MODE:
+                    print(f"[EXR-OPT] OIIO loading failed: {oiio_error}")
+                return None
+                
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[EXR-OPT] Failed to load EXR: {e}")
+            return None
+    
+    def _generate_hdr_thumbnail_optimized(self, file_path):
+        """
+        OPTIMIZED: Fast HDR (Radiance RGBE) thumbnail generation for cache
+        
+        Much faster than full HDR loader because:
+        1. Loads at reduced resolution (uses OpenCV downsampling)
+        2. Simplified tone mapping (no exposure control)
+        
+        Args:
+            file_path: Path to HDR file
+            
+        Returns:
+            QPixmap or None
+        """
+        try:
+            import cv2
+            import numpy as np
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] Loading HDR with OpenCV: {Path(file_path).name}")
+            
+            # OPTIMIZATION: Use OpenCV imread with REDUCED flag for fast thumbnail
+            # This loads the image at 1/2, 1/4, or 1/8 resolution during decode
+            imread_flags = self._get_opencv_imread_flags()
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] → Using imread flags: {imread_flags}")
+            
+            # OpenCV can't handle Unicode paths
+            file_path_str = str(file_path)
+            has_non_ascii = any(ord(c) > 127 for c in file_path_str)
+            
+            rgb = None
+            if has_non_ascii:
+                # Use buffer method for non-ASCII paths
+                try:
+                    if DEBUG_MODE:
+                        print(f"[HDR-OPT] Using buffer method (non-ASCII path)")
+                    with open(file_path_str, 'rb') as f:
+                        file_bytes = np.frombuffer(f.read(), np.uint8)
+                    rgb = cv2.imdecode(file_bytes, imread_flags)
+                except Exception as e:
+                    if DEBUG_MODE:
+                        print(f"[HDR-OPT] Buffer decode failed: {e}")
+            else:
+                # ASCII-only path
+                try:
+                    if DEBUG_MODE:
+                        print(f"[HDR-OPT] Using imread with flags={imread_flags}")
+                    rgb = cv2.imread(file_path_str, imread_flags)
+                except Exception as e:
+                    if DEBUG_MODE:
+                        print(f"[HDR-OPT] OpenCV imread failed: {e}")
+            
+            if rgb is None:
+                raise Exception("OpenCV could not load HDR file")
+            
+            # Convert BGR to RGB
+            rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] → Loaded: {rgb.shape[1]}x{rgb.shape[0]}, dtype={rgb.dtype}")
+            
+            # Additional resize if still too large (imread_flags may not be enough)
+            height, width = rgb.shape[:2]
+            if width > self.thumbnail_size or height > self.thumbnail_size:
+                scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                
+                if DEBUG_MODE:
+                    print(f"[HDR-OPT] → Additional resize to {new_width}x{new_height}")
+                
+                rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                width, height = new_width, new_height
+            else:
+                if DEBUG_MODE:
+                    print(f"[HDR-OPT] → No additional resize needed")
+            
+            # Simplified tone mapping (Reinhard - fast for thumbnails)
+            if DEBUG_MODE:
+                min_val = np.min(rgb)
+                max_val = np.max(rgb)
+                mean_val = np.mean(rgb)
+                print(f"[HDR-OPT] → HDR range: min={min_val:.3f}, max={max_val:.3f}, mean={mean_val:.3f}")
+            
+            rgb = np.clip(rgb, 0, None)  # Clamp negatives
+            rgb_tonemapped = rgb / (1.0 + rgb)
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] → Applied Reinhard tone mapping")
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] → Applied Reinhard tone mapping")
+            
+            # Gamma correction (2.2 for sRGB)
+            gamma = 1.0 / 2.2
+            rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] → Applied gamma correction (2.2)")
+            
+            # Convert to 8-bit
+            rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+            
+            # Create QImage
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtGui import QImage
+            else:
+                from PySide2.QtGui import QImage
+            
+            bytes_per_line = width * 3
+            q_image = QImage(rgb_8bit.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+            q_image = q_image.copy()
+            
+            # Convert to QPixmap
+            pixmap = QPixmap.fromImage(q_image)
+            
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] ✓ Thumbnail generated: {width}x{height}")
+            
+            return pixmap
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[HDR-OPT] Failed to load HDR: {e}")
+            return None
     
     def _get_default_icon(self, file_path):
         """

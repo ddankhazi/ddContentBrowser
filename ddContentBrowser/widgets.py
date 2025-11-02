@@ -2300,6 +2300,10 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
         
         resolution_str = f"{width} x {height}"
         
+        # Debug: Check for invalid dimensions
+        if width <= 0 or height <= 0:
+            return None, None, None
+        
         # Read pixels
         pixels = inp.read_image()
         inp.close()
@@ -2310,28 +2314,42 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
         # Convert to numpy array
         img = np.array(pixels, dtype=np.float32)
         
-        # Handle different channel counts
-        if channels == 1:
-            # Grayscale -> RGB
+        # Check if array is valid
+        if img.size == 0:
+            return None, None, None
+        
+        # Handle different channel counts (use actual img shape, not spec.channels!)
+        # img can be 2D (grayscale) or 3D (multi-channel)
+        if img.ndim == 2:
+            # 2D grayscale -> RGB
             img = np.stack([img, img, img], axis=2)
-        elif channels == 2:
-            # Grayscale + Alpha -> RGB
-            img = np.stack([img[:,:,0], img[:,:,0], img[:,:,0]], axis=2)
-        elif channels == 4:
-            # RGBA -> RGB (drop alpha)
-            img = img[:, :, :3]
-        elif channels == 3:
-            # RGB - keep as is
-            pass
-        else:
-            # More than 4 channels - take first 3
-            img = img[:, :, :3]
+        elif img.ndim == 3:
+            actual_channels = img.shape[2]
+            if actual_channels == 1:
+                # 3D with 1 channel -> RGB
+                img = np.concatenate([img, img, img], axis=2)
+            elif actual_channels == 2:
+                # 2 channels (grayscale + alpha) -> RGB
+                img = np.concatenate([img[:,:,0:1], img[:,:,0:1], img[:,:,0:1]], axis=2)
+            elif actual_channels == 4:
+                # RGBA -> RGB (drop alpha)
+                img = img[:, :, :3]
+            elif actual_channels == 3:
+                # RGB - keep as is
+                pass
+            else:
+                # More than 4 channels - take first 3
+                img = img[:, :, :3]
         
         # Scale if needed
         if width > max_size or height > max_size:
             scale = min(max_size / width, max_size / height)
             new_width = int(width * scale)
             new_height = int(height * scale)
+            
+            # Safety check: ensure valid dimensions
+            if new_width < 1 or new_height < 1:
+                return None, None, None
             
             import cv2
             img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)

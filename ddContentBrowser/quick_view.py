@@ -52,7 +52,7 @@ from .widgets import load_hdr_exr_image, load_oiio_image, load_pdf_page, load_pd
 UI_FONT = "Segoe UI"
 
 # Debug mode
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 
 class QuickViewWindow(QDialog):
@@ -1104,7 +1104,7 @@ class QuickViewWindow(QDialog):
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
-                        print(f"[QuickView] Loading TGA/PSD with PIL: {file_path.name}")
+                        # print(f"[QuickView] Loading TGA/PSD with PIL: {file_path.name}")
                         pil_image = Image.open(str(file_path))
                         
                         # Convert to RGB
@@ -1120,7 +1120,7 @@ class QuickViewWindow(QDialog):
                             new_width = int(pil_image.width * scale_factor)
                             new_height = int(pil_image.height * scale_factor)
                             pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                            print(f"[QuickView] PIL scaled TGA to {new_width}x{new_height}")
+                            # print(f"[QuickView] PIL scaled TGA to {new_width}x{new_height}")
                         
                         # Convert PIL to QPixmap
                         import numpy as np
@@ -1131,29 +1131,31 @@ class QuickViewWindow(QDialog):
                         bytes_per_line = width * 3
                         q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
                         pixmap = QPixmap.fromImage(q_image.copy())
-                        print(f"[QuickView] ✓ TGA loaded with PIL: {width}x{height}")
+                        # print(f"[QuickView] ✓ TGA loaded with PIL: {width}x{height}")
                     except Exception as pil_error:
-                        print(f"[QuickView] PIL TGA/PSD loading failed: {pil_error}")
+                        # print(f"[QuickView] PIL TGA/PSD loading failed: {pil_error}")
                         
                         # Special handling for PSD files: try psd-tools first, then embedded thumbnail
                         if str(file_path).lower().endswith('.psd'):
                             try:
-                                print(f"[QuickView] Trying to load PSD with psd-tools...")
+                                # print(f"[QuickView] Trying to load PSD with psd-tools...")
                                 from .cache import ThumbnailGenerator
                                 pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=2048)
                                 
                                 if pixmap and not pixmap.isNull():
-                                    print(f"[QuickView] ✓ PSD composite loaded: {pixmap.width()}x{pixmap.height()}")
+                                    pass
+                                    # print(f"[QuickView] ✓ PSD composite loaded: {pixmap.width()}x{pixmap.height()}")
                                 else:
-                                    print(f"[QuickView] psd-tools failed, trying embedded thumbnail...")
+                                    # print(f"[QuickView] psd-tools failed, trying embedded thumbnail...")
                                     pixmap = ThumbnailGenerator._extract_psd_thumbnail(file_path, thumbnail_size=2048)
                                     if pixmap and not pixmap.isNull():
-                                        print(f"[QuickView] ✓ PSD thumbnail extracted: {pixmap.width()}x{pixmap.height()}")
+                                        pass
+                                        # print(f"[QuickView] ✓ PSD thumbnail extracted: {pixmap.width()}x{pixmap.height()}")
                                     else:
-                                        print(f"[QuickView] PSD thumbnail extraction returned None")
+                                        # print(f"[QuickView] PSD thumbnail extraction returned None")
                                         pixmap = None
                             except Exception as thumb_error:
-                                print(f"[QuickView] PSD loading failed: {thumb_error}")
+                                # print(f"[QuickView] PSD loading failed: {thumb_error}")
                                 pixmap = None
                         else:
                             pixmap = None
