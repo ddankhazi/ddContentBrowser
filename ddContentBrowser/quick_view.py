@@ -109,13 +109,15 @@ class QuickViewWindow(QDialog):
         # Always on top state (can be toggled via context menu)
         self.always_on_top = True
         
-        # Setup window flags (non-modal, always on top, frameless)
+        # Setup window flags (non-modal, always on top, WITH standard window frame)
         self.setWindowFlags(
-            Qt.Tool | 
-            Qt.WindowStaysOnTopHint | 
-            Qt.FramelessWindowHint
+            Qt.Window | 
+            Qt.WindowStaysOnTopHint
         )
         self.setModal(False)
+        
+        # Set window title
+        self.setWindowTitle("Quick View")
         
         # Focus behavior: Don't steal focus in Maya (critical for keyboard navigation)
         # but DO get focus in standalone mode (better UX)
@@ -123,7 +125,7 @@ class QuickViewWindow(QDialog):
             self.setAttribute(Qt.WA_ShowWithoutActivating)
         # In standalone, window will get focus automatically
         
-        # Enable mouse tracking for resize cursors
+        # Enable mouse tracking for resize cursors (still needed for PDF navigation, etc.)
         self.setMouseTracking(True)
         
         # Set minimum size
@@ -145,7 +147,7 @@ class QuickViewWindow(QDialog):
         #     print("[QuickView] Initialized")
     
     def setup_ui(self):
-        """Setup Quick View UI - minimalist canvas-only design"""
+        """Setup Quick View UI"""
         # Main layout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -160,7 +162,6 @@ class QuickViewWindow(QDialog):
         self.preview_container.addWidget(self.single_preview)
         
         # TODO: Grid preview widget (Phase 4)
-        # No titlebar, no status bar - just canvas!
     
     def create_single_preview(self):
         """Create single file preview widget - minimalist canvas"""
@@ -175,7 +176,7 @@ class QuickViewWindow(QDialog):
         self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setTransformationAnchor(QGraphicsView.NoAnchor)  # Don't auto-adjust transform
-        self.graphics_view.setResizeAnchor(QGraphicsView.NoAnchor)  # Don't auto-adjust on resize
+        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)  # Keep view center fixed on resize
         self.graphics_view.setDragMode(QGraphicsView.NoDrag)  # We'll handle drag ourselves
         self.graphics_view.setInteractive(True)  # Allow interaction
         
@@ -198,11 +199,12 @@ class QuickViewWindow(QDialog):
         return preview_widget
     
     def apply_styling(self):
-        """Apply minimal dark theme - thinner border"""
+        """Apply minimal dark theme"""
+        # Content area styling
         self.setStyleSheet("""
             QDialog {
                 background-color: #2a2a2a;
-                border: 3px solid #2a2a2a;
+                border: 1px solid #444444;
             }
         """)
     
@@ -336,14 +338,24 @@ class QuickViewWindow(QDialog):
                                         self.pdf_navigate_grid_page(cell_index, 1)
                                         return True
                     
-                    # Check if near edge (resize) or in center (pan)
+                    # Check if near edge (resize)
                     self.resize_dir = self.get_resize_direction(dialog_pos)
                     
                     if self.resize_dir:
                         # Edge/corner resize
                         return True  # Consume event
+                    # LMB without resize = do nothing (reserved for future use)
+                        
+                elif event.button() == Qt.MiddleButton:
+                    # Check for Alt modifier
+                    modifiers = QApplication.keyboardModifiers()
+                    if modifiers & Qt.AltModifier:
+                        # Alt+MMB = move window
+                        self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                        self.setCursor(Qt.SizeAllCursor)
+                        return True  # Consume event
                     else:
-                        # Center area - start panning (use GLOBAL position like PreviewPanel)
+                        # MMB alone = canvas pan (was LMB before)
                         self.is_panning = True
                         try:
                             self.pan_start_pos = event.globalPosition().toPoint()
@@ -351,12 +363,6 @@ class QuickViewWindow(QDialog):
                             self.pan_start_pos = event.globalPos()
                         self.graphics_view.setCursor(Qt.ClosedHandCursor)
                         return True
-                        
-                elif event.button() == Qt.MiddleButton:
-                    # Middle button drag to move window
-                    self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-                    self.setCursor(Qt.SizeAllCursor)
-                    return True  # Consume event
             
             elif event.type() == QEvent.MouseMove:
                 # Check if hovering over PDF (for navigation overlay auto-show)
@@ -403,8 +409,8 @@ class QuickViewWindow(QDialog):
                     self.perform_resize(event.globalPos())
                     return True
                 
-                elif event.buttons() == Qt.LeftButton and self.is_panning:
-                    # Panning canvas
+                elif event.buttons() == Qt.MiddleButton and self.is_panning:
+                    # Panning canvas (was LMB before)
                     try:
                         current_pos = event.globalPosition().toPoint()
                     except AttributeError:
@@ -445,7 +451,7 @@ class QuickViewWindow(QDialog):
                     return True
                     
                 elif event.buttons() == Qt.MiddleButton and self.drag_position:
-                    # Moving window
+                    # Moving window (Alt+MMB)
                     self.move(event.globalPos() - self.drag_position)
                     return True
                     
@@ -463,13 +469,15 @@ class QuickViewWindow(QDialog):
                     self.save_state()
                     return True
                 
-                elif event.button() == Qt.LeftButton and self.is_panning:
+                elif event.button() == Qt.MiddleButton and self.is_panning:
+                    # End canvas pan (was LMB before)
                     self.is_panning = False
                     self.pan_start_pos = None
                     self.graphics_view.setCursor(Qt.ArrowCursor)
                     return True
                     
                 elif event.button() == Qt.MiddleButton and self.drag_position:
+                    # End window drag (Alt+MMB)
                     self.drag_position = None
                     self.setCursor(Qt.ArrowCursor)
                     self.save_state()
@@ -480,7 +488,7 @@ class QuickViewWindow(QDialog):
     # ========== Window Resize (8-direction) & Middle-button Move ==========
     
     def mousePressEvent(self, event):
-        """Start resize from edges/corners OR move with middle button"""
+        """Start resize from edges/corners OR move with Alt+middle button"""
         if event.button() == Qt.LeftButton:
             self.resize_dir = self.get_resize_direction(event.pos())
             if self.resize_dir:
@@ -489,13 +497,21 @@ class QuickViewWindow(QDialog):
                 event.accept()
                 return
         elif event.button() == Qt.MiddleButton:
-            # Middle button drag to move window
-            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-            self.setCursor(Qt.SizeAllCursor)
-            # if DEBUG_MODE:
-            #     print(f"[QuickView] Starting window drag")
-            event.accept()
-            return
+            # Check for Alt modifier
+            try:
+                from PySide6.QtWidgets import QApplication
+            except ImportError:
+                from PySide2.QtWidgets import QApplication
+            
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers & Qt.AltModifier:
+                # Alt+MMB = move window
+                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                self.setCursor(Qt.SizeAllCursor)
+                # if DEBUG_MODE:
+                #     print(f"[QuickView] Starting window drag")
+                event.accept()
+                return
         
         super().mousePressEvent(event)
     
@@ -1744,7 +1760,8 @@ class QuickViewWindow(QDialog):
             if not supported_assets:
                 return
             
-            # Reset first show flag (new content needs refit)
+            # DON'T reset first show flag - keep current view transform when resizing
+            # This prevents the grid from jumping when window is resized/maximized
             if hasattr(self, '_first_show_done'):
                 delattr(self, '_first_show_done')
             
@@ -1999,10 +2016,15 @@ class QuickViewWindow(QDialog):
                                        total_width * 5, total_height * 5)
                 self.graphics_scene.setSceneRect(*expanded_scene_rect)
                 
+                # Always recalculate viewport size in case of layout mode change
+                current_viewport_width = self.graphics_view.viewport().rect().width()
+                current_viewport_height = self.graphics_view.viewport().rect().height()
+                
                 self.graphics_view.resetTransform()
-                scale_x = viewport_width / total_width if total_width > 0 else 1.0
-                scale_y = viewport_height / total_height if total_height > 0 else 1.0
+                scale_x = current_viewport_width / total_width if total_width > 0 else 1.0
+                scale_y = current_viewport_height / total_height if total_height > 0 else 1.0
                 fit_scale = min(scale_x, scale_y)
+                
                 self.graphics_view.scale(fit_scale, fit_scale)
                 self.graphics_view.centerOn(total_width / 2, total_height / 2)
                 
@@ -2119,9 +2141,13 @@ class QuickViewWindow(QDialog):
             self.graphics_view.resetTransform()
             
             # Calculate scale to fit content in viewport
+            # Always recalculate viewport size in case of layout mode change
+            viewport_width = self.graphics_view.viewport().rect().width()
+            viewport_height = self.graphics_view.viewport().rect().height()
+            
             scale_x = viewport_width / total_width if total_width > 0 else 1.0
             scale_y = viewport_height / total_height if total_height > 0 else 1.0
-            fit_scale = min(scale_x, scale_y, 1.0)  # Don't scale up, max 1.0
+            fit_scale = min(scale_x, scale_y)  # Allow scaling up to fit window
             
             # Apply scale
             self.graphics_view.scale(fit_scale, fit_scale)
