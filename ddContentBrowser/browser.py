@@ -1195,6 +1195,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_search_text_changed(self, text):
         """Handle search text change (only called when Subfolders is OFF - real-time search)"""
+        # CLEAR thumbnail generator queue when search changes
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
+        
         # If clearing search, ensure we're back to normal mode
         if not text:
             self.file_model.search_in_subfolders = False
@@ -1239,6 +1243,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def _finish_search_clear(self):
         """Finish clearing search after interrupt has taken effect"""
+        # CLEAR thumbnail generator queue when clearing search
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
+        
         # Clear filter text and force refresh to current folder
         self.file_model.setFilterText("")
         # Clear progress
@@ -1345,6 +1353,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         self.file_model.setPath(path)
         self.breadcrumb.set_path(path)
+        
+        # CLEAR thumbnail generator queue when navigating to new folder
+        # This prevents generating thumbnails for old folder after navigation
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
         
         # Reset thumbnail progress counters for new folder
         if hasattr(self, 'thumbnail_generator'):
@@ -2250,7 +2263,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_thumbnail_ready(self, file_path, pixmap):
         """Handle thumbnail ready from generator"""
-        # Direct update - Qt is smart enough to batch paint events
+        # Find the item in the model and update it
+        model = self.file_list.model()
+        if model:
+            for row in range(model.rowCount()):
+                index = model.index(row, 0)
+                asset = model.data(index, Qt.UserRole)
+                if asset and str(asset.file_path) == file_path:
+                    # Update the model data with the new thumbnail
+                    model.setData(index, pixmap, Qt.DecorationRole)
+                    # Force the view to repaint this specific item
+                    self.file_list.update(index)
+                    break
+        
+        # Also update viewport for good measure
         self.file_list.viewport().update()
     
     def on_cache_status(self, status):
@@ -2320,9 +2346,24 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     if asset.is_sequence and asset.sequence:
                         cache_key = str(asset.sequence.pattern)
                     
-                    # CHECK MEMORY CACHE ONLY (fast check, no disk I/O)
+                    # CHECK MEMORY CACHE FIRST (fast check, no disk I/O)
                     if self.memory_cache.get(cache_key) is None:
-                        visible_items.append((file_path_str, asset.modified_time, asset))
+                        # CHECK DISK CACHE (faster than regenerating)
+                        cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
+                        if cached_from_disk is None:
+                            # Not in memory or disk cache - need to generate
+                            visible_items.append((file_path_str, asset.modified_time, asset))
+                        else:
+                            # Found in disk cache - load to memory and update display
+                            self.memory_cache.set(cache_key, cached_from_disk)
+                            # Update display immediately with cached thumbnail
+                            model.setData(index, cached_from_disk, Qt.DecorationRole)
+                            # Force immediate repaint using dataChanged signal
+                            model.dataChanged.emit(index, index, [Qt.DecorationRole])
+        
+        # Force viewport update after loading from disk cache
+        # This ensures all cached thumbnails are visible immediately
+        self.file_list.viewport().update()
         
         # CLEAR the queue and add ONLY visible items with PRIORITY
         # This ensures we prioritize what user is currently viewing
@@ -2844,6 +2885,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def refresh_current_folder(self):
         """Refresh current folder (F5) - Force refresh bypasses cache"""
+        # CLEAR thumbnail generator queue when refreshing
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
+        
         self.file_model.refresh(force=True)
         self.safe_show_status("Refreshed (cache bypassed)")
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -3504,6 +3549,10 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
     
     def on_collection_cleared(self):
         """Handle collection filter clear - show all files"""
+        # CLEAR thumbnail generator queue when clearing collection
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
+        
         # Clear collection filter
         self.file_model.clearCollectionFilter()
         

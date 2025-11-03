@@ -16,7 +16,7 @@ __all__ = [
 # UI Font - Default value (matches Windows/Maya UI)
 UI_FONT = "Segoe UI"
 
-# Debug flag - set to False to disable verbose logging
+# Debug flag - set to True to enable verbose logging
 DEBUG_MODE = False
 
 import os
@@ -515,9 +515,14 @@ class ThumbnailGenerator(QThread):
                     # Use sequence pattern as cache key (e.g. "render_####.jpg")
                     cache_key = str(asset.sequence.pattern)
                 
+                if DEBUG_MODE:
+                    print(f"[CACHE-THREAD] Processing: {Path(file_path).name}")
+                
                 # Check memory cache first
                 cached = self.memory_cache.get(cache_key)
                 if cached:
+                    if DEBUG_MODE:
+                        print(f"[CACHE-THREAD] → Found in memory cache")
                     self.cache_status.emit("cache")
                     self.thumbnail_ready.emit(file_path, cached)
                     continue
@@ -527,12 +532,18 @@ class ThumbnailGenerator(QThread):
                     cached = self.disk_cache.get(file_path, file_mtime)
                     if cached and not cached.isNull():
                         # Valid cached pixmap
+                        if DEBUG_MODE:
+                            print(f"[CACHE-THREAD] → Found in disk cache")
                         self.cache_status.emit("cache")
                         self.memory_cache.set(file_path, cached)
                         self.thumbnail_ready.emit(file_path, cached)
                         continue
+                    elif DEBUG_MODE:
+                        print(f"[CACHE-THREAD] → NOT in disk cache, generating...")
                 
                 # Generate new thumbnail
+                if DEBUG_MODE:
+                    print(f"[CACHE-THREAD] → Generating new thumbnail...")
                 self.cache_status.emit("generating")
                 pixmap = self._generate_thumbnail(file_path, asset)
                 
