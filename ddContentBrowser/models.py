@@ -295,13 +295,17 @@ class AssetItem:
 class FileSystemModel(QAbstractListModel):
     """File system model for list view"""
     
-    # Signal for search progress updates (scanned_files, matched_files)
+    # Signals for progress updates
     if PYSIDE_VERSION == 6:
         from PySide6.QtCore import Signal
-        searchProgress = Signal(int, int)
+        searchProgress = Signal(int, int)  # (scanned_files, matched_files) - for search in subfolders
+        loadProgress = Signal(int, int)    # (loaded_files, total_scanned) - for include subfolders loading
+        limitReached = Signal(int, int)    # (loaded_count, total_scanned) - when max files limit is hit
     else:
         from PySide2.QtCore import Signal
-        searchProgress = Signal(int, int)
+        searchProgress = Signal(int, int)  # (scanned_files, matched_files) - for search in subfolders
+        loadProgress = Signal(int, int)    # (loaded_files, total_scanned) - for include subfolders loading
+        limitReached = Signal(int, int)    # (loaded_count, total_scanned) - when max files limit is hit
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -356,6 +360,10 @@ class FileSystemModel(QAbstractListModel):
         
         # Limit warning flag
         self.limit_reached = False  # Set to True when max_recursive_files limit is reached
+        
+        # Incremental loading state (for load_more functionality)
+        self._all_scanned_paths = []  # All file paths found during last recursive scan
+        self._current_display_limit = 0  # How many files are currently displayed
         
         # Directory cache system - cache AssetItem objects instead of Path objects
         self._dir_cache = {}  # {path_str: {'assets': [AssetItem], 'timestamp': float, 'mtime': float}}
@@ -454,6 +462,9 @@ class FileSystemModel(QAbstractListModel):
         Args:
             force: If True, bypass cache and reload from filesystem
         """
+        import time
+        start_time = time.time()
+        
         # Reset interrupt flag at start of refresh
         self._interrupt_search = False
         
@@ -498,41 +509,39 @@ class FileSystemModel(QAbstractListModel):
                 # Recursive mode - collect files from all subfolders
                 file_count = 0
                 match_count = 0
+                loaded_count = 0
                 
                 # Determine which limit to use
-                # Use higher limit for search mode (filtered results)
                 is_search_mode = self.search_in_subfolders and self.filter_text
                 max_files = self.max_search_files if is_search_mode else self.max_recursive_files
+                
+                # Collect file paths as strings (memory efficient)
+                collected_paths = []
                 
                 for root, dirs, files in os.walk(self.current_path):
                     # Check for interrupt
                     if self._interrupt_search:
-                        print(f"⚠️ [FileSystemModel] Search interrupted by user")
+                        print(f"⚠️ [FileSystemModel] Loading interrupted by user")
                         break
                     
                     root_path = Path(root)
                     
                     # Add folders if enabled (only direct subfolders in current dir)
                     if self.show_folders and root == str(self.current_path):
-                        # Only show direct subfolders (not nested)
                         for dir_name in dirs:
                             if not dir_name.startswith('.'):
-                                # Apply search filter to folders too
                                 if self.filter_text:
                                     if self._matches_search(dir_name, self.filter_text):
-                                        all_items.append(root_path / dir_name)
-                                        match_count += 1
+                                        collected_paths.append(str(root_path / dir_name))
+                                        loaded_count += 1
                                 else:
-                                    all_items.append(root_path / dir_name)
+                                    collected_paths.append(str(root_path / dir_name))
+                                    loaded_count += 1
                     
                     # Add files
                     for file_name in files:
-                        file_path = root_path / file_name
-                        
-                        # Check if extension is supported
-                        ext = file_path.suffix.lower()
+                        ext = os.path.splitext(file_name)[1].lower()
                         if ext in self.supported_formats:
-                            # Check file type filters
                             if self.filter_file_types and ext not in self.filter_file_types:
                                 continue
                             
@@ -541,13 +550,12 @@ class FileSystemModel(QAbstractListModel):
                             # Apply search filter if in search mode
                             if is_search_mode:
                                 if self._matches_search(file_name, self.filter_text):
-                                    all_items.append(file_path)
+                                    collected_paths.append(str(root_path / file_name))
                                     match_count += 1
+                                    loaded_count += 1
                                 
-                                # Emit progress signal every 100 files and process events for UI update
                                 if file_count % 100 == 0:
                                     self.searchProgress.emit(file_count, match_count)
-                                    # Process events to allow UI to update (show progress)
                                     try:
                                         if PYSIDE_VERSION == 6:
                                             from PySide6.QtWidgets import QApplication
@@ -558,36 +566,51 @@ class FileSystemModel(QAbstractListModel):
                                         pass
                             else:
                                 # No search filter - add all files
-                                all_items.append(file_path)
+                                collected_paths.append(str(root_path / file_name))
+                                loaded_count += 1
+                                
+                                if file_count % 100 == 0:
+                                    self.loadProgress.emit(loaded_count, file_count)
+                                    try:
+                                        if PYSIDE_VERSION == 6:
+                                            from PySide6.QtWidgets import QApplication
+                                        else:
+                                            from PySide2.QtWidgets import QApplication
+                                        QApplication.processEvents()
+                                    except:
+                                        pass
                             
-                            # Safety limit
+                            # Safety limit - stop scanning when we have enough
                             if file_count >= max_files:
                                 self.limit_reached = True
-                                if is_search_mode:
-                                    print(f"⚠️ [FileSystemModel] Search limit reached: {max_files} files scanned")
-                                    print(f"   Found {match_count} matches.")
-                                    print(f"   Increase 'Max files (Search Subfolders)' in Settings > Filters > Recursive Browsing if needed.")
-                                else:
-                                    print(f"⚠️ [FileSystemModel] Recursive limit reached: {max_files} files")
-                                    print(f"   Only first {max_files} files will be loaded.")
-                                    print(f"   Increase 'Max files (Include Subfolders)' in Settings > Filters > Recursive Browsing if needed.")
+                                self.limitReached.emit(loaded_count, file_count)
                                 break
                     
                     if file_count >= max_files:
                         break
                 
+                # Store results for potential load_more
+                self._all_scanned_paths = collected_paths
+                self._current_display_limit = len(collected_paths)
+                
+                # Convert collected string paths to Path objects (lazy conversion)
+                all_items = [Path(p) for p in collected_paths]
+                
                 # Emit final progress
                 if is_search_mode:
                     self.searchProgress.emit(file_count, match_count)
-                    # Final UI update
-                    try:
-                        if PYSIDE_VERSION == 6:
-                            from PySide6.QtWidgets import QApplication
-                        else:
-                            from PySide2.QtWidgets import QApplication
-                        QApplication.processEvents()
-                    except:
-                        pass
+                else:
+                    self.loadProgress.emit(loaded_count, file_count)
+                
+                # Final UI update
+                try:
+                    if PYSIDE_VERSION == 6:
+                        from PySide6.QtWidgets import QApplication
+                    else:
+                        from PySide2.QtWidgets import QApplication
+                    QApplication.processEvents()
+                except:
+                    pass
             else:
                 # Normal mode - only current folder
                 
@@ -1011,9 +1034,12 @@ class FileSystemModel(QAbstractListModel):
                     
                     # If include_subfolders is enabled, also load all files from this folder recursively
                     if self.include_subfolders:
-                        # Recursively load all files from this folder
-                        for item_path in file_path.rglob('*'):
-                            if item_path.is_file():
+                        # OPTIMIZED: Use os.walk instead of rglob for better memory efficiency
+                        for root, dirs, files in os.walk(str(file_path)):
+                            root_path = Path(root)
+                            for file_name in files:
+                                item_path = root_path / file_name
+                                
                                 # Check if extension is supported
                                 ext = item_path.suffix.lower()
                                 if ext not in self.supported_formats:
@@ -1023,9 +1049,9 @@ class FileSystemModel(QAbstractListModel):
                                 if self.filter_file_types and ext not in self.filter_file_types:
                                     continue
                                 
-                                # Create AssetItem
+                                # Create AssetItem with LAZY LOADING
                                 try:
-                                    asset = AssetItem(item_path, lazy_load=False)
+                                    asset = AssetItem(item_path, lazy_load=True)
                                     
                                     # Apply size filter
                                     if self.filter_min_size > 0 and asset.size < self.filter_min_size:
@@ -1280,4 +1306,101 @@ class FileSystemModel(QAbstractListModel):
                 self.setPath(file_path.parent)
                 return True
         
+        return False
+    
+    def load_more(self, increment=10000):
+        """Load more files when limit was reached.
+        On first call, performs full scan to find all files.
+        On subsequent calls, uses cached results.
+        
+        Args:
+            increment: How many more files to display (default 10000)
+        """
+        import time
+        
+        if not self.limit_reached:
+            return
+        
+        load_start = time.time()
+        previous_count = len(self.assets)
+        
+        # If no cached scan exists, perform FULL scan now
+        if not self._all_scanned_paths or len(self._all_scanned_paths) == self._current_display_limit:
+            print(f"📂 [FileSystemModel] Performing full scan to find all files...")
+            scan_start = time.time()
+            
+            # Do a complete scan without limit
+            all_paths = []
+            is_search_mode = self.search_in_subfolders and self.filter_text
+            
+            for root, dirs, files in os.walk(self.current_path):
+                if self._interrupt_search:
+                    break
+                
+                root_path = Path(root)
+                
+                # Add folders
+                if self.show_folders and root == str(self.current_path):
+                    for dir_name in dirs:
+                        if not dir_name.startswith('.'):
+                            if self.filter_text:
+                                if self._matches_search(dir_name, self.filter_text):
+                                    all_paths.append(str(root_path / dir_name))
+                            else:
+                                all_paths.append(str(root_path / dir_name))
+                
+                # Add files
+                for file_name in files:
+                    ext = os.path.splitext(file_name)[1].lower()
+                    if ext in self.supported_formats:
+                        if self.filter_file_types and ext not in self.filter_file_types:
+                            continue
+                        
+                        if is_search_mode:
+                            if self._matches_search(file_name, self.filter_text):
+                                all_paths.append(str(root_path / file_name))
+                        else:
+                            all_paths.append(str(root_path / file_name))
+            
+            self._all_scanned_paths = all_paths
+            scan_time = time.time() - scan_start
+            print(f"   Full scan completed in {scan_time:.2f}s - found {len(all_paths)} total files")
+        
+        # Calculate new display limit
+        old_limit = self._current_display_limit
+        new_limit = min(old_limit + increment, len(self._all_scanned_paths))
+        
+        print(f"📂 [FileSystemModel] Loading {new_limit - old_limit} more files ({old_limit} → {new_limit} out of {len(self._all_scanned_paths)} total)...")
+        
+        # Get the additional paths to display
+        additional_paths = self._all_scanned_paths[old_limit:new_limit]
+        
+        # Convert to Path objects and create AssetItems
+        print(f"   Creating AssetItem objects...")
+        creation_start = time.time()
+        additional_items = [Path(p) for p in additional_paths]
+        additional_assets = [AssetItem(f, lazy_load=True) for f in additional_items]
+        creation_time = time.time() - creation_start
+        print(f"   AssetItem creation took {creation_time:.2f}s")
+        
+        # Add to existing assets
+        self.beginResetModel()
+        self.assets.extend(additional_assets)
+        self._current_display_limit = new_limit
+        
+        # Check if we reached the end
+        if new_limit >= len(self._all_scanned_paths):
+            self.limit_reached = False
+            print(f"✓ [FileSystemModel] All files loaded ({len(self.assets)} total)")
+        else:
+            self.limit_reached = True
+            print(f"⚠️ [FileSystemModel] {len(self._all_scanned_paths) - new_limit} more files available")
+        
+        self.endResetModel()
+        
+        elapsed = time.time() - load_start
+        added = len(self.assets) - previous_count
+        print(f"✓ [FileSystemModel] Loaded {added} additional files (total: {len(self.assets)}) in {elapsed:.2f}s")
+
+
         return False

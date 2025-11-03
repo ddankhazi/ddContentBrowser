@@ -2,6 +2,11 @@
 DD Content Browser - Cache Module
 Thumbnail caching system with memory and disk storage
 
+OPTIMIZATIONS (2025-11):
+- OpenCV IMREAD_REDUCED_* for faster TIFF/HDR decoding (2-8× speedup)
+- Smart routing: Large files (>50MB) → OpenCV, others → QImageReader
+- Optimized scaling logic: Load at 8-16× thumbnail size for quality/speed balance
+
 Author: ddankhazi
 License: MIT
 """
@@ -570,6 +575,8 @@ class ThumbnailGenerator(QThread):
         Calculate optimal OpenCV imread flags based on thumbnail size.
         Uses IMREAD_REDUCED_* for faster decoding of large TIFF/HDR images.
         
+        Optimized logic: Loaded size should be ~8-16× thumbnail size for best quality/speed balance.
+        
         Returns:
             OpenCV imread flags (int)
         """
@@ -577,26 +584,37 @@ class ThumbnailGenerator(QThread):
         
         # For small thumbnails, use aggressive downsampling during decode
         # This is MUCH faster for large TIFF files (2-8× speedup)
+        # 
+        # OPTIMIZED LOGIC:
+        # - thumbnail ≤ 64px  → load at 1/8 scale (e.g., 16k→2048, 8k→1024) = 32-16× thumbnail
+        # - thumbnail ≤ 128px → load at 1/4 scale (e.g., 16k→4096, 8k→2048) = 32-16× thumbnail  
+        # - thumbnail ≤ 256px → load at 1/8 scale (e.g., 16k→2048, 8k→1024) = 8-4× thumbnail
+        # - thumbnail > 256px → load at 1/2 scale (e.g., 16k→8192) = preserve detail
+        
         if self.thumbnail_size <= 64:
             # 1/8 scale - fastest for tiny thumbnails
+            # 16k TIFF → 2048px → resize to 64px (32× downscale total)
             if DEBUG_MODE:
                 print(f"[OPENCV] Using 1/8 scale (IMREAD_REDUCED_COLOR_8) for thumbnail_size={self.thumbnail_size}")
             return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
         elif self.thumbnail_size <= 128:
             # 1/4 scale - good balance for default size
+            # 16k TIFF → 4096px → resize to 128px (32× downscale total)
             if DEBUG_MODE:
                 print(f"[OPENCV] Using 1/4 scale (IMREAD_REDUCED_COLOR_4) for thumbnail_size={self.thumbnail_size}")
             return cv2.IMREAD_REDUCED_COLOR_4 | cv2.IMREAD_ANYDEPTH
         elif self.thumbnail_size <= 256:
-            # 1/2 scale - still faster than full resolution
+            # 1/8 scale - OPTIMIZED! Previously was 1/2 (too much data)
+            # 16k TIFF → 2048px → resize to 256px (8× downscale, perfect quality)
+            if DEBUG_MODE:
+                print(f"[OPENCV] Using 1/8 scale (IMREAD_REDUCED_COLOR_8) for thumbnail_size={self.thumbnail_size}")
+            return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
+        else:
+            # 1/2 scale for larger thumbnails (256+) to preserve detail
+            # 16k TIFF → 8192px → resize to 512px+ (preserves detail for large thumbnails)
             if DEBUG_MODE:
                 print(f"[OPENCV] Using 1/2 scale (IMREAD_REDUCED_COLOR_2) for thumbnail_size={self.thumbnail_size}")
             return cv2.IMREAD_REDUCED_COLOR_2 | cv2.IMREAD_ANYDEPTH
-        else:
-            # Full resolution for larger thumbnails (256+)
-            if DEBUG_MODE:
-                print(f"[OPENCV] Using full resolution (IMREAD_UNCHANGED) for thumbnail_size={self.thumbnail_size}")
-            return cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR
     
     @staticmethod
     def _load_psd_composite(file_path, max_size=None):
@@ -1347,10 +1365,15 @@ class ThumbnailGenerator(QThread):
                 # Check file size first - if over 50MB, use OpenCV
                 file_size_mb = os.path.getsize(str(file_path)) / (1024 * 1024)
                 
-                if file_size_mb > 50 or extension in ['.jpg', '.jpeg']:
-                    # Try OpenCV for large files - better memory handling
+                # OPTIMIZED: Only large files go to OpenCV (removed auto JPG routing)
+                # Small/medium JPG/PNG work better with QImageReader (native DCT/progressive decode)
+                if file_size_mb > 50:
+                    # Try OpenCV for large files - better memory handling with optimized flags
                     import cv2
                     import numpy as np
+                    
+                    # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
+                    imread_flags = self._get_opencv_imread_flags()
                     
                     # OpenCV can't handle Unicode paths, check for non-ASCII first
                     file_path_str = str(file_path)
@@ -1360,15 +1383,19 @@ class ThumbnailGenerator(QThread):
                     if has_non_ascii:
                         # Use buffer method for non-ASCII paths (ékezetes karakterek)
                         try:
+                            if DEBUG_MODE:
+                                print(f"[Cache] Using buffer method (non-ASCII path) with flags={imread_flags}")
                             with open(file_path_str, 'rb') as f:
                                 file_bytes = np.frombuffer(f.read(), np.uint8)
-                            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                            img = cv2.imdecode(file_bytes, imread_flags)
                         except Exception as e:
                             print(f"[Cache] Buffer decode failed: {e}")
                     else:
-                        # ASCII-only path, use direct imread
+                        # ASCII-only path, use direct imread with optimized flags
                         try:
-                            img = cv2.imread(file_path_str, cv2.IMREAD_COLOR)
+                            if DEBUG_MODE:
+                                print(f"[Cache] Using imread with optimized flags={imread_flags}")
+                            img = cv2.imread(file_path_str, imread_flags)
                         except:
                             pass
                     
@@ -1378,12 +1405,23 @@ class ThumbnailGenerator(QThread):
                         
                         # Calculate thumbnail size
                         h, w = img.shape[:2]
-                        scale = min(self.thumbnail_size / w, self.thumbnail_size / h)
-                        new_w = int(w * scale)
-                        new_h = int(h * scale)
                         
-                        # Resize with OpenCV (faster for large images)
-                        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                        # Only resize if still too large (IMREAD_REDUCED_* already downscaled)
+                        if w > self.thumbnail_size or h > self.thumbnail_size:
+                            scale = min(self.thumbnail_size / w, self.thumbnail_size / h)
+                            new_w = int(w * scale)
+                            new_h = int(h * scale)
+                            
+                            # Resize with OpenCV (faster for large images)
+                            img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                            
+                            if DEBUG_MODE:
+                                print(f"[Cache] Resized from {w}×{h} to {new_w}×{new_h}")
+                        else:
+                            # Already at good size from IMREAD_REDUCED
+                            img_resized = img
+                            if DEBUG_MODE:
+                                print(f"[Cache] No resize needed, already at {w}×{h}")
                         
                         # Convert to QPixmap
                         if PYSIDE_VERSION == 6:

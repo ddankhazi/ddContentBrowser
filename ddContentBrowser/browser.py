@@ -394,6 +394,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.cache_hits = 0
         self.generations = 0
         
+        # Track loading state (to prevent thumbnail progress from overwriting loading messages)
+        self._loading_in_progress = False
+        self._limit_reached_shown = False
+        
         # Track advanced filters state
         self.advanced_filters_active = False
         
@@ -555,8 +559,36 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Connect splitter moved signal to save position
         self.content_splitter.splitterMoved.connect(self.on_splitter_moved)
         
-        # Status bar
+        # Status bar with thumbnail progress on the right
         self.status_bar = self.statusBar()
+        self.status_bar.setStyleSheet("""
+            QStatusBar {
+                border: none;
+            }
+            QStatusBar::item {
+                border: none;
+            }
+        """)
+        
+        # Thumbnail progress label (permanent widget on the right)
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtWidgets import QLabel
+        else:
+            from PySide2.QtWidgets import QLabel
+        
+        self.thumbnail_status_label = QLabel("")
+        self.thumbnail_status_label.setStyleSheet("""
+            QLabel { 
+                padding: 0 10px; 
+                border: none; 
+                background: transparent;
+                margin: 0;
+            }
+        """)
+        self.thumbnail_status_label.setFrameShape(QLabel.NoFrame)
+        self.thumbnail_status_label.setAutoFillBackground(False)
+        self.status_bar.addPermanentWidget(self.thumbnail_status_label)
+        
         self.safe_show_status("Ready")
     
     def safe_show_status(self, message, timeout=0):
@@ -857,7 +889,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Include subfolders checkbox (moved here from top toolbar)
         view_toolbar.addWidget(QtWidgets.QLabel("  |  "))  # Separator
-        self.include_subfolders_checkbox = QtWidgets.QCheckBox("Include Subfolders")
+        self.include_subfolders_checkbox = QtWidgets.QCheckBox("Show Files from Subfolders")
         self.include_subfolders_checkbox.setToolTip("Show files from all subfolders recursively")
         self.include_subfolders_checkbox.setChecked(False)
         view_toolbar.addWidget(self.include_subfolders_checkbox)
@@ -874,7 +906,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.sequence_mode_checkbox.setToolTip("Group image sequences into single items\n(e.g. render_0001-0120.jpg → render_####.jpg)")
         view_toolbar.addWidget(self.sequence_mode_checkbox)
         
+        # Spacer before Load More button
         view_toolbar.addStretch()
+        
+        # Load More button (initially hidden) - placed at far right of view toolbar
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtWidgets import QPushButton
+        else:
+            from PySide2.QtWidgets import QPushButton
+        
+        self.load_more_btn = QPushButton("Load More (+10k)")
+        self.load_more_btn.clicked.connect(self.on_load_more_clicked)
+        self.load_more_btn.setVisible(False)
+        self.load_more_btn.setToolTip("Load 10,000 more files from subfolders")
+        view_toolbar.addWidget(self.load_more_btn)
+        
         browser_layout.addLayout(view_toolbar)
         
         # Enhanced Search Bar with Clear Filters button
@@ -1142,8 +1188,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Model change connections - trigger thumbnail loading when filters change
         self.file_model.modelReset.connect(self.on_model_reset)
         
-        # Search progress connection
+        # Progress connections
         self.file_model.searchProgress.connect(self.on_search_progress)
+        self.file_model.loadProgress.connect(self.on_load_progress)
+        self.file_model.limitReached.connect(self.on_limit_reached)
         
         # Scrollbar connection - load thumbnails when scrolling
         scrollbar = self.file_list.verticalScrollBar()
@@ -1260,6 +1308,42 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Handle search progress updates from file model"""
         self.search_bar.set_search_progress(scanned, matches)
     
+    def on_load_progress(self, loaded, scanned):
+        """Handle recursive loading progress updates (include subfolders mode)"""
+        # Set flag to prevent thumbnail progress from overwriting this
+        self._loading_in_progress = True
+        # Hide Load More button while loading
+        self.load_more_btn.setVisible(False)
+        # Show progress in status bar
+        self.safe_show_status(f"⏳ Loading files... {loaded} loaded from {scanned} scanned")
+    
+    def on_limit_reached(self, loaded, scanned):
+        """Handle limit reached signal - show Load More button"""
+        # Set flag to prevent thumbnail progress from overwriting the message
+        self._limit_reached_shown = True
+        # Show the Load More button
+        self.load_more_btn.setVisible(True)
+        self.safe_show_status(f"⚠️ Limit reached: {loaded} files loaded. Click 'Load More' to continue.")
+    
+    def on_load_more_clicked(self):
+        """Handle Load More button click"""
+        # Hide the button temporarily
+        self.load_more_btn.setVisible(False)
+        # Clear the limit flag
+        self._limit_reached_shown = False
+        # Load more files
+        self.file_model.load_more(increment=10000)
+        
+        # Check if limit was reached again after loading
+        if self.file_model.limit_reached:
+            self.load_more_btn.setVisible(True)
+            self._limit_reached_shown = True
+            file_count = len(self.file_model.assets)
+            self.safe_show_status(f"⚠️ Limit reached: {file_count} files loaded. Click 'Load More' to continue.")
+        else:
+            file_count = len(self.file_model.assets)
+            self.safe_show_status(f"✓ Loaded {file_count} files from subfolders")
+    
     def on_search_options_changed(self):
         """Handle search option (case/regex/subfolders) toggle"""
         self.file_model.case_sensitive_search = self.search_bar.is_case_sensitive()
@@ -1295,9 +1379,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         include_subfolders = bool(state == Qt.Checked or state == 2)
         self.file_model.include_subfolders = include_subfolders
         
+        # Hide Load More button when toggling
+        self.load_more_btn.setVisible(False)
+        self._limit_reached_shown = False
+        
         # Show status message
         if include_subfolders:
-            self.safe_show_status("Loading files from subfolders...")
+            self.safe_show_status("⏳ Loading files from subfolders...")
         else:
             self.safe_show_status("Showing current folder only")
         
@@ -1307,12 +1395,23 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_model.refresh(force=True)
         self.file_model.endResetModel()
         
+        # Clear loading flag so thumbnail progress can resume
+        self._loading_in_progress = False
+        
+        # Check if limit was reached and show button
+        if self.file_model.limit_reached:
+            self.load_more_btn.setVisible(True)
+            self._limit_reached_shown = True
+        
         # Update status bar with file count
         file_count = len(self.file_model.assets)
         if include_subfolders:
-            self.safe_show_status(f"Loaded {file_count} files from subfolders")
+            if self.file_model.limit_reached:
+                self.safe_show_status(f"⚠️ Limit reached: {file_count} files loaded. Click 'Load More' to continue.")
+            else:
+                self.safe_show_status(f"✓ Loaded {file_count} files from subfolders")
         else:
-            self.safe_show_status(f"Loaded {file_count} files")
+            self.safe_show_status(f"✓ Loaded {file_count} files")
         
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -2287,21 +2386,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.generations += 1
     
     def on_thumbnail_progress(self, current, total):
-        """Handle thumbnail generation progress"""
-        # Check if status_bar still exists (widget might be deleted during shutdown)
+        """Handle thumbnail generation progress - shows in right side of status bar"""
         try:
-            if not hasattr(self, 'status_bar') or self.status_bar is None:
+            if not hasattr(self, 'thumbnail_status_label') or self.thumbnail_status_label is None:
                 return
             
             if total > 0:
                 if current >= total:
                     # Show final stats
-                    msg = f"Ready (cached: {self.cache_hits}, generated: {self.generations})"
-                    self.safe_show_status(msg)
+                    msg = f"Thumbnails: cached {self.cache_hits}, generated {self.generations}"
+                    self.thumbnail_status_label.setText(msg)
                 else:
                     # Show progress with stats
-                    msg = f"Loading: {current}/{total} (cached: {self.cache_hits}, generating: {self.generations})"
-                    self.safe_show_status(msg)
+                    msg = f"Thumbnails: {current}/{total} (cached: {self.cache_hits}, generating: {self.generations})"
+                    self.thumbnail_status_label.setText(msg)
         except RuntimeError:
             # C++ object already deleted, safely ignore
             pass
