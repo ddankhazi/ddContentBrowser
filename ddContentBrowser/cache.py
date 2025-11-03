@@ -522,6 +522,8 @@ class ThumbnailGenerator(QThread):
                 
                 if DEBUG_MODE:
                     print(f"[CACHE-THREAD] Processing: {Path(file_path).name}")
+                    import sys
+                    sys.stdout.flush()  # Force immediate print
                 
                 # Check memory cache first
                 cached = self.memory_cache.get(cache_key)
@@ -1179,25 +1181,37 @@ class ThumbnailGenerator(QThread):
                         if DEBUG_MODE:
                             print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, grayscale, dtype={img.dtype}")
                     
-                    # Normalize bit depth FIRST (before color conversion!)
-                    if img.dtype == np.uint16:
-                        # 16-bit image - normalize to 8-bit
-                        img = (img / 256).astype(np.uint8)
-                    elif img.dtype == np.float32 or img.dtype == np.float64:
-                        # 32-bit float - normalize and apply simple tone mapping
-                        img = np.clip(img, 0, 1)  # Clip to 0-1 range
-                        img = (img * 255).astype(np.uint8)
-                    
-                    # NOW convert to RGB (after normalization)
+                    # FIRST: Convert color space (BGR/BGRA → RGB) BEFORE normalization
                     if len(img.shape) == 2:
                         # Grayscale - convert to RGB
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Converting grayscale to RGB")
                         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
                     elif len(img.shape) == 3 and img.shape[2] == 4:
-                        # RGBA - convert to RGB
+                        # RGBA - convert to RGB (keeping 16-bit if present)
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Converting BGRA to RGB")
                         img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
                     elif len(img.shape) == 3 and img.shape[2] == 3:
                         # BGR - convert to RGB
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Converting BGR to RGB")
                         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    
+                    # THEN: Normalize bit depth AFTER color conversion
+                    if img.dtype == np.uint16:
+                        # 16-bit image - normalize to 8-bit
+                        # 16-bit range: 0-65535 → 8-bit range: 0-255
+                        # Correct conversion: divide by 257 (65535/255), not 256
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Normalizing 16-bit to 8-bit (÷257)")
+                        img = (img / 257).astype(np.uint8)
+                    elif img.dtype == np.float32 or img.dtype == np.float64:
+                        # 32-bit float - normalize and apply simple tone mapping
+                        if DEBUG_MODE:
+                            print(f"[THUMB] Normalizing 32-bit float to 8-bit")
+                        img = np.clip(img, 0, 1)  # Clip to 0-1 range
+                        img = (img * 255).astype(np.uint8)
                     
                     if DEBUG_MODE:
                         print(f"[THUMB] Converted to RGB: {img.shape[1]}×{img.shape[0]}")
@@ -1365,9 +1379,17 @@ class ThumbnailGenerator(QThread):
                 # Check file size first - if over 50MB, use OpenCV
                 file_size_mb = os.path.getsize(str(file_path)) / (1024 * 1024)
                 
+                if DEBUG_MODE:
+                    print(f"[Cache] Standard image: {Path(file_path).name}, size={file_size_mb:.1f}MB, ext={extension}")
+                    import sys
+                    sys.stdout.flush()  # Force immediate print
+                
                 # OPTIMIZED: Only large files go to OpenCV (removed auto JPG routing)
                 # Small/medium JPG/PNG work better with QImageReader (native DCT/progressive decode)
-                if file_size_mb > 50:
+                # IMPORTANT: PNG files should ALWAYS use QImageReader (better 16-bit support)
+                if file_size_mb > 50 and extension != '.png':
+                    if DEBUG_MODE:
+                        print(f"[Cache] → Large file, using OpenCV path")
                     # Try OpenCV for large files - better memory handling with optimized flags
                     import cv2
                     import numpy as np
@@ -1443,6 +1465,9 @@ class ThumbnailGenerator(QThread):
             # This loads only the necessary data at thumbnail size, not the full image
             # Works best for: JPEG (uses DCT subsampling), PNG (progressive decode), standard 8-bit images
             try:
+                if DEBUG_MODE:
+                    print(f"[Cache] → Using QImageReader for thumbnail generation")
+                
                 if PYSIDE_VERSION == 6:
                     from PySide6.QtGui import QImageReader, QImage
                     from PySide6.QtCore import QSize
@@ -1455,12 +1480,18 @@ class ThumbnailGenerator(QThread):
                 # Get original size
                 original_size = reader.size()
                 if original_size.isValid():
+                    if DEBUG_MODE:
+                        print(f"[Cache] → Original size: {original_size.width()}×{original_size.height()}")
+                    
                     # Calculate scaled size maintaining aspect ratio
                     scaled_size = original_size.scaled(
                         self.thumbnail_size, 
                         self.thumbnail_size, 
                         Qt.KeepAspectRatio
                     )
+                    if DEBUG_MODE:
+                        print(f"[Cache] → Scaled size: {scaled_size.width()}×{scaled_size.height()}")
+                    
                     # Tell reader to decode at this smaller size (FAST!)
                     # For JPEG: uses DCT coefficient subsampling (4-6× faster)
                     # For PNG: progressive decode, only loads what's needed
@@ -1472,17 +1503,22 @@ class ThumbnailGenerator(QThread):
                 if not image.isNull():
                     pixmap = QPixmap.fromImage(image)
                     if not pixmap.isNull():
+                        if DEBUG_MODE:
+                            print(f"[Cache] ✓ QImageReader success: {pixmap.width()}×{pixmap.height()}")
                         return pixmap
                 
                 # If reader failed, print error and fall through to old method
                 if DEBUG_MODE:
-                    print(f"[Cache] QImageReader failed: {reader.errorString()}, using fallback...")
+                    print(f"[Cache] ✗ QImageReader failed: {reader.errorString()}, using fallback...")
                 
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f"[Cache] QImageReader exception: {e}, using fallback...")
+                    print(f"[Cache] ✗ QImageReader exception: {e}, using fallback...")
             
             # Fallback to standard QPixmap loading (slower, but always works)
+            if DEBUG_MODE:
+                print(f"[Cache] → Using QPixmap fallback")
+            
             pixmap = QPixmap(str(file_path))
             
             if pixmap.isNull():
@@ -1490,10 +1526,14 @@ class ThumbnailGenerator(QThread):
                 if extension == '.exr':
                     # Deep EXR already logged above, just return default icon quietly
                     if DEBUG_MODE:
-                        print(f"[Cache] Using default icon for unsupported EXR: {Path(file_path).name}")
+                        print(f"[Cache] ✗ Using default icon for unsupported EXR: {Path(file_path).name}")
                 else:
-                    print(f"[Cache] QPixmap failed to load: {file_path}")
+                    if DEBUG_MODE:
+                        print(f"[Cache] ✗ QPixmap failed to load: {file_path}")
                 return self._get_default_icon(file_path)
+            
+            if DEBUG_MODE:
+                print(f"[Cache] → QPixmap loaded: {pixmap.width()}×{pixmap.height()}")
             
             # Scale to thumbnail size (keep aspect ratio)
             scaled = pixmap.scaled(
@@ -1502,6 +1542,9 @@ class ThumbnailGenerator(QThread):
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
+            
+            if DEBUG_MODE:
+                print(f"[Cache] ✓ Scaled to: {scaled.width()}×{scaled.height()}")
             
             return scaled
             
