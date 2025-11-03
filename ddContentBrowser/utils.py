@@ -130,6 +130,14 @@ FILE_TYPE_REGISTRY = {
         "importable": False,
         "generate_thumbnail": False,
         "is_3d": False
+    },
+    "other": {
+        "extensions": [".abr"],
+        "label": "Other Files",
+        "filter_label": "Other (.abr)",
+        "importable": False,
+        "generate_thumbnail": False,
+        "is_3d": False
     }
 }
 
@@ -465,6 +473,28 @@ def load_file_formats_config():
 def save_file_formats_config(config):
     """Save file_formats.json"""
     import json
+    
+    # Auto-create missing categories referenced in extensions
+    if 'extensions' in config and 'categories' in config:
+        # Collect all categories used by extensions
+        used_categories = set()
+        for ext_config in config['extensions'].values():
+            category = ext_config.get('category')
+            if category:
+                used_categories.add(category)
+        
+        # Ensure all used categories exist in categories section
+        for category in used_categories:
+            if category not in config['categories']:
+                # Auto-create missing category from FILE_TYPE_REGISTRY
+                if category in FILE_TYPE_REGISTRY:
+                    registry_cat = FILE_TYPE_REGISTRY[category]
+                    config['categories'][category] = {
+                        "name": registry_cat.get("label", category.title()),
+                        "filter_label": registry_cat.get("filter_label", category.title()),
+                        "is_3d": registry_cat.get("is_3d", False)
+                    }
+                    print(f"[File Formats] Auto-created missing category: {category}")
     
     config_path = get_file_formats_config_path()
     try:
