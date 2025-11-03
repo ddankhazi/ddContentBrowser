@@ -473,8 +473,10 @@ class BreadcrumbWidget(QWidget):
 class EnhancedSearchBar(QWidget):
     """Enhanced search bar with case-sensitive and regex toggles"""
     
-    textChanged = Signal(str)  # Emitted when search text changes
+    textChanged = Signal(str)  # Emitted when search text changes (real-time when subfolders OFF)
     optionsChanged = Signal()  # Emitted when case/regex toggles change
+    searchRequested = Signal()  # Emitted when search button is clicked (subfolder search)
+    searchCleared = Signal()  # Emitted when clear button is clicked
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -488,24 +490,53 @@ class EnhancedSearchBar(QWidget):
         layout.setContentsMargins(0, 5, 0, 5)
         layout.setSpacing(5)
         
-        # Search icon label
-        icon_label = QLabel("🔍")
-        icon_label.setStyleSheet(f"font-size: 16px; font-family: {UI_FONT};")
-        layout.addWidget(icon_label)
-        
-        # Search input field
+        # Search input field (no icon before it)
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("Search files... (Ctrl+F)")
         self.search_input.setMinimumWidth(300)
         self.search_input.setStyleSheet(f"font-size: 12px; font-family: {UI_FONT}; padding: 4px;")
         self.search_input.textChanged.connect(self._on_text_changed)
+        self.search_input.returnPressed.connect(self._on_return_pressed)  # Enter key support
         layout.addWidget(self.search_input)
+        
+        # Search button (enabled only when Subfolders is checked)
+        self.search_btn = QPushButton("🔍")
+        self.search_btn.setMaximumWidth(35)
+        self.search_btn.setMinimumHeight(28)
+        self.search_btn.setMaximumHeight(28)
+        self.search_btn.setToolTip("Search in Subfolders (Enter)")
+        self.search_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 4px;
+                background-color: #2a2a2a;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #4b7daa;
+                border-color: #5a8db8;
+            }
+            QPushButton:pressed {
+                background-color: #3a6d9a;
+            }
+            QPushButton:disabled {
+                background-color: transparent;
+                border-color: transparent;
+                opacity: 0.3;
+            }
+        """)
+        self.search_btn.clicked.connect(self._on_search_clicked)
+        self.search_btn.setEnabled(False)  # Initially disabled (not hidden)
+        layout.addWidget(self.search_btn)
         
         # Case-sensitive toggle button
         self.case_btn = QPushButton("Aa")
         self.case_btn.setCheckable(True)
         self.case_btn.setToolTip("Case Sensitive Search")
         self.case_btn.setMaximumWidth(35)
+        self.case_btn.setMinimumHeight(28)
+        self.case_btn.setMaximumHeight(28)
         self.case_btn.setStyleSheet("""
             QPushButton {
                 border: 1px solid #555;
@@ -529,6 +560,8 @@ class EnhancedSearchBar(QWidget):
         self.regex_btn.setCheckable(True)
         self.regex_btn.setToolTip("Regular Expression Search")
         self.regex_btn.setMaximumWidth(35)
+        self.regex_btn.setMinimumHeight(28)
+        self.regex_btn.setMaximumHeight(28)
         self.regex_btn.setStyleSheet("""
             QPushButton {
                 border: 1px solid #555;
@@ -548,6 +581,14 @@ class EnhancedSearchBar(QWidget):
         self.regex_btn.clicked.connect(self._on_options_changed)
         layout.addWidget(self.regex_btn)
         
+        # Subfolders checkbox - search in subfolders when enabled
+        self.subfolders_checkbox = QCheckBox("Subfolders")
+        self.subfolders_checkbox.setToolTip("Search in subfolders (manual trigger with search button)")
+        self.subfolders_checkbox.setChecked(False)
+        # Use default checkbox style (same as Thumbnails and Sequences checkboxes)
+        self.subfolders_checkbox.stateChanged.connect(self._on_subfolders_toggled)
+        layout.addWidget(self.subfolders_checkbox)
+        
         # Clear button (only visible when text present)
         self.clear_btn = QPushButton("❌")
         self.clear_btn.setMaximumWidth(30)
@@ -562,12 +603,40 @@ class EnhancedSearchBar(QWidget):
         self.match_label.setMinimumWidth(90)
         layout.addWidget(self.match_label)
         
+        # Search progress label (visible during subfolder search)
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet(f"color: #f39c12; font-size: 11px; font-family: {UI_FONT}; font-style: italic;")
+        self.progress_label.setVisible(False)
+        layout.addWidget(self.progress_label)
+        
         layout.addStretch()
     
     def _on_text_changed(self, text):
         """Handle text change"""
         self.clear_btn.setVisible(bool(text))
-        self.textChanged.emit(text)
+        # Only emit textChanged if subfolders is OFF (real-time search)
+        # If subfolders is ON, search is triggered manually with button
+        if not self.subfolders_checkbox.isChecked():
+            self.textChanged.emit(text)
+    
+    def _on_return_pressed(self):
+        """Handle Enter key press in search field"""
+        if self.subfolders_checkbox.isChecked():
+            # If subfolders mode, trigger search
+            self._on_search_clicked()
+        # If not in subfolders mode, real-time search already handled by textChanged
+    
+    def _on_search_clicked(self):
+        """Handle search button click (subfolder search)"""
+        self.searchRequested.emit()
+    
+    def _on_subfolders_toggled(self):
+        """Handle subfolders checkbox toggle"""
+        is_checked = self.subfolders_checkbox.isChecked()
+        # Enable/disable search button based on subfolders state (not hide/show)
+        self.search_btn.setEnabled(is_checked)
+        # Notify options changed
+        self.optionsChanged.emit()
     
     def _on_options_changed(self):
         """Handle case/regex toggle change"""
@@ -576,6 +645,8 @@ class EnhancedSearchBar(QWidget):
     def clear_search(self):
         """Clear search text"""
         self.search_input.clear()
+        # Emit cleared signal so browser can reset state (even when subfolders is ON)
+        self.searchCleared.emit()
     
     def set_match_count(self, matches, total):
         """Update match count display"""
@@ -598,6 +669,10 @@ class EnhancedSearchBar(QWidget):
         """Check if regex search is enabled"""
         return self.regex_btn.isChecked()
     
+    def is_subfolders_enabled(self):
+        """Check if subfolder search is enabled"""
+        return self.subfolders_checkbox.isChecked()
+    
     def get_text(self):
         """Get current search text"""
         return self.search_input.text()
@@ -609,6 +684,26 @@ class EnhancedSearchBar(QWidget):
     def set_regex_enabled(self, enabled):
         """Set regex mode"""
         self.regex_btn.setChecked(enabled)
+    
+    def set_subfolders_enabled(self, enabled):
+        """Set subfolders search mode"""
+        self.subfolders_checkbox.setChecked(enabled)
+    
+    def set_search_progress(self, scanned, matches):
+        """Show search progress (files scanned and matches found)"""
+        if scanned > 0:
+            self.progress_label.setText(f"⏳ Scanning... {scanned} files | {matches} matches")
+            self.progress_label.setVisible(True)
+            # Hide match count while searching
+            self.match_label.setVisible(False)
+        else:
+            self.progress_label.setVisible(False)
+            self.match_label.setVisible(True)
+    
+    def clear_search_progress(self):
+        """Clear search progress display"""
+        self.progress_label.setVisible(False)
+        self.match_label.setVisible(True)
 
 
 class FilterPanel(QWidget):

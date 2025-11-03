@@ -650,12 +650,6 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.breadcrumb = BreadcrumbWidget()
         toolbar_layout.addWidget(self.breadcrumb, 1)  # Stretch factor 1 - takes available space
         
-        # Include subfolders checkbox
-        self.include_subfolders_checkbox = QtWidgets.QCheckBox("Include Subfolders")
-        self.include_subfolders_checkbox.setToolTip("Show files from all subfolders recursively")
-        self.include_subfolders_checkbox.setChecked(False)
-        toolbar_layout.addWidget(self.include_subfolders_checkbox)
-        
         # Browse button
         self.browse_btn = QtWidgets.QPushButton("Browse...")
         toolbar_layout.addWidget(self.browse_btn)
@@ -860,6 +854,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.size_label = QtWidgets.QLabel(str(initial_size))
         self.size_label.setMinimumWidth(30)
         view_toolbar.addWidget(self.size_label)
+        
+        # Include subfolders checkbox (moved here from top toolbar)
+        view_toolbar.addWidget(QtWidgets.QLabel("  |  "))  # Separator
+        self.include_subfolders_checkbox = QtWidgets.QCheckBox("Include Subfolders")
+        self.include_subfolders_checkbox.setToolTip("Show files from all subfolders recursively")
+        self.include_subfolders_checkbox.setChecked(False)
+        view_toolbar.addWidget(self.include_subfolders_checkbox)
         
         # Thumbnail toggle
         view_toolbar.addWidget(QtWidgets.QLabel("  |  "))  # Separator
@@ -1121,6 +1122,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Search bar connections
         self.search_bar.textChanged.connect(self.on_search_text_changed)
         self.search_bar.optionsChanged.connect(self.on_search_options_changed)
+        self.search_bar.searchRequested.connect(self.on_subfolder_search_requested)
+        self.search_bar.searchCleared.connect(self.on_search_cleared)
         
         # View mode connections
         self.list_mode_btn.clicked.connect(lambda: self.set_view_mode(False))
@@ -1139,6 +1142,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Model change connections - trigger thumbnail loading when filters change
         self.file_model.modelReset.connect(self.on_model_reset)
         
+        # Search progress connection
+        self.file_model.searchProgress.connect(self.on_search_progress)
+        
         # Scrollbar connection - load thumbnails when scrolling
         scrollbar = self.file_list.verticalScrollBar()
         if scrollbar:
@@ -1156,10 +1162,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Load search settings from settings manager and apply to search bar
         case_sensitive = self.settings_manager.get("filters", "case_sensitive_search", False)
         regex_enabled = self.settings_manager.get("filters", "regex_search", False)
+        search_subfolders = self.settings_manager.get("filters", "search_in_subfolders", False)
         self.file_model.case_sensitive_search = case_sensitive
         self.file_model.regex_search = regex_enabled
+        self.file_model.search_in_subfolders = search_subfolders
         self.search_bar.set_case_sensitive(case_sensitive)
         self.search_bar.set_regex_enabled(regex_enabled)
+        self.search_bar.set_subfolders_enabled(search_subfolders)
         
         # Initialize Advanced Filters panel now that file_model exists
         self.init_advanced_filters()
@@ -1185,21 +1194,76 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             print("[Browser] Advanced Filters V2 panel initialized")
     
     def on_search_text_changed(self, text):
-        """Handle search text change"""
+        """Handle search text change (only called when Subfolders is OFF - real-time search)"""
+        # If clearing search, ensure we're back to normal mode
+        if not text:
+            self.file_model.search_in_subfolders = False
+            self.search_bar.clear_search_progress()
+        
         self.file_model.setFilterText(text)
         # Update match count (will be called after model refresh)
         QTimer.singleShot(50, self.update_search_match_count)
         # Request thumbnails for new filtered results
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
     
+    def on_subfolder_search_requested(self):
+        """Handle manual subfolder search request (search button clicked or Enter pressed)"""
+        # Get search text
+        search_text = self.search_bar.get_text()
+        if not search_text:
+            self.safe_show_status("Enter search text first")
+            return
+        
+        # Show initial progress
+        self.search_bar.set_search_progress(0, 0)
+        
+        # Trigger search with current text
+        self.file_model.setFilterText(search_text)
+        
+        # Update match count after search completes
+        QTimer.singleShot(50, self.update_search_match_count)
+        # Request thumbnails for results
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+    
+    def on_search_cleared(self):
+        """Handle search clear button click - reset to current folder"""
+        # DON'T reset subfolders checkbox - user might want it for next search
+        # Just clear the search and return to current folder view
+        
+        # Interrupt any ongoing search BEFORE calling setFilterText
+        # This must happen first to avoid nested beginResetModel() calls
+        self.file_model.interrupt_search()
+        
+        # Small delay to let the interrupt take effect
+        QTimer.singleShot(50, self._finish_search_clear)
+    
+    def _finish_search_clear(self):
+        """Finish clearing search after interrupt has taken effect"""
+        # Clear filter text and force refresh to current folder
+        self.file_model.setFilterText("")
+        # Clear progress
+        self.search_bar.clear_search_progress()
+        # Update UI
+        QTimer.singleShot(50, self.update_search_match_count)
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        self.safe_show_status("Search cleared - showing current folder")
+    
+    def on_search_progress(self, scanned, matches):
+        """Handle search progress updates from file model"""
+        self.search_bar.set_search_progress(scanned, matches)
+    
     def on_search_options_changed(self):
-        """Handle search option (case/regex) toggle"""
+        """Handle search option (case/regex/subfolders) toggle"""
         self.file_model.case_sensitive_search = self.search_bar.is_case_sensitive()
         self.file_model.regex_search = self.search_bar.is_regex_enabled()
+        self.file_model.search_in_subfolders = self.search_bar.is_subfolders_enabled()
+        
         # Save to settings
         self.settings_manager.set("filters", "case_sensitive_search", self.search_bar.is_case_sensitive())
         self.settings_manager.set("filters", "regex_search", self.search_bar.is_regex_enabled())
+        self.settings_manager.set("filters", "search_in_subfolders", self.search_bar.is_subfolders_enabled())
         self.settings_manager.save()
+        
         # Refresh search with new options
         if self.search_bar.get_text():
             self.file_model.refresh()
@@ -1207,6 +1271,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def update_search_match_count(self):
         """Update search match count display"""
+        # Clear progress indicator when count is finalized
+        self.search_bar.clear_search_progress()
+        
         if self.search_bar.get_text():
             match_count = self.file_model.rowCount()
             total_count = len(self.file_model.assets) if hasattr(self.file_model, 'assets') else 0
@@ -2438,6 +2505,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Note: Grid/List display sizes (toolbar slider) are separate and stored in config.json
         # Those are managed by set_view_mode() and update_thumbnail_size()
         
+        # Apply recursive file limits from settings
+        max_recursive = self.settings_manager.get("filters", "max_recursive_files", 10000)
+        max_search = self.settings_manager.get("filters", "max_search_files", 100000)
+        if hasattr(self, 'file_model'):
+            self.file_model.max_recursive_files = max_recursive
+            self.file_model.max_search_files = max_search
+            if DEBUG_MODE:
+                print(f"[Browser] Updated file limits: recursive={max_recursive}, search={max_search}")
+        
         # Apply search/filter settings to file model
         case_sensitive = self.settings_manager.get("filters", "case_sensitive_search", False)
         regex_enabled = self.settings_manager.get("filters", "regex_search", False)
@@ -2935,8 +3011,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 open_explorer_action = menu.addAction("📁 Open in Explorer")
                 open_explorer_action.triggered.connect(lambda: self.open_in_explorer(asset.file_path))
                 
-                # Show in Content Browser (only if in collection mode or subfolder mode)
-                if self.file_model.collection_mode or self.file_model.include_subfolders:
+                # Show in Content Browser (only if in collection mode, subfolder mode, or search mode)
+                if self.file_model.collection_mode or self.file_model.include_subfolders or self.file_model.search_in_subfolders:
                     show_in_browser_action = menu.addAction("🔍 Show in Content Browser")
                     show_in_browser_action.triggered.connect(lambda: self.show_in_content_browser(asset.file_path))
                 
@@ -2977,6 +3053,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 delete_action.setShortcut("Del")
                 
                 menu.addSeparator()
+                
+                # Regenerate thumbnail (only for files with thumbnails)
+                if not asset.is_folder:
+                    regen_thumb_text = f"🔄 Regenerate Thumbnail" if len(selected_assets) == 1 else f"🔄 Regenerate {len(selected_assets)} Thumbnails"
+                    regen_thumb_action = menu.addAction(regen_thumb_text)
+                    regen_thumb_action.triggered.connect(self.regenerate_selected_thumbnails)
+                    menu.addSeparator()
                 
                 properties_action = menu.addAction("ℹ️ Properties")
                 properties_action.triggered.connect(lambda: self.show_file_properties(asset))
@@ -3068,10 +3151,27 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if self.file_model.collection_mode:
             self.on_collection_cleared()
         
+        # Interrupt any ongoing search before mode changes
+        self.file_model.interrupt_search()
+        
+        # Delay the rest to let interrupt take effect
+        QTimer.singleShot(50, lambda: self._finish_show_in_browser(parent_dir, file_path))
+    
+    def _finish_show_in_browser(self, parent_dir, file_path):
+        """Finish showing file in browser after interrupt has taken effect"""
         # Disable subfolder mode if active
         if self.include_subfolders_checkbox.isChecked():
             self.include_subfolders_checkbox.setChecked(False)
             self.file_model.include_subfolders = False
+        
+        # Disable search in subfolders mode if active
+        if self.search_bar.subfolders_checkbox.isChecked():
+            self.search_bar.subfolders_checkbox.setChecked(False)
+            self.file_model.search_in_subfolders = False
+        
+        # Clear search text if present
+        if self.search_bar.search_input.text():
+            self.search_bar.search_input.clear()
         
         # Navigate to parent directory
         self.navigate_to_path(parent_dir)
@@ -3097,6 +3197,60 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Delay selection to ensure view is updated
         QTimer.singleShot(300, select_file)
+    
+    def regenerate_selected_thumbnails(self):
+        """Regenerate thumbnails for selected files by clearing their cache entries"""
+        selected_assets = self.get_selected_assets()
+        
+        if not selected_assets:
+            return
+        
+        # Filter out folders - only regenerate for files
+        file_assets = [asset for asset in selected_assets if not asset.is_folder]
+        
+        if not file_assets:
+            self.safe_show_status("No files selected for thumbnail regeneration")
+            return
+        
+        # Clear thumbnail cache for each file (and all frames if sequence)
+        cleared_count = 0
+        for asset in file_assets:
+            try:
+                # If it's a sequence, clear cache for all frames
+                if asset.is_sequence and asset.sequence:
+                    for frame_path in asset.sequence.files:
+                        if self.disk_cache.clear_thumbnail(frame_path):
+                            cleared_count += 1
+                else:
+                    # Single file
+                    if self.disk_cache.clear_thumbnail(asset.file_path):
+                        cleared_count += 1
+            except Exception as e:
+                print(f"Failed to clear cache for {asset.file_path}: {e}")
+        
+        # Show status
+        if cleared_count > 0:
+            plural = "s" if cleared_count > 1 else ""
+            self.safe_show_status(f"Cleared {cleared_count} thumbnail{plural} - regenerating...")
+            
+            # Clear in-memory cache too (including sequence pattern keys)
+            self.memory_cache.clear()
+            
+            # Force repaint of the entire view
+            self.file_list.viewport().update()
+            
+            # Request thumbnail regeneration for visible items
+            # Use a longer delay to ensure caches are fully cleared
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+            
+            # Also force delegate redraw by emitting dataChanged
+            model = self.file_list.model()
+            if model and model.rowCount() > 0:
+                top_left = model.index(0, 0)
+                bottom_right = model.index(model.rowCount() - 1, 0)
+                model.dataChanged.emit(top_left, bottom_right)
+        else:
+            self.safe_show_status("No thumbnails were cleared")
     
     def add_folder_to_favorites(self, path):
         """Add folder to favorites"""

@@ -164,6 +164,12 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 offset_x = (thumb_size - scaled.width()) // 2
                 offset_y = (thumb_size - scaled.height()) // 2
                 painter.drawPixmap(thumb_x + offset_x, thumb_y + offset_y, scaled)
+                
+                # Draw sequence badge if this is a sequence
+                if asset.is_sequence and asset.sequence:
+                    self._draw_sequence_badge(painter, thumb_x + offset_x, thumb_y + offset_y, 
+                                            scaled.width(), scaled.height(), 
+                                            asset.sequence.frame_count)
             else:
                 # Draw gradient placeholder (no scaling, always sharp!)
                 self.draw_gradient_placeholder(painter, thumb_rect, asset.extension)
@@ -261,6 +267,12 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 offset_x = (thumb_size - scaled.width()) // 2
                 offset_y = (thumb_size - scaled.height()) // 2
                 painter.drawPixmap(thumb_x + offset_x, thumb_y + offset_y, scaled)
+                
+                # Draw sequence badge if this is a sequence
+                if asset.is_sequence and asset.sequence:
+                    self._draw_sequence_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
+                                            scaled.width(), scaled.height(),
+                                            asset.sequence.frame_count)
             else:
                 self.draw_gradient_placeholder(painter, thumb_rect, asset.extension)
         
@@ -290,4 +302,77 @@ class ThumbnailDelegate(QStyledItemDelegate):
         date_rect = QRect(date_x + 5, rect.y(), date_width - 10, rect.height())
         painter.setFont(QFont(UI_FONT, 8))
         painter.drawText(date_rect, Qt.AlignVCenter, asset.get_modified_string())
+    
+    def _draw_sequence_badge(self, painter, x, y, width, height, frame_count):
+        """
+        Draw sequence badge on thumbnail at final display size
+        
+        Args:
+            painter: QPainter instance
+            x, y: Position of thumbnail
+            width, height: Actual displayed size of thumbnail
+            frame_count: Number of frames in sequence
+        """
+        # Badge dimensions - keep it compact and readable
+        thumb_size = height
+        
+        # Much more conservative sizing
+        if thumb_size <= 24:
+            # Very tiny (16-24px): minimal badge
+            badge_height = 10
+            font_size = 7
+        elif thumb_size <= 32:
+            # Tiny (25-32px): small badge
+            badge_height = 12
+            font_size = 8
+        elif thumb_size <= 48:
+            # Small (33-48px): compact badge
+            badge_height = 14
+            font_size = 9
+        elif thumb_size <= 64:
+            # Medium (49-64px): normal badge
+            badge_height = 16
+            font_size = 10
+        else:
+            # Large (65+px): proportional badge
+            badge_height = max(18, int(thumb_size * 0.12))
+            font_size = max(10, int(badge_height * 0.6))
+        
+        badge_margin = 2
+        
+        # Badge text - shorten for tiny thumbnails
+        if thumb_size <= 32:
+            badge_text = f"{frame_count}f"  # Shorter: "500f" instead of "500 frames"
+        else:
+            badge_text = f"{frame_count} frames"
+        
+        # Setup font
+        font = QFont()
+        font.setPixelSize(font_size)
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # Calculate text size
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(badge_text)
+        text_height = metrics.height()
+        
+        # Badge rectangle (bottom of thumbnail)
+        badge_width = text_width + badge_margin * 3
+        badge_rect = QRect(
+            x + (width - badge_width) // 2,  # Centered horizontally
+            y + height - badge_height - badge_margin,  # Bottom
+            badge_width,
+            badge_height
+        )
+        
+        # Draw semi-transparent background
+        painter.setPen(Qt.NoPen)
+        bg_color = QColor(0, 0, 0, 200)  # Slightly more opaque
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(badge_rect, 2, 2)
+        
+        # Draw text
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.drawText(badge_rect, Qt.AlignCenter, badge_text)
 

@@ -321,6 +321,38 @@ class ThumbnailDiskCache:
         except Exception as e:
             print(f"Error clearing cache: {e}")
     
+    def clear_thumbnail(self, file_path):
+        """
+        Clear cached thumbnail for a specific file
+        
+        Args:
+            file_path: Path to the source file
+            
+        Returns:
+            bool: True if thumbnail was found and deleted, False otherwise
+        """
+        try:
+            file_path = Path(file_path)
+            if not file_path.exists():
+                return False
+            
+            # Get file modification time
+            file_mtime = file_path.stat().st_mtime
+            
+            # Get cache path
+            thumb_path = self.get_thumbnail_path(file_path, file_mtime)
+            
+            if thumb_path.exists():
+                thumb_path.unlink()
+                print(f"Cleared thumbnail cache for: {file_path.name}")
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            print(f"Error clearing thumbnail for {file_path}: {e}")
+            return False
+    
     def get_cache_size(self):
         """Get current cache size in MB"""
         total_size = 0
@@ -842,12 +874,12 @@ class ThumbnailGenerator(QThread):
         if asset and asset.is_sequence and asset.sequence:
             middle_frame_path = asset.sequence.get_middle_frame()
             if middle_frame_path:
-                # Generate thumbnail from middle frame
+                # Generate thumbnail from middle frame (WITHOUT badge - delegate will add it)
                 pixmap = self._generate_image_thumbnail(middle_frame_path)
                 
-                if pixmap and not pixmap.isNull():
-                    # Add badge overlay with frame count
-                    pixmap = self._add_sequence_badge(pixmap, asset.sequence.frame_count)
+                # Don't add badge here - the delegate will draw it at the correct display size
+                # if pixmap and not pixmap.isNull():
+                #     pixmap = self._add_sequence_badge(pixmap, asset.sequence.frame_count)
                 
                 return pixmap
         
@@ -889,16 +921,39 @@ class ThumbnailGenerator(QThread):
         painter = QPainter(result)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # Badge dimensions
-        badge_height = max(16, int(result.height() * 0.15))
+        # Badge dimensions - scale with thumbnail size but keep readable minimum
+        # For very small thumbnails, use aggressive scaling to remain visible
+        thumb_size = result.height()
+        
+        if thumb_size <= 32:
+            # Tiny thumbnails (list view): use 35% with higher minimum
+            badge_height = max(20, int(thumb_size * 0.35))
+        elif thumb_size < 64:
+            # Small thumbnails: use 28% with higher minimum
+            badge_height = max(18, int(thumb_size * 0.28))
+        else:
+            # Normal thumbnails: use 15% with standard minimum
+            badge_height = max(16, int(thumb_size * 0.15))
+        
         badge_margin = 2
         
         # Badge text
         badge_text = f"{frame_count} frames"
         
-        # Setup font
+        # Setup font - larger minimum for small thumbnails
         font = QFont()
-        font.setPixelSize(max(9, int(badge_height * 0.6)))
+        if thumb_size <= 32:
+            # Tiny thumbnails: much larger relative font (min 11px)
+            font_size = max(11, int(badge_height * 0.65))
+            font.setPixelSize(font_size)
+        elif thumb_size < 64:
+            # Small thumbnails: larger font (min 10px)
+            font_size = max(10, int(badge_height * 0.62))
+            font.setPixelSize(font_size)
+        else:
+            # Normal thumbnails: standard font (min 9px)
+            font_size = max(9, int(badge_height * 0.6))
+            font.setPixelSize(font_size)
         font.setBold(True)
         painter.setFont(font)
         

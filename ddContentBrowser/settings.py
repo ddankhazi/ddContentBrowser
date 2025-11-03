@@ -81,7 +81,8 @@ class SettingsManager:
                 "show_hidden": False,
                 "case_sensitive_search": False,
                 "regex_search": False,
-                "max_recursive_files": 10000  # Maximum files when browsing subfolders
+                "max_recursive_files": 10000,  # Maximum files when browsing subfolders
+                "max_search_files": 100000  # Maximum files when searching in subfolders
             },
             # Advanced Filters - saved filter presets
             "advanced_filters": {
@@ -761,15 +762,29 @@ class FiltersSettingsTab(QWidget):
         
         # Max files spinner
         max_files_layout = QHBoxLayout()
-        max_files_layout.addWidget(QLabel("Max files from subfolders:"))
+        max_files_layout.addWidget(QLabel("Max files (Include Subfolders):"))
         self.max_recursive_spin = QSpinBox()
         self.max_recursive_spin.setRange(100, 100000)
         self.max_recursive_spin.setSingleStep(1000)
         self.max_recursive_spin.setValue(self.settings.get("filters", "max_recursive_files", 10000))
         self.max_recursive_spin.setSuffix(" files")
+        self.max_recursive_spin.setToolTip("Limit when browsing all files in subfolders (Include Subfolders checkbox)")
         max_files_layout.addWidget(self.max_recursive_spin)
         max_files_layout.addStretch()
         recursive_layout.addLayout(max_files_layout)
+        
+        # Max search files spinner
+        max_search_layout = QHBoxLayout()
+        max_search_layout.addWidget(QLabel("Max files (Search Subfolders):"))
+        self.max_search_spin = QSpinBox()
+        self.max_search_spin.setRange(1000, 1000000)
+        self.max_search_spin.setSingleStep(10000)
+        self.max_search_spin.setValue(self.settings.get("filters", "max_search_files", 100000))
+        self.max_search_spin.setSuffix(" files")
+        self.max_search_spin.setToolTip("Limit when searching in subfolders (higher limit since results are filtered)")
+        max_search_layout.addWidget(self.max_search_spin)
+        max_search_layout.addStretch()
+        recursive_layout.addLayout(max_search_layout)
         
         recursive_group.setLayout(recursive_layout)
         layout.addWidget(recursive_group)
@@ -797,6 +812,7 @@ class FiltersSettingsTab(QWidget):
         self.settings.set("filters", "case_sensitive_search", self.case_sensitive_cb.isChecked())
         self.settings.set("filters", "regex_search", self.regex_search_cb.isChecked())
         self.settings.set("filters", "max_recursive_files", self.max_recursive_spin.value())
+        self.settings.set("filters", "max_search_files", self.max_search_spin.value())
 
 
 class FileFormatEditDialog(QDialog):
