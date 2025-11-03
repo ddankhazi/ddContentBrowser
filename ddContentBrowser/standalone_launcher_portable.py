@@ -53,7 +53,7 @@ except ImportError as e:
 def main():
     """Launch standalone content browser (PORTABLE version)"""
     print("=" * 60)
-    print("DD Content Browser v1.2.0 (Standalone - PORTABLE)")
+    print("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
     print("=" * 60)
     print(f"Python: {sys.version}")
     print(f"Script dir: {script_dir}")
@@ -148,7 +148,7 @@ def main():
         print(f"Could not load icon: {e}")
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser v1.2.0 (Standalone - PORTABLE)")
+    browser.setWindowTitle("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
     # Set window icon for browser window too
     try:
         from PySide6.QtGui import QIcon

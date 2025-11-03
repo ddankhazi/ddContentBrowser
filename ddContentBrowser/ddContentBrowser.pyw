@@ -162,7 +162,7 @@ def main():
     
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser v1.2.0 (Standalone - PORTABLE)")
+    browser.setWindowTitle("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
     
     # Set window icon for browser window too
     try:
