@@ -1758,11 +1758,19 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def navigate_from_favorites(self, item):
         """Navigate from favorites list"""
-        path = item.text()
-        # Set flag to prevent clearing favorites selection
-        self.is_navigating_from_favorites = True
-        self.navigate_to_path(path)
-        self.is_navigating_from_favorites = False
+        # Get path from the custom widget label (stored in fullPath property)
+        label = self.favorites_list.itemWidget(item)
+        if label:
+            path = label.property("fullPath")
+        else:
+            # Fallback to item text (for backwards compatibility)
+            path = item.text()
+        
+        if path:
+            # Set flag to prevent clearing favorites selection
+            self.is_navigating_from_favorites = True
+            self.navigate_to_path(path)
+            self.is_navigating_from_favorites = False
     
     def navigate_from_folder_tree(self, index):
         """Navigate from folder tree view"""
@@ -1896,6 +1904,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 label.setTextFormat(Qt.PlainText)
                 label.setWordWrap(False)
                 label.setToolTip(path)
+                
+                # Make label transparent to mouse events so clicks go to the item
+                label.setAttribute(Qt.WA_TransparentForMouseEvents)
                 
                 # Store original path in label for dynamic resizing
                 label.setProperty("fullPath", path)

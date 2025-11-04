@@ -833,8 +833,10 @@ class FileSystemModel(QAbstractListModel):
         """
         Group image files into sequences.
         Modifies self.assets in-place to replace sequence files with single sequence items.
+        Groups sequences PER FOLDER to avoid memory issues with subfolders.
         """
         from .utils import group_image_sequences
+        from collections import defaultdict
         
         # Separate folders and files
         folders = [asset for asset in self.assets if asset.is_folder]
@@ -850,43 +852,50 @@ class FileSystemModel(QAbstractListModel):
             else:
                 other_files.append(asset)
         
-        # Group image sequences
+        # Group image sequences PER FOLDER
         if image_files:
-            # Convert AssetItems to Path objects
-            image_paths = [asset.file_path for asset in image_files]
+            # Group image files by their parent directory
+            files_by_folder = defaultdict(list)
+            for asset in image_files:
+                folder = asset.file_path.parent
+                files_by_folder[folder].append(asset)
             
-            # Group into sequences
-            sequences_dict = group_image_sequences(image_paths)
-            
-            # Create AssetItems for sequences and single files
+            # Process each folder separately
             sequence_assets = []
-            
-            for pattern, file_list in sequences_dict.items():
-                if len(file_list) > 1:
-                    # This is a sequence - create a sequence AssetItem
-                    sequence = ImageSequence(pattern, file_list)
-                    
-                    # Use first file as the base AssetItem
-                    first_file = file_list[0]
-                    asset = AssetItem(first_file, lazy_load=True)
-                    
-                    # Mark as sequence and attach sequence object
-                    asset.is_sequence = True
-                    asset.sequence = sequence
-                    asset.name = pattern  # Display pattern instead of filename
-                    
-                    # Ensure thumbnail generation is enabled for sequences
-                    asset.should_generate_thumbnail = True
-                    
-                    sequence_assets.append(asset)
-                else:
-                    # Single file - keep original AssetItem
-                    # Find original asset
-                    file_path = file_list[0]
-                    for original_asset in image_files:
-                        if original_asset.file_path == file_path:
-                            sequence_assets.append(original_asset)
-                            break
+            for folder, folder_assets in files_by_folder.items():
+                # Convert AssetItems to Path objects for this folder only
+                image_paths = [asset.file_path for asset in folder_assets]
+                
+                # Group into sequences (only within this folder)
+                sequences_dict = group_image_sequences(image_paths)
+                
+                # Create AssetItems for sequences and single files
+                for pattern, file_list in sequences_dict.items():
+                    if len(file_list) > 1:
+                        # This is a sequence - create a sequence AssetItem
+                        sequence = ImageSequence(pattern, file_list)
+                        
+                        # Use first file as the base AssetItem
+                        first_file = file_list[0]
+                        asset = AssetItem(first_file, lazy_load=True)
+                        
+                        # Mark as sequence and attach sequence object
+                        asset.is_sequence = True
+                        asset.sequence = sequence
+                        asset.name = pattern  # Display pattern instead of filename
+                        
+                        # Ensure thumbnail generation is enabled for sequences
+                        asset.should_generate_thumbnail = True
+                        
+                        sequence_assets.append(asset)
+                    else:
+                        # Single file - keep original AssetItem
+                        # Find original asset
+                        file_path = file_list[0]
+                        for original_asset in folder_assets:
+                            if original_asset.file_path == file_path:
+                                sequence_assets.append(original_asset)
+                                break
             
             # Replace assets list: folders + sequences + other files
             self.assets = folders + sequence_assets + other_files
