@@ -68,6 +68,10 @@ except ImportError:
 DEBUG_MODE = False
 
 
+# Debug flag - set to False to disable verbose logging
+DEBUG_MODE = False
+
+
 class SortHeaderWidget(QtWidgets.QWidget):
     """Custom sort header widget that handles right-click for filters"""
     
@@ -730,6 +734,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.favorites_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)  # Enable multi-select
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self.show_favorites_context_menu)
+        
+        # Install resize event filter to update elided text dynamically
+        self.favorites_list.viewport().installEventFilter(self)
         
         # Enable drag-and-drop reordering with middle mouse button (Maya style)
         self.favorites_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
@@ -1880,7 +1887,73 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.favorites_list.clear()
         for path in self.config.config.get("favorites", []):
             if Path(path).exists():
-                self.favorites_list.addItem(path)
+                # Create list item
+                item = QtWidgets.QListWidgetItem()
+                item.setToolTip(path)  # Show full path on hover
+                
+                # Create a custom label widget
+                label = QtWidgets.QLabel(path)
+                label.setTextFormat(Qt.PlainText)
+                label.setWordWrap(False)
+                label.setToolTip(path)
+                
+                # Store original path in label for dynamic resizing
+                label.setProperty("fullPath", path)
+                
+                self.favorites_list.addItem(item)
+                self.favorites_list.setItemWidget(item, label)
+        
+        # Update eliding after all items added
+        self.update_favorites_eliding()
+    
+    def update_favorites_eliding(self):
+        """Update elided text for all favorites based on current width"""
+        available_width = self.favorites_list.viewport().width() - 10  # Some padding
+        
+        for i in range(self.favorites_list.count()):
+            item = self.favorites_list.item(i)
+            label = self.favorites_list.itemWidget(item)
+            if label:
+                full_path = label.property("fullPath")
+                if full_path:
+                    font_metrics = label.fontMetrics()
+                    
+                    # Custom eliding: 30% start, 70% end (prioritize folder name at end)
+                    text_width = font_metrics.horizontalAdvance(full_path) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(full_path)
+                    
+                    if text_width > available_width:
+                        # Need to elide
+                        ellipsis = "..."
+                        ellipsis_width = font_metrics.horizontalAdvance(ellipsis) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(ellipsis)
+                        
+                        # 30% for start, 70% for end
+                        start_width = int((available_width - ellipsis_width) * 0.3)
+                        end_width = int((available_width - ellipsis_width) * 0.7)
+                        
+                        # Find start text
+                        start_text = ""
+                        for j in range(len(full_path)):
+                            test = full_path[:j+1]
+                            w = font_metrics.horizontalAdvance(test) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(test)
+                            if w > start_width:
+                                break
+                            start_text = test
+                        
+                        # Find end text
+                        end_text = ""
+                        for j in range(len(full_path)):
+                            test = full_path[-(j+1):]
+                            w = font_metrics.horizontalAdvance(test) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(test)
+                            if w > end_width:
+                                break
+                            end_text = test
+                        
+                        elided_text = start_text + ellipsis + end_text
+                    else:
+                        elided_text = full_path
+                    
+                    label.setText(elided_text)
+    
     
     def on_favorites_reordered(self, parent, start, end, destination, row):
         """Handle favorites list reordering - save new order to config"""
@@ -2765,6 +2838,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def eventFilter(self, obj, event):
         """Event filter for handling Ctrl+Scroll zoom, Space key for Quick View, AND MMB drag for Favorites reordering"""
+        # === FAVORITES LIST RESIZE - Update elided text ===
+        if hasattr(self, 'favorites_list') and obj == self.favorites_list.viewport():
+            if event.type() == QtCore.QEvent.Resize:
+                self.update_favorites_eliding()
+                return False
+        
         # === FAVORITES LIST MIDDLE MOUSE BUTTON DRAG ===
         if hasattr(self, 'favorites_list') and obj == self.favorites_list.viewport():
             # Middle mouse button press - enable drag
