@@ -65,7 +65,7 @@ except ImportError:
     pass  # Already handled by utils.MAYA_AVAILABLE
 
 # Debug flag - set to False to disable verbose logging
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 class FavoritesColorBarDelegate(QtWidgets.QStyledItemDelegate):
     """Custom delegate to draw a colored bar on the left side of favorite items"""
