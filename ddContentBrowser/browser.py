@@ -72,6 +72,56 @@ DEBUG_MODE = False
 DEBUG_MODE = False
 
 
+class FavoritesColorBarDelegate(QtWidgets.QStyledItemDelegate):
+    """Custom delegate to draw a colored bar on the left side of favorite items"""
+    
+    def __init__(self, browser, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+    
+    def paint(self, painter, option, index):
+        # Get the item and its widget (QLabel)
+        item = self.browser.favorites_list.item(index.row())
+        if item:
+            label = self.browser.favorites_list.itemWidget(item)
+            if label:
+                # Get color from favorites config
+                path = label.property("fullPath")
+                if path:
+                    favorites = self.browser.config.config.get("favorites", [])
+                    for fav in favorites:
+                        fav_dict = self.browser._normalize_favorite(fav)
+                        if fav_dict and fav_dict["path"] == path and fav_dict["color"]:
+                            # Draw colored bar first
+                            painter.save()
+                            painter.setPen(Qt.NoPen)
+                            from PySide6.QtGui import QColor
+                            from PySide6.QtCore import QRect
+                            painter.setBrush(QColor(fav_dict["color"]))
+                            
+                            # Bar: 6px wide on the left edge
+                            bar_rect = QRect(option.rect.left(), option.rect.top(), 6, option.rect.height())
+                            painter.drawRect(bar_rect)
+                            
+                            painter.restore()
+                            
+                            # Adjust widget position to shift right by 12px
+                            if label:
+                                label.setContentsMargins(12, 0, 0, 0)
+                            
+                            # Draw default item with normal rect
+                            super().paint(painter, option, index)
+                            return
+        
+        # No color - draw normally without margin
+        if item:
+            label = self.browser.favorites_list.itemWidget(item)
+            if label:
+                label.setContentsMargins(0, 0, 0, 0)
+        
+        super().paint(painter, option, index)
+
+
 class SortHeaderWidget(QtWidgets.QWidget):
     """Custom sort header widget that handles right-click for filters"""
     
@@ -730,10 +780,22 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         fav_widget = QtWidgets.QWidget()
         fav_layout = QtWidgets.QVBoxLayout(fav_widget)
         fav_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Search box for favorites
+        self.favorites_search = QtWidgets.QLineEdit()
+        self.favorites_search.setPlaceholderText("Search favorites...")
+        self.favorites_search.setClearButtonEnabled(True)
+        self.favorites_search.textChanged.connect(self.filter_favorites)
+        fav_layout.addWidget(self.favorites_search)
+        
         self.favorites_list = QtWidgets.QListWidget()
         self.favorites_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)  # Enable multi-select
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self.show_favorites_context_menu)
+        
+        # Set custom delegate for colored bar
+        self.favorites_color_delegate = FavoritesColorBarDelegate(self, self.favorites_list)
+        self.favorites_list.setItemDelegate(self.favorites_color_delegate)
         
         # Install resize event filter to update elided text dynamically
         self.favorites_list.viewport().installEventFilter(self)
@@ -1924,41 +1986,83 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         normalized_path = str(Path(current_path).resolve())
         
         # Check if already in favorites (compare normalized paths)
-        existing_normalized = [str(Path(p).resolve()) for p in self.config.config["favorites"]]
+        favorites = self.config.config.get("favorites", [])
+        for fav in favorites:
+            fav_dict = self._normalize_favorite(fav)
+            if fav_dict and str(Path(fav_dict["path"]).resolve()) == normalized_path:
+                self.safe_show_status(f"Already in favorites: {Path(current_path).name}")
+                return
         
-        if normalized_path in existing_normalized:
-            self.safe_show_status(f"Already in favorites: {Path(current_path).name}")
-            return
-        
-        # Add to favorites
-        self.config.config["favorites"].append(normalized_path)
+        # Add to favorites (new dict format)
+        new_favorite = {
+            "path": normalized_path,
+            "alias": None,
+            "color": None
+        }
+        self.config.config["favorites"].append(new_favorite)
         self.config.save_config()
         self.update_favorites_list()
         self.safe_show_status(f"Added to favorites: {Path(current_path).name}")
     
+    def _normalize_favorite(self, fav):
+        """
+        Normalize favorite entry to dict format with backward compatibility.
+        Old format: string path
+        New format: {"path": str, "alias": str, "color": str}
+        """
+        if isinstance(fav, str):
+            # Old format - convert to new
+            return {
+                "path": fav,
+                "alias": None,
+                "color": None
+            }
+        elif isinstance(fav, dict):
+            # New format - ensure all keys exist
+            return {
+                "path": fav.get("path", ""),
+                "alias": fav.get("alias"),
+                "color": fav.get("color")
+            }
+        return None
+    
     def update_favorites_list(self):
         """Update favorites list"""
         self.favorites_list.clear()
-        for path in self.config.config.get("favorites", []):
-            if Path(path).exists():
-                # Create list item
-                item = QtWidgets.QListWidgetItem()
-                item.setToolTip(path)  # Show full path on hover
-                
-                # Create a custom label widget
-                label = QtWidgets.QLabel(path)
-                label.setTextFormat(Qt.PlainText)
-                label.setWordWrap(False)
-                label.setToolTip(path)
-                
-                # Make label transparent to mouse events so clicks go to the item
-                label.setAttribute(Qt.WA_TransparentForMouseEvents)
-                
-                # Store original path in label for dynamic resizing
-                label.setProperty("fullPath", path)
-                
-                self.favorites_list.addItem(item)
-                self.favorites_list.setItemWidget(item, label)
+        favorites = self.config.config.get("favorites", [])
+        
+        for fav in favorites:
+            fav_dict = self._normalize_favorite(fav)
+            if not fav_dict:
+                continue
+            
+            path = fav_dict["path"]
+            if not Path(path).exists():
+                continue
+            
+            # Get display name (alias or path)
+            display_name = fav_dict["alias"] if fav_dict["alias"] else path
+            
+            # Create list item
+            item = QtWidgets.QListWidgetItem()
+            item.setToolTip(f"{path}\nAlias: {fav_dict['alias'] or 'None'}")
+            
+            # Create a custom label widget
+            label = QtWidgets.QLabel(display_name)
+            label.setTextFormat(Qt.PlainText)
+            label.setWordWrap(False)
+            label.setToolTip(item.toolTip())
+            
+            # Make label transparent to mouse events so clicks go to the item
+            label.setAttribute(Qt.WA_TransparentForMouseEvents)
+            
+            # Store all data in label for dynamic resizing and navigation
+            label.setProperty("fullPath", path)
+            label.setProperty("displayName", display_name)
+            label.setProperty("alias", fav_dict["alias"])
+            
+            self.favorites_list.addItem(item)
+            self.favorites_list.setItemWidget(item, label)
         
         # Update eliding after all items added
         self.update_favorites_eliding()
@@ -1971,12 +2075,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             item = self.favorites_list.item(i)
             label = self.favorites_list.itemWidget(item)
             if label:
-                full_path = label.property("fullPath")
-                if full_path:
+                # Use displayName (alias or path) for eliding
+                display_name = label.property("displayName")
+                if display_name:
                     font_metrics = label.fontMetrics()
                     
                     # Custom eliding: 30% start, 70% end (prioritize folder name at end)
-                    text_width = font_metrics.horizontalAdvance(full_path) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(full_path)
+                    text_width = font_metrics.horizontalAdvance(display_name) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(display_name)
                     
                     if text_width > available_width:
                         # Need to elide
@@ -1989,8 +2094,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         
                         # Find start text
                         start_text = ""
-                        for j in range(len(full_path)):
-                            test = full_path[:j+1]
+                        for j in range(len(display_name)):
+                            test = display_name[:j+1]
                             w = font_metrics.horizontalAdvance(test) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(test)
                             if w > start_width:
                                 break
@@ -1998,8 +2103,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         
                         # Find end text
                         end_text = ""
-                        for j in range(len(full_path)):
-                            test = full_path[-(j+1):]
+                        for j in range(len(display_name)):
+                            test = display_name[-(j+1):]
                             w = font_metrics.horizontalAdvance(test) if hasattr(font_metrics, 'horizontalAdvance') else font_metrics.width(test)
                             if w > end_width:
                                 break
@@ -2007,9 +2112,29 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         
                         elided_text = start_text + ellipsis + end_text
                     else:
-                        elided_text = full_path
+                        elided_text = display_name
                     
                     label.setText(elided_text)
+    
+    def filter_favorites(self, search_text):
+        """Filter favorites list based on search text (searches in path and alias)"""
+        search_text = search_text.lower()
+        
+        for i in range(self.favorites_list.count()):
+            item = self.favorites_list.item(i)
+            label = self.favorites_list.itemWidget(item)
+            if label:
+                full_path = label.property("fullPath") or ""
+                alias = label.property("alias") or ""
+                
+                # Search in path and alias
+                if (search_text in full_path.lower() or 
+                    search_text in alias.lower()):
+                    item.setHidden(False)
+                else:
+                    item.setHidden(True)
+            else:
+                item.setHidden(True)
     
     
     def on_favorites_reordered(self, parent, start, end, destination, row):
@@ -2018,8 +2143,26 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         new_order = []
         for i in range(self.favorites_list.count()):
             item = self.favorites_list.item(i)
-            if item:
-                new_order.append(item.text())
+            label = self.favorites_list.itemWidget(item)
+            if label:
+                # Get the full favorite dict
+                path = label.property("fullPath")
+                alias = label.property("alias")
+                
+                # Get color from stylesheet (need to extract from current config)
+                favorites = self.config.config.get("favorites", [])
+                color = None
+                for fav in favorites:
+                    fav_dict = self._normalize_favorite(fav)
+                    if fav_dict and fav_dict["path"] == path:
+                        color = fav_dict["color"]
+                        break
+                
+                new_order.append({
+                    "path": path,
+                    "alias": alias,
+                    "color": color
+                })
         
         # Update config with new order
         self.config.config["favorites"] = new_order
@@ -2030,14 +2173,170 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         self.safe_show_status("Favorites order saved", 2000)
     
+    def set_favorite_alias(self, item):
+        """Set alias for favorite"""
+        label = self.favorites_list.itemWidget(item)
+        if not label:
+            return
+        
+        path = label.property("fullPath")
+        current_alias = label.property("alias") or ""
+        
+        # Dialog with path as default
+        text, ok = QtWidgets.QInputDialog.getText(
+            self, 
+            "Set Alias", 
+            f"Alias for:\n{path}\n\nEnter display name:",
+            QtWidgets.QLineEdit.Normal,
+            current_alias or path  # Pre-fill with path if no alias
+        )
+        
+        if ok:
+            new_alias = text.strip() or None
+            self._update_favorite_property(path, alias=new_alias)
+            self.safe_show_status(f"Alias updated: {new_alias or 'cleared'}")
+    
+    def clear_favorite_alias(self, item):
+        """Clear alias from favorite"""
+        label = self.favorites_list.itemWidget(item)
+        if not label:
+            return
+        
+        path = label.property("fullPath")
+        self._update_favorite_property(path, alias=None)
+        self.safe_show_status("Alias cleared")
+    
+    def make_color_icon(self, hexcode):
+        """Create a color icon for menu items"""
+        from PySide6.QtGui import QIcon, QPixmap, QColor
+        pix = QPixmap(16, 16)
+        pix.fill(QColor(hexcode))
+        return QIcon(pix)
+    
+    def set_favorite_color_from_palette(self, item, hexcode):
+        """Set color for favorite from palette"""
+        label = self.favorites_list.itemWidget(item)
+        if not label:
+            return
+        
+        path = label.property("fullPath")
+        self._update_favorite_property(path, color=hexcode)
+        self.safe_show_status(f"Color updated")
+    
+    def clear_favorite_color(self, item):
+        """Clear color from favorite"""
+        label = self.favorites_list.itemWidget(item)
+        if not label:
+            return
+        
+        path = label.property("fullPath")
+        self._update_favorite_property(path, color=None)
+        self.safe_show_status("Color cleared")
+    
+    def _update_favorite_property(self, path, alias=..., color=..., skip_refresh=False):
+        """Update specific property of a favorite (use ... to skip)"""
+        favorites = self.config.config.get("favorites", [])
+        
+        for i, fav in enumerate(favorites):
+            fav_dict = self._normalize_favorite(fav)
+            if fav_dict and fav_dict["path"] == path:
+                # Update only specified properties
+                if alias is not ...:
+                    fav_dict["alias"] = alias
+                if color is not ...:
+                    fav_dict["color"] = color
+                
+                favorites[i] = fav_dict
+                break
+        
+        self.config.save_config()
+        
+        # Only refresh if not skipped (for batch updates)
+        if not skip_refresh:
+            self.update_favorites_list()
+    
     def show_favorites_context_menu(self, position):
         """Show context menu for favorites list"""
+        # Check if clicked on an actual item
+        item_at_pos = self.favorites_list.itemAt(position)
+        
+        # If clicked on empty area, don't show menu
+        if not item_at_pos:
+            return
+        
         # Get selected items (can be multiple)
         selected_items = self.favorites_list.selectedItems()
+        
+        menu = QtWidgets.QMenu()
+        
+        # If no items selected - shouldn't happen now but keep check
         if not selected_items:
             return
         
-        menu = QtWidgets.QMenu()
+        # Edit options
+        set_alias_action = None
+        clear_alias_action = None
+        set_color_menu = None
+        color_actions = []
+        clear_color_action = None
+        
+        # Single selection - show alias options
+        if len(selected_items) == 1:
+            set_alias_action = menu.addAction("Set Alias...")
+            
+            # Check if item has alias
+            label = self.favorites_list.itemWidget(selected_items[0])
+            if label and label.property("alias"):
+                clear_alias_action = menu.addAction("Clear Alias")
+            
+            menu.addSeparator()
+        
+        # Color options - available for both single and multiple selection
+        set_color_menu = QtWidgets.QMenu("Set Color", self)
+        palette = [
+            ("Default", "#282828"),  # Dark gray
+            ("Sky Blue", "#87CEEB"),
+            ("Light Green", "#90EE90"),
+            ("Yellow", "#FFD700"),
+            ("Orange", "#FFA500"),
+            ("Coral", "#FF7F50"),
+            ("Lavender", "#E6E6FA"),
+            ("Pink", "#FFB6C1"),
+            ("Light Gray", "#D3D3D3"),
+            ("Mint", "#98FF98"),
+            ("Sand", "#F4A460"),
+            ("Aqua", "#00CED1")
+        ]
+        for name, hexcode in palette:
+            act = set_color_menu.addAction(name)
+            if hexcode:
+                act.setIcon(self.make_color_icon(hexcode))
+            color_actions.append((act, hexcode))
+        menu.addMenu(set_color_menu)
+        
+        # Clear color - check if any selected item has color
+        has_color = False
+        for item in selected_items:
+            label = self.favorites_list.itemWidget(item)
+            if label:
+                path = label.property("fullPath")
+                if path:
+                    favorites = self.config.config.get("favorites", [])
+                    for fav in favorites:
+                        fav_dict = self._normalize_favorite(fav)
+                        if fav_dict and fav_dict["path"] == path and fav_dict["color"]:
+                            has_color = True
+                            break
+                if has_color:
+                    break
+        
+        if has_color:
+            if len(selected_items) > 1:
+                clear_color_action = menu.addAction(f"Clear Color ({len(selected_items)} items)")
+            else:
+                clear_color_action = menu.addAction("Clear Color")
+            
+            menu.addSeparator()
         
         # Remove from Favorites action - show count if multiple selected
         if len(selected_items) > 1:
@@ -2047,53 +2346,103 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         action = menu.exec_(self.favorites_list.mapToGlobal(position))
         
-        if action == remove_action:
+        # If no action selected (clicked outside menu), return
+        if action is None:
+            return
+        
+        if action == set_alias_action:
+            self.set_favorite_alias(selected_items[0])
+        elif action == clear_alias_action:
+            self.clear_favorite_alias(selected_items[0])
+        elif action == clear_color_action:
+            # Clear color for all selected items (batch update)
+            for i, item in enumerate(selected_items):
+                label = self.favorites_list.itemWidget(item)
+                if label:
+                    path = label.property("fullPath")
+                    # Skip refresh for all but the last item
+                    skip_refresh = (i < len(selected_items) - 1)
+                    self._update_favorite_property(path, color=None, skip_refresh=skip_refresh)
+            self.safe_show_status(f"Color cleared from {len(selected_items)} item(s)")
+        elif set_color_menu:
+            # Check if a color was selected
+            for act, hexcode in color_actions:
+                if action == act:
+                    # Apply color to all selected items (batch update)
+                    for i, item in enumerate(selected_items):
+                        label = self.favorites_list.itemWidget(item)
+                        if label:
+                            path = label.property("fullPath")
+                            # Skip refresh for all but the last item
+                            skip_refresh = (i < len(selected_items) - 1)
+                            self._update_favorite_property(path, color=hexcode, skip_refresh=skip_refresh)
+                    self.safe_show_status(f"Color updated for {len(selected_items)} item(s)")
+                    break
+        elif action == remove_action:
             self.remove_from_favorites_multi(selected_items)
     
     def remove_from_favorites(self, item):
         """Remove single path from favorites (legacy function)"""
-        path_to_remove = item.text()
+        label = self.favorites_list.itemWidget(item)
+        if not label:
+            return
+        
+        path_to_remove = label.property("fullPath")
         
         # Normalize path for comparison
         normalized_to_remove = str(Path(path_to_remove).resolve())
         
         # Remove from config (compare normalized paths)
         favorites = self.config.config.get("favorites", [])
-        favorites_normalized = [str(Path(p).resolve()) for p in favorites]
+        for i, fav in enumerate(favorites):
+            fav_dict = self._normalize_favorite(fav)
+            if fav_dict and str(Path(fav_dict["path"]).resolve()) == normalized_to_remove:
+                del self.config.config["favorites"][i]
+                self.config.save_config()
+                self.update_favorites_list()
+                self.safe_show_status(f"Removed from favorites: {Path(path_to_remove).name}")
+                return
         
-        if normalized_to_remove in favorites_normalized:
-            index = favorites_normalized.index(normalized_to_remove)
-            del self.config.config["favorites"][index]
-            self.config.save_config()
-            self.update_favorites_list()
-            self.safe_show_status(f"Removed from favorites: {Path(path_to_remove).name}")
-        else:
-            self.safe_show_status(f"Path not found in favorites")
+        self.safe_show_status(f"Path not found in favorites")
     
     def remove_from_favorites_multi(self, items):
         """Remove multiple paths from favorites"""
         if not items:
             return
         
-        # Get paths to remove
-        paths_to_remove = [item.text() for item in items]
+        # Get paths to remove from labels
+        paths_to_remove = []
+        for item in items:
+            label = self.favorites_list.itemWidget(item)
+            if label:
+                path = label.property("fullPath")
+                if path:
+                    paths_to_remove.append(path)
+        
+        if not paths_to_remove:
+            return
+        
         normalized_to_remove = [str(Path(p).resolve()) for p in paths_to_remove]
         
         # Get current favorites
         favorites = self.config.config.get("favorites", [])
-        favorites_normalized = [str(Path(p).resolve()) for p in favorites]
         
         # Remove all selected items
         removed_count = 0
-        for norm_path in normalized_to_remove:
-            if norm_path in favorites_normalized:
-                index = favorites_normalized.index(norm_path)
-                del self.config.config["favorites"][index]
-                del favorites_normalized[index]  # Also remove from normalized list
-                removed_count += 1
+        i = 0
+        while i < len(favorites):
+            fav_dict = self._normalize_favorite(favorites[i])
+            if fav_dict:
+                norm_path = str(Path(fav_dict["path"]).resolve())
+                if norm_path in normalized_to_remove:
+                    del favorites[i]
+                    removed_count += 1
+                    continue
+            i += 1
         
         # Save and update
         if removed_count > 0:
+            self.config.config["favorites"] = favorites
             self.config.save_config()
             self.update_favorites_list()
             if removed_count == 1:

@@ -275,9 +275,15 @@ class CollectionsPanel(QWidget):
                     act.setIcon(self.make_color_icon(hexcode))
                 color_actions.append((act, hexcode))
             menu.addMenu(color_menu)
+            
+            # Clear color option if collection has color
+            clear_color_action = None
+            if collection and getattr(collection, 'bg_color', None):
+                clear_color_action = menu.addAction("Clear Color")
         else:
             color_menu = None
             color_actions = []
+            clear_color_action = None
         menu.addSeparator()
         # Export to Folder action (manual collections only)
         if isinstance(collection, ManualCollection):
@@ -292,10 +298,17 @@ class CollectionsPanel(QWidget):
             cleanup_action = None
         # Execute menu
         action = menu.exec_(self.collections_list.mapToGlobal(position))
+        
+        # Check if no action (clicked outside menu)
+        if action is None:
+            return
+        
         if action == rename_action:
             self.rename_collection(collection_name)
         elif action == delete_action:
             self.delete_collection(collection_name)
+        elif action == clear_color_action:
+            self.clear_collection_bg_color(collection_name)
         elif color_menu:
             for act, hexcode in color_actions:
                 if action == act:
@@ -312,6 +325,17 @@ class CollectionsPanel(QWidget):
         collection = self.collection_manager.get_collection(collection_name)
         if collection:
             setattr(collection, 'bg_color', color.name())
+            self.collection_manager.save()
+            # Force refresh to update delegate rendering
+            self.refresh_collections_list()
+    
+    def clear_collection_bg_color(self, collection_name):
+        """Clear background color from collection"""
+        collection = self.collection_manager.get_collection(collection_name)
+        if collection:
+            # Remove bg_color attribute
+            if hasattr(collection, 'bg_color'):
+                delattr(collection, 'bg_color')
             self.collection_manager.save()
             # Force refresh to update delegate rendering
             self.refresh_collections_list()

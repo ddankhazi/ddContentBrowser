@@ -108,8 +108,9 @@ class ManualCollection(Collection):
         """Convert to dictionary for JSON storage"""
         data = super().to_dict()
         data['files'] = self.files
-        if self.bg_color:
-            data['bg_color'] = self.bg_color
+        bg_color = getattr(self, 'bg_color', None)
+        if bg_color:
+            data['bg_color'] = bg_color
         return data
     
     @staticmethod
