@@ -1380,6 +1380,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         else:
             self.search_bar.set_match_count(0, 0)
     
+    def clear_search_state(self):
+        """Clear all search-related state (call this when navigating away or changing modes)"""
+        # Clear search input
+        if self.search_bar.search_input.text():
+            self.search_bar.search_input.clear()
+        
+        # Clear search progress and match count
+        self.search_bar.clear_search_progress()
+        self.search_bar.set_match_count(0, 0)
+        
+        # Clear filter text in model
+        if self.file_model.filter_text:
+            self.file_model.filter_text = ""
+            self.file_model.search_in_subfolders = False
+    
     def on_subfolder_toggle(self, state):
         """Handle include subfolders checkbox toggle"""
         # Handle both PySide2 (int) and PySide6 (enum) properly
@@ -1438,6 +1453,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if self.include_subfolders_checkbox.isChecked():
             self.include_subfolders_checkbox.setChecked(False)
             self.file_model.include_subfolders = False
+        
+        # Clear all search state (input, progress, match count)
+        self.clear_search_state()
         
         # Clear all filters when navigating to new path
         self.file_model.clearFilters()
@@ -1524,7 +1542,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.history_index -= 1
             path = self.history[self.history_index]
             
+            # Clear search state when navigating back
+            self.clear_search_state()
+            
+            # Disable subfolder mode when navigating
+            if self.include_subfolders_checkbox.isChecked():
+                self.include_subfolders_checkbox.setChecked(False)
+                self.file_model.include_subfolders = False
+            
+            # Clear filters to ensure clean state
+            self.file_model.clearFilters()
+            
+            # Force refresh to avoid cached search results
             self.file_model.setPath(Path(path))
+            self.file_model.refresh(force=True)
+            
             self.breadcrumb.set_path(path)
             self.update_navigation_buttons()
             self.safe_show_status(f"Back: {path}")
@@ -1538,7 +1570,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.history_index += 1
             path = self.history[self.history_index]
             
+            # Clear search state when navigating forward
+            self.clear_search_state()
+            
+            # Disable subfolder mode when navigating
+            if self.include_subfolders_checkbox.isChecked():
+                self.include_subfolders_checkbox.setChecked(False)
+                self.file_model.include_subfolders = False
+            
+            # Clear filters to ensure clean state
+            self.file_model.clearFilters()
+            
+            # Force refresh to avoid cached search results
             self.file_model.setPath(Path(path))
+            self.file_model.refresh(force=True)
+            
             self.breadcrumb.set_path(path)
             self.update_navigation_buttons()
             self.safe_show_status(f"Forward: {path}")
@@ -3712,6 +3758,14 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             if not collection_files:
                 self.safe_show_status(f"Collection '{collection_name}' is empty")
                 return
+            
+            # Clear all search state (input, progress, match count)
+            self.clear_search_state()
+            
+            # Disable subfolder mode when entering collection
+            if self.include_subfolders_checkbox.isChecked():
+                self.include_subfolders_checkbox.setChecked(False)
+                self.file_model.include_subfolders = False
             
             # Apply collection filter to file model
             self.file_model.setCollectionFilter(collection_files)

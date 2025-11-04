@@ -939,7 +939,12 @@ class FileSystemModel(QAbstractListModel):
             self.filter_text = text
             # When clearing search (text is empty), force refresh to ensure 
             # we get current directory state (not cached subfolder results)
-            force_refresh = (text == "")
+            # Also disable subfolder search mode
+            if text == "":
+                self.search_in_subfolders = False
+                force_refresh = True
+            else:
+                force_refresh = False
             self.refresh(force=force_refresh)
             self.endResetModel()
     
