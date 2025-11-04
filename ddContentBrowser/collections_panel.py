@@ -12,16 +12,16 @@ from pathlib import Path
 try:
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                    QListWidget, QListWidgetItem, QMenu, QInputDialog,
-                                   QMessageBox, QFileDialog, QStyledItemDelegate)
-    from PySide6.QtCore import Qt, Signal, QRect
-    from PySide6.QtGui import QFont, QIcon, QColor, QPainter
+                                   QMessageBox, QFileDialog)
+    from PySide6.QtCore import Qt, Signal
+    from PySide6.QtGui import QFont, QIcon, QColor
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                    QListWidget, QListWidgetItem, QMenu, QInputDialog,
-                                   QMessageBox, QFileDialog, QStyledItemDelegate)
-    from PySide2.QtCore import Qt, Signal, QRect
-    from PySide2.QtGui import QFont, QIcon, QColor, QPainter
+                                   QMessageBox, QFileDialog)
+    from PySide2.QtCore import Qt, Signal
+    from PySide2.QtGui import QFont, QIcon, QColor
     PYSIDE_VERSION = 2
 
 from .asset_collections import CollectionManager, ManualCollection, SmartCollection
@@ -32,49 +32,6 @@ UI_FONT = "Segoe UI"
 
 # Debug flag
 DEBUG_MODE = False
-
-
-class ColorBarDelegate(QStyledItemDelegate):
-    """Custom delegate to draw a colored bar on the left side of collection items"""
-    
-    def __init__(self, collection_manager, parent=None):
-        super().__init__(parent)
-        self.collection_manager = collection_manager
-    
-    def paint(self, painter, option, index):
-        # Get collection name from item data
-        collection_name = index.data(Qt.UserRole)
-        if collection_name:
-            # Get collection and its bg_color
-            collection = self.collection_manager.get_collection(collection_name)
-            if collection:
-                bg_color = getattr(collection, 'bg_color', None)
-                if bg_color:
-                    # Draw colored bar first, before the default item
-                    painter.save()
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(bg_color))
-                    
-                    # Bar: 6px wide on the left edge
-                    bar_rect = QRect(option.rect.left(), option.rect.top(), 6, option.rect.height())
-                    painter.drawRect(bar_rect)
-                    
-                    painter.restore()
-                    
-                    # Adjust option.rect to shift text to the right
-                    adjusted_option = option
-                    adjusted_option.rect = QRect(
-                        option.rect.left() + 12,  # Shift right by 12px
-                        option.rect.top(),
-                        option.rect.width() - 12,
-                        option.rect.height()
-                    )
-                    # Draw default item (text) with adjusted rect
-                    super().paint(painter, adjusted_option, index)
-                    return
-        
-        # Draw default item (text) normally if no color
-        super().paint(painter, option, index)
 
 
 class CollectionsPanel(QWidget):
@@ -111,14 +68,10 @@ class CollectionsPanel(QWidget):
         # Collections list - with drag & drop support
         self.collections_list = DragDropCollectionListWidget()
         self.collections_list.setFont(QFont(UI_FONT, 9))
-        self.collections_list.setSelectionMode(QListWidget.SingleSelection)
+        self.collections_list.setSelectionMode(QListWidget.ExtendedSelection)  # Enable multi-select (Ctrl+Click, Shift+Click)
         self.collections_list.itemClicked.connect(self.on_collection_clicked)
         self.collections_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.collections_list.customContextMenuRequested.connect(self.show_context_menu)
-        
-        # Set custom delegate for colored bar
-        self.color_bar_delegate = ColorBarDelegate(self.collection_manager, self.collections_list)
-        self.collections_list.setItemDelegate(self.color_bar_delegate)
         
         # Maya-style selection color
         self.collections_list.setStyleSheet("""
@@ -182,17 +135,58 @@ class CollectionsPanel(QWidget):
                     file_count = len(collection.get_existing_files())
                     item_text += f" ({file_count})"
                 
-                item = QListWidgetItem(item_text)
+                item = QListWidgetItem()
                 item.setData(Qt.UserRole, collection.name)  # Store collection name
+                
+                # Create a custom label widget for consistent styling with favorites
+                if PYSIDE_VERSION == 6:
+                    from PySide6.QtWidgets import QLabel
+                else:
+                    from PySide2.QtWidgets import QLabel
+                label = QLabel(item_text)
+                label.setFont(QFont(UI_FONT, 9))
+                
+                # Apply color bar if bg_color is set
+                bg_color = getattr(collection, 'bg_color', None)
+                if bg_color:
+                    label.setStyleSheet(f"""
+                        QLabel {{
+                            background-color: transparent;
+                            border-left: 6px solid {bg_color};
+                            padding-left: 6px;
+                        }}
+                    """)
+                else:
+                    label.setStyleSheet("""
+                        QLabel {
+                            background-color: transparent;
+                        }
+                    """)
+                
                 self.collections_list.addItem(item)
+                self.collections_list.setItemWidget(item, label)
         
         # Add smart collections (future)
         if smart_cols:
             for collection in smart_cols:
                 item_text = f"🧠 {collection.name}"
-                item = QListWidgetItem(item_text)
+                item = QListWidgetItem()
                 item.setData(Qt.UserRole, collection.name)
+                
+                if PYSIDE_VERSION == 6:
+                    from PySide6.QtWidgets import QLabel
+                else:
+                    from PySide2.QtWidgets import QLabel
+                label = QLabel(item_text)
+                label.setFont(QFont(UI_FONT, 9))
+                label.setStyleSheet("""
+                    QLabel {
+                        background-color: transparent;
+                    }
+                """)
+                
                 self.collections_list.addItem(item)
+                self.collections_list.setItemWidget(item, label)
     
     def create_new_collection(self):
         """Create new manual collection"""

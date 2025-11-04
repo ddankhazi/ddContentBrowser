@@ -75,6 +75,31 @@ class ContentBrowserConfig:
                     for key, value in self.default_config.items():
                         if key not in config:
                             config[key] = value
+                    
+                    # Migrate old string-based favorites to new dict format
+                    if "favorites" in config:
+                        migrated = False
+                        new_favorites = []
+                        for fav in config["favorites"]:
+                            if isinstance(fav, str):
+                                # Old format - convert to new dict format
+                                new_favorites.append({
+                                    "path": fav,
+                                    "alias": None,
+                                    "color": None
+                                })
+                                migrated = True
+                            else:
+                                # Already new format
+                                new_favorites.append(fav)
+                        
+                        if migrated:
+                            config["favorites"] = new_favorites
+                            print(f"[Config] Migrated {len([f for f in config['favorites'] if isinstance(f, dict)])} favorites to new format")
+                            # Save the migrated config immediately
+                            self.config = config
+                            self.save_config()
+                    
                     return config
             except Exception as e:
                 print(f"Configuration load error: {e}")

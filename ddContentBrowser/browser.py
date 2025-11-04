@@ -65,12 +65,7 @@ except ImportError:
     pass  # Already handled by utils.MAYA_AVAILABLE
 
 # Debug flag - set to False to disable verbose logging
-DEBUG_MODE = False
-
-
-# Debug flag - set to False to disable verbose logging
-DEBUG_MODE = False
-
+DEBUG_MODE = True
 
 class FavoritesColorBarDelegate(QtWidgets.QStyledItemDelegate):
     """Custom delegate to draw a colored bar on the left side of favorite items"""
@@ -91,27 +86,29 @@ class FavoritesColorBarDelegate(QtWidgets.QStyledItemDelegate):
                     favorites = self.browser.config.config.get("favorites", [])
                     for fav in favorites:
                         fav_dict = self.browser._normalize_favorite(fav)
-                        if fav_dict and fav_dict["path"] == path and fav_dict["color"]:
-                            # Draw colored bar first
-                            painter.save()
-                            painter.setPen(Qt.NoPen)
-                            from PySide6.QtGui import QColor
-                            from PySide6.QtCore import QRect
-                            painter.setBrush(QColor(fav_dict["color"]))
-                            
-                            # Bar: 6px wide on the left edge
-                            bar_rect = QRect(option.rect.left(), option.rect.top(), 6, option.rect.height())
-                            painter.drawRect(bar_rect)
-                            
-                            painter.restore()
-                            
-                            # Adjust widget position to shift right by 12px
-                            if label:
-                                label.setContentsMargins(12, 0, 0, 0)
-                            
-                            # Draw default item with normal rect
-                            super().paint(painter, option, index)
-                            return
+                        if fav_dict and fav_dict["path"] == path:
+                            if fav_dict["color"]:
+                                # Draw colored bar first
+                                painter.save()
+                                painter.setPen(Qt.NoPen)
+                                from PySide6.QtGui import QColor
+                                from PySide6.QtCore import QRect
+                                painter.setBrush(QColor(fav_dict["color"]))
+                                
+                                # Bar: 6px wide on the left edge
+                                bar_rect = QRect(option.rect.left(), option.rect.top(), 6, option.rect.height())
+                                painter.drawRect(bar_rect)
+                                
+                                painter.restore()
+                                
+                                # Adjust widget position to shift right by 12px
+                                if label:
+                                    label.setContentsMargins(12, 0, 0, 0)
+                                
+                                # Draw default item with normal rect
+                                super().paint(painter, option, index)
+                                return
+                            break  # Found the favorite, no color
         
         # No color - draw normally without margin
         if item:
@@ -2053,6 +2050,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             label.setWordWrap(False)
             label.setToolTip(item.toolTip())
             
+            # Apply color bar if color is set
+            if fav_dict["color"]:
+                label.setStyleSheet(f"""
+                    QLabel {{
+                        border-left: 6px solid {fav_dict["color"]};
+                        padding-left: 6px;
+                    }}
+                """)
+            
             # Make label transparent to mouse events so clicks go to the item
             label.setAttribute(Qt.WA_TransparentForMouseEvents)
             
@@ -2060,6 +2066,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             label.setProperty("fullPath", path)
             label.setProperty("displayName", display_name)
             label.setProperty("alias", fav_dict["alias"])
+            label.setProperty("color", fav_dict["color"])
             
             self.favorites_list.addItem(item)
             self.favorites_list.setItemWidget(item, label)
