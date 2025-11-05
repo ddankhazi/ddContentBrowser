@@ -96,6 +96,49 @@ except ImportError:
 # NOTE: These helper functions were originally in widgets.py but moved here to avoid circular imports
 
 
+def _load_exr_channel_data(channel, channel_name, width, height):
+    """Helper function to load a single EXR channel and convert to RGB"""
+    try:
+        channel_data = np.array(channel.pixels, dtype=np.float32)
+        total_pixels = width * height
+        
+        # DETAILED DEBUG: Print channel info
+        print(f"🔬 DETAILED DEBUG for channel '{channel_name}':")
+        print(f"   - Image size: {width} × {height} = {total_pixels} pixels")
+        print(f"   - Channel data size: {len(channel_data)} values")
+        print(f"   - Expected sizes: {total_pixels} (gray), {total_pixels*3} (RGB), {total_pixels*4} (RGBA)")
+        
+        # Try to get more info about the channel
+        if hasattr(channel, 'type'):
+            print(f"   - Channel type: {channel.type}")
+        if hasattr(channel, 'sampling'):
+            print(f"   - Channel sampling: {channel.sampling}")
+        
+        # Determine channel type by data size
+        if len(channel_data) == total_pixels * 3:
+            # RGB channel
+            print(f"✅ '{channel_name}' is RGB (3 channels)")
+            return channel_data.reshape(height, width, 3)
+        elif len(channel_data) == total_pixels * 4:
+            # RGBA channel
+            print(f"✅ '{channel_name}' is RGBA (4 channels)")
+            rgba = channel_data.reshape(height, width, 4)
+            return rgba[:, :, :3]  # Drop alpha
+        elif len(channel_data) == total_pixels:
+            # Grayscale channel
+            print(f"✅ '{channel_name}' is grayscale (1 channel)")
+            grayscale = channel_data.reshape(height, width)
+            return np.stack([grayscale, grayscale, grayscale], axis=2)
+        else:
+            print(f"❌ '{channel_name}' has INCOMPATIBLE size: {len(channel_data)}")
+            print(f"   This channel is likely metadata, LUT, or different resolution!")
+            print(f"   Skipping this channel...")
+            return None
+    except Exception as e:
+        print(f"❌ Failed to load channel '{channel_name}': {e}")
+        return None
+
+
 def load_hdr_exr_raw(file_path, max_size=2048):
     """
     Load raw HDR/EXR float data (NO tone mapping) for fast exposure adjustment
@@ -163,19 +206,98 @@ def load_hdr_exr_raw(file_path, max_size=2048):
                 channels = exr_file.channels()
                 rgb = None
                 
+                # DEBUG: Print all available channels
+                channel_names = list(channels.keys())
+                print(f"🔍 DEBUG EXR Channels in {file_path}: {channel_names}")
+                
+                # Store channel info globally for the preview panel to use
+                # (This is a bit hacky, but we need to pass this info somehow)
+                if hasattr(load_hdr_exr_raw, '_current_channels'):
+                    load_hdr_exr_raw._current_channels = channel_names
+                    load_hdr_exr_raw._current_file = file_path_str
+                
                 # Try standard interleaved RGB or RGBA
                 if "RGB" in channels:
+                    print("✅ Found RGB channel")
                     rgb = np.array(channels["RGB"].pixels, dtype=np.float32).reshape(height, width, 3)
                 elif "RGBA" in channels:
+                    print("✅ Found RGBA channels")
                     rgba = np.array(channels["RGBA"].pixels, dtype=np.float32).reshape(height, width, 4)
                     rgb = rgba[:, :, :3]  # Drop alpha
                 elif all(c in channels for c in ["R", "G", "B"]):
+                    print("✅ Found separate R, G, B channels")
                     r = np.array(channels["R"].pixels, dtype=np.float32).reshape(height, width)
                     g = np.array(channels["G"].pixels, dtype=np.float32).reshape(height, width)
                     b = np.array(channels["B"].pixels, dtype=np.float32).reshape(height, width)
                     rgb = np.stack([r, g, b], axis=2)
+                else:
+                    print("❌ No standard RGB channels found, trying available channels...")
+                    # Try each channel until we find one that works (skip metadata/LUT channels)
+                    loaded_channel_name = None
+                    for channel_name in channel_names:
+                        print(f"🔄 Trying channel '{channel_name}'...")
+                        rgb = _load_exr_channel_data(channels[channel_name], channel_name, width, height)
+                        if rgb is not None:
+                            loaded_channel_name = channel_name
+                            print(f"✅ Successfully loaded channel '{channel_name}'!")
+                            break
+                        else:
+                            print(f"⏭️ Skipping incompatible channel '{channel_name}'")
+                    
+                    # Store which channel we successfully loaded
+                    if hasattr(load_hdr_exr_raw, '_current_channel') and loaded_channel_name:
+                        load_hdr_exr_raw._current_channel = loaded_channel_name
                 
                 if rgb is None:
+                    print(f"❌ OpenEXR failed to load any channel from: {file_path}")
+                    print(f"🔄 Trying OpenImageIO as fallback...")
+                    
+                    # Try OpenImageIO fallback (like thumbnail generator uses)
+                    try:
+                        from .widgets import load_oiio_image
+                        print(f"🚀 Loading EXR with OpenImageIO...")
+                        
+                        # Load with OIIO (returns QPixmap directly)
+                        pixmap, oiio_resolution, metadata = load_oiio_image(file_path_str, max_size=max_size)
+                        
+                        if pixmap and not pixmap.isNull():
+                            print(f"✅ OpenImageIO successfully loaded EXR!")
+                            
+                            # Convert QPixmap back to numpy array for consistency
+                            qimage = pixmap.toImage()
+                            width = qimage.width()
+                            height = qimage.height()
+                            
+                            # Convert QImage to numpy RGB array (PySide version compatibility)
+                            if PYSIDE_VERSION == 6:
+                                from PySide6.QtGui import QImage
+                                rgb_format = QImage.Format_RGB888
+                            else:
+                                from PySide2.QtGui import QImage
+                                rgb_format = QImage.Format_RGB888
+                            
+                            ptr = qimage.bits()
+                            if qimage.format() == rgb_format:
+                                arr = np.array(ptr).reshape(height, width, 3)
+                            else:
+                                # Convert to RGB888 format first
+                                qimage = qimage.convertToFormat(rgb_format)
+                                ptr = qimage.bits()
+                                arr = np.array(ptr).reshape(height, width, 3)
+                            
+                            # Convert from 8-bit to float (for consistency with OpenEXR path)
+                            rgb = arr.astype(np.float32) / 255.0
+                            
+                            return rgb, width, height, oiio_resolution
+                        else:
+                            print(f"❌ OpenImageIO returned null pixmap")
+                            
+                    except ImportError:
+                        print(f"❌ OpenImageIO not available")
+                    except Exception as e:
+                        print(f"❌ OpenImageIO failed: {e}")
+                    
+                    print(f"❌ All methods failed to load EXR: {file_path}")
                     return None, None, None, None
                 
                 # Scale if needed
@@ -485,30 +607,47 @@ class CachedFrameSlider(QSlider):
         if event.button() == Qt.LeftButton:
             self.is_dragging = True  # Start drag
             
-            # Calculate clicked position
-            opt = QStyleOptionSlider()
-            self.initStyleOption(opt)
+            # FIRST: Emit sliderPressed so parent knows we're dragging
+            self.sliderPressed.emit()
             
-            groove_rect = self.style().subControlRect(
-                QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self
-            )
+            # Simple calculation: use widget width directly
+            pos_x = event.pos().x()
+            widget_width = self.width()
             
-            # Calculate value from mouse position
-            pos = event.pos().x()
-            groove_left = groove_rect.left()
-            groove_width = groove_rect.width()
+            # Leave some margin for the handle
+            handle_margin = 6  # Half of handle width
+            usable_width = widget_width - (2 * handle_margin)
             
-            if groove_width > 0:
-                ratio = (pos - groove_left) / groove_width
+            if usable_width > 0:
+                # Calculate ratio from position (accounting for margins)
+                ratio = (pos_x - handle_margin) / usable_width
                 ratio = max(0.0, min(1.0, ratio))  # Clamp to 0-1
+                
+                # Calculate value
+                value = int(self.minimum() + ratio * (self.maximum() - self.minimum()))
+                
+                # Set value (this will trigger valueChanged)
+                self.setValue(value)
+        else:
+            super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Handle mouse move during drag"""
+        if self.is_dragging:
+            # Simple calculation during drag
+            pos_x = event.pos().x()
+            widget_width = self.width()
+            handle_margin = 6
+            usable_width = widget_width - (2 * handle_margin)
+            
+            if usable_width > 0:
+                ratio = (pos_x - handle_margin) / usable_width
+                ratio = max(0.0, min(1.0, ratio))
                 
                 value = int(self.minimum() + ratio * (self.maximum() - self.minimum()))
                 self.setValue(value)
-            
-            # Now pass to default handler to enable dragging from here
-            super().mousePressEvent(event)
         else:
-            super().mousePressEvent(event)
+            super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release - trigger cache recalculation"""
@@ -873,7 +1012,7 @@ class PreviewPanel(QWidget):
         self.current_hdr_path = None  # Track current HDR file for re-loading with new exposure
         self.hdr_raw_cache = {}  # Cache raw HDR float data: file_path -> (numpy_array, width, height, resolution_str)
         self.hdr_cache_max_size = 5  # Only cache last 5 HDR raw data (they're big!)
-        self.max_preview_size = 1024  # Default preview resolution (can be changed by settings)
+        self.max_preview_size = 3840  # 4K preview resolution (3840px max, great quality!)
         self.max_hdr_cache_size = 5  # Maximum HDR cache items (for settings compatibility)
         
         # Text preview mode flag
@@ -888,9 +1027,10 @@ class PreviewPanel(QWidget):
         # Exposure adjustment debounce timer for smooth slider
         self.exposure_timer = QtCore.QTimer()
         self.exposure_timer.setSingleShot(True)
-        self.exposure_timer.setInterval(20)  # 50ms delay (smooth but responsive)
+        self.exposure_timer.setInterval(20)  # 20ms delay (smooth but responsive)
         self.exposure_timer.timeout.connect(self.apply_exposure_change)
         self.pending_exposure_value = None
+        self.is_dragging_exposure = False  # Track if user is dragging exposure slider
         
         # Background mode: 'dark_gray', 'light_gray', 'checkered', 'black', 'white'
         self.background_mode = 'dark_gray'  # Default
@@ -908,6 +1048,11 @@ class PreviewPanel(QWidget):
         
         # Simple frame cache (will be implemented later if needed)
         # For now: no caching, just direct loading
+        
+        # EXR channel switching
+        self.current_exr_file_path = None  # Current EXR file path
+        self.current_exr_channels = []     # List of channel names
+        self.current_exr_channel = None    # Currently displayed channel name
         
         self.setMinimumWidth(250)  # Minimum width when visible
         self.setup_ui()
@@ -934,7 +1079,7 @@ class PreviewPanel(QWidget):
             pass
     
     def show_background_menu(self, pos):
-        """Show context menu for background selection"""
+        """Show context menu for background selection and EXR channel switching"""
         if PYSIDE_VERSION == 6:
             from PySide6.QtWidgets import QMenu
             from PySide6.QtGui import QAction
@@ -943,7 +1088,22 @@ class PreviewPanel(QWidget):
         
         menu = QMenu(self)
         
-        # Background options
+        # === EXR Channel Selection (if viewing EXR) ===
+        if self.current_exr_channels:
+            channels_menu = menu.addMenu("📺 EXR Channels")
+            
+            for channel_name in self.current_exr_channels:
+                action = QAction(channel_name, self)
+                action.setCheckable(True)
+                action.setChecked(channel_name == self.current_exr_channel)
+                action.triggered.connect(lambda checked=False, ch=channel_name: self.switch_exr_channel(ch))
+                channels_menu.addAction(action)
+            
+            menu.addSeparator()
+        
+        # === Background Options ===
+        bg_menu = menu.addMenu("🎨 Background")
+        
         bg_options = [
             ('dark_gray', 'Dark Gray'),
             ('light_gray', 'Light Gray'),
@@ -957,9 +1117,315 @@ class PreviewPanel(QWidget):
             action.setCheckable(True)
             action.setChecked(mode == self.background_mode)
             action.triggered.connect(lambda checked=False, m=mode: self.set_background_mode(m))
-            menu.addAction(action)
+            bg_menu.addAction(action)
         
         menu.exec_(pos)
+    
+    def switch_exr_channel(self, channel_name):
+        """Switch to a different EXR channel"""
+        if not self.current_exr_file_path or channel_name == self.current_exr_channel:
+            return
+        
+        print(f"🔄 Switching EXR channel to: {channel_name}")
+        
+        # Load the specific channel
+        try:
+            pixmap, resolution_str = self.load_exr_channel(self.current_exr_file_path, channel_name)
+            if pixmap:
+                self.current_exr_channel = channel_name
+                self.current_pixmap = pixmap
+                
+                # Update title to show channel
+                filename = Path(self.current_exr_file_path).name
+                self.title_label.setText(f"Preview - {filename} [{channel_name}]")
+                
+                # Update preview (keeping zoom state)
+                if not self.zoom_mode:
+                    self.fit_pixmap_to_label()
+                else:
+                    # In zoom mode, update with current zoom
+                    self.full_res_pixmap = pixmap
+                    self.set_preview_pixmap(pixmap)
+                
+                # Add to cache with channel-specific key
+                cache_key = f"{self.current_exr_file_path}#{channel_name}"
+                self.add_to_cache(cache_key, pixmap, resolution_str)
+                
+                print(f"✅ Successfully switched to channel '{channel_name}'")
+            else:
+                print(f"❌ Failed to load channel '{channel_name}'")
+                
+        except Exception as e:
+            print(f"❌ Error switching to channel '{channel_name}': {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def load_exr_channel(self, file_path, channel_name):
+        """
+        Load a specific channel from an EXR file directly with OpenEXR
+        
+        Args:
+            file_path: Path to EXR file
+            channel_name: Name of channel to load (e.g. "diffuse", "specular", "zdepth")
+            
+        Returns:
+            tuple: (QPixmap, resolution_str) or (None, None)
+        """
+        try:
+            # Check raw data cache first (for exposure adjustment without reloading)
+            raw_cache_key = f"{file_path}#{channel_name}#raw"
+            if raw_cache_key in self.hdr_raw_cache:
+                print(f"🚀 Using cached raw data for channel '{channel_name}' (fast exposure adjustment)")
+                rgb_raw, width, height, resolution_str = self.hdr_raw_cache[raw_cache_key]
+                
+                # Apply tone mapping with current exposure
+                pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path)
+                if pixmap:
+                    return pixmap, resolution_str
+                else:
+                    print("⚠️ Tone mapping failed, reloading from disk...")
+            
+            # Check pixmap cache (for fast display without tone mapping)
+            cache_key = f"{file_path}#{channel_name}#{self.hdr_exposure:.1f}"
+            if cache_key in self.preview_cache:
+                return self.preview_cache[cache_key]
+            
+            import sys
+            import os
+            
+            # Add external_libs to path
+            external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+            if external_libs not in sys.path:
+                sys.path.insert(0, external_libs)
+            
+            import OpenEXR
+            import numpy as np
+            
+            with OpenEXR.File(str(file_path)) as exr_file:
+                header = exr_file.header()
+                dw = header['dataWindow']
+                width = dw[1][0] - dw[0][0] + 1
+                height = dw[1][1] - dw[0][1] + 1
+                
+                channels = exr_file.channels()
+                channel_list = list(channels.keys())
+                
+                rgb = None
+                
+                # Try to load the requested channel
+                # 1. Try as direct channel name (e.g. "RGB", "RGBA")
+                if channel_name in channels:
+                    data = channels[channel_name].pixels
+                    if data is not None:
+                        if data.ndim == 3 and data.shape[2] >= 3:
+                            rgb = data[:, :, :3]  # Take RGB only
+                        elif data.ndim == 2:
+                            # Single channel, convert to RGB
+                            rgb = np.stack([data, data, data], axis=2)
+                        else:
+                            rgb = data
+                
+                # 2. Try as prefix with .R .G .B (e.g. "diffuse" → "diffuse.R", "diffuse.G", "diffuse.B")
+                if rgb is None:
+                    r_name = f"{channel_name}.R"
+                    g_name = f"{channel_name}.G"
+                    b_name = f"{channel_name}.B"
+                    
+                    if all(c in channels for c in [r_name, g_name, b_name]):
+                        r = channels[r_name].pixels
+                        g = channels[g_name].pixels
+                        b = channels[b_name].pixels
+                        
+                        if r is not None and g is not None and b is not None:
+                            # Try to stack if possible
+                            try:
+                                rgb = np.stack([r, g, b], axis=2)
+                            except Exception as stack_error:
+                                # Fallback: just use R channel as grayscale
+                                if hasattr(r, 'ndim') and r.ndim == 2:
+                                    rgb = np.stack([r, r, r], axis=2)
+                                elif hasattr(r, '__len__'):
+                                    # Try to reshape from 1D array
+                                    try:
+                                        r_2d = np.array(r).reshape(height, width)
+                                        rgb = np.stack([r_2d, r_2d, r_2d], axis=2)
+                                    except:
+                                        print(f"❌ Cannot reshape channel data")
+                                        return None, None
+                
+                # 3. Try as single channel with common suffixes
+                if rgb is None:
+                    for suffix in ['', '.R', '.r', '.x', '.X']:
+                        test_name = f"{channel_name}{suffix}"
+                        if test_name in channels:
+                            print(f"✅ Found single channel: {test_name}")
+                            data = channels[test_name].pixels
+                            if data is not None:
+                                if hasattr(data, 'ndim') and data.ndim == 2:
+                                    rgb = np.stack([data, data, data], axis=2)
+                                elif hasattr(data, '__len__'):
+                                    # Try to reshape
+                                    try:
+                                        data_2d = np.array(data).reshape(height, width)
+                                        rgb = np.stack([data_2d, data_2d, data_2d], axis=2)
+                                    except:
+                                        pass
+                                else:
+                                    rgb = data
+                                if rgb is not None:
+                                    break
+                
+                if rgb is None:
+                    print(f"❌ Could not find channel '{channel_name}'")
+                    print(f"💡 Available channels: {', '.join(channel_list[:10])}{'...' if len(channel_list) > 10 else ''}")
+                    return None, None
+                
+                # Now we have rgb data (RAW float)
+                
+                # Convert float16 to float32
+                if rgb.dtype == np.float16:
+                    rgb = rgb.astype(np.float32)
+                
+                # Downsample to max preview size (4K) if needed
+                # This saves memory and improves tone mapping performance
+                import cv2
+                if width > self.max_preview_size or height > self.max_preview_size:
+                    scale = min(self.max_preview_size / width, self.max_preview_size / height)
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    
+                    rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                    width, height = new_width, new_height
+                
+                # Store downsampled raw data in cache for high quality exposure adjustments
+                resolution_str = f"{width} x {height}"
+                raw_cache_key = f"{file_path}#{channel_name}#raw"
+                self.hdr_raw_cache[raw_cache_key] = (rgb, width, height, resolution_str)
+                
+                # Apply tone mapping with current exposure using centralized function
+                # This handles ACES automatically based on file tags
+                pixmap = self.apply_hdr_tone_mapping(rgb, width, height, self.hdr_exposure, file_path=file_path)
+                
+                if not pixmap:
+                    print(f"❌ Tone mapping failed")
+                    return None, None
+                
+                # Cache the final pixmap with exposure key
+                cache_key = f"{file_path}#{channel_name}#{self.hdr_exposure:.1f}"
+                self.preview_cache[cache_key] = (pixmap, resolution_str)
+                
+                return pixmap, resolution_str
+                
+        except Exception as e:
+            print(f"❌ Error loading EXR channel: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+    
+    def load_hdr_file(self, file_path):
+        """
+        Load HDR file with full resolution raw data caching (like load_exr_channel)
+        
+        Args:
+            file_path: Path to HDR file
+            
+        Returns:
+            tuple: (QPixmap, resolution_str) or (None, None)
+        """
+        try:
+            # Check raw data cache first (for exposure adjustment without reloading)
+            if file_path in self.hdr_raw_cache:
+                print(f"🚀 Using cached raw HDR data (fast exposure adjustment)")
+                rgb_raw, width, height, resolution_str = self.hdr_raw_cache[file_path]
+                
+                # Apply tone mapping with current exposure
+                pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path)
+                if pixmap:
+                    return pixmap, resolution_str
+                else:
+                    print("⚠️ Tone mapping failed, reloading from disk...")
+            
+            print(f"🔄 Loading HDR file from disk...")
+            
+            import sys
+            import os
+            import cv2
+            import numpy as np
+            
+            # Add external_libs to path
+            external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+            if external_libs not in sys.path:
+                sys.path.insert(0, external_libs)
+            
+            # Load HDR with OpenCV (FULL RESOLUTION)
+            rgb = cv2.imread(str(file_path), cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+            
+            if rgb is None:
+                print(f"❌ Failed to load HDR with OpenCV")
+                return None, None
+            
+            # OpenCV loads as BGR, convert to RGB
+            rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+            
+            height, width = rgb.shape[:2]
+            
+            # Convert float16 to float32 if needed
+            if rgb.dtype == np.float16:
+                rgb = rgb.astype(np.float32)
+            
+            # Downsample to max preview size (4K) if needed
+            if width > self.max_preview_size or height > self.max_preview_size:
+                scale = min(self.max_preview_size / width, self.max_preview_size / height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                
+                rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                width, height = new_width, new_height
+            
+            # Store downsampled raw data in cache
+            resolution_str = f"{width} x {height}"
+            self.hdr_raw_cache[file_path] = (rgb, width, height, resolution_str)
+            
+            # Apply tone mapping with current exposure
+            pixmap = self.apply_hdr_tone_mapping(rgb, width, height, self.hdr_exposure, file_path=file_path)
+            
+            if not pixmap:
+                print(f"❌ Tone mapping failed")
+                return None, None
+            
+            return pixmap, resolution_str
+            
+        except Exception as e:
+            print(f"❌ Error loading HDR file: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+    
+    def detect_exr_channels(self, file_path):
+        """Detect and store available EXR channels"""
+        if not OPENEXR_AVAILABLE:
+            return
+        
+        try:
+            # Open EXR file to read channel names
+            with OpenEXR.File(str(file_path)) as exr_file:
+                channels = exr_file.channels()
+                channel_names = list(channels.keys())
+                
+                # Store EXR info - enable channel switching for ALL EXRs
+                self.current_exr_file_path = file_path
+                self.current_exr_channels = channel_names
+                
+                # The first channel will be displayed by default (widgets.py auto-selects it)
+                # User can switch between any available channels via right-click menu
+                self.current_exr_channel = channel_names[0] if channel_names else None
+                
+        except Exception as e:
+            print(f"❌ Error detecting EXR channels: {e}")
+            # Clear EXR info on error
+            self.current_exr_file_path = None
+            self.current_exr_channels = []
+            self.current_exr_channel = None
     
     def set_background_mode(self, mode):
         """Set background mode and update display"""
@@ -1126,13 +1592,16 @@ class PreviewPanel(QWidget):
         exposure_layout.addWidget(QLabel("Exposure:"))
         
         # Exposure slider (-5.0 to +5.0 stops, default 0.0, like Arnold/Maya)
-        self.exposure_slider = QtWidgets.QSlider(Qt.Horizontal)
+        # Use CachedFrameSlider for better click behavior (jumps to clicked position)
+        self.exposure_slider = CachedFrameSlider(Qt.Horizontal)
         self.exposure_slider.setMinimum(-50)  # -5.0 stops
         self.exposure_slider.setMaximum(50)   # +5.0 stops
         self.exposure_slider.setValue(0)      # 0.0 (neutral, default)
         self.exposure_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.exposure_slider.setTickInterval(10)  # Tick every 1.0 stop
         self.exposure_slider.valueChanged.connect(self.on_exposure_changed)
+        self.exposure_slider.sliderPressed.connect(self.on_exposure_slider_pressed)
+        self.exposure_slider.sliderReleased.connect(self.on_exposure_slider_released)
         exposure_layout.addWidget(self.exposure_slider, 1)
         
         # Exposure value label
@@ -1509,7 +1978,14 @@ class PreviewPanel(QWidget):
     
     def fit_pixmap_to_label(self):
         """Fit current pixmap to view"""
-        if not self.current_pixmap or self.current_pixmap.isNull() or self.zoom_mode:
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        
+        # In zoom mode, update the zoom pixmap instead of fitting
+        if self.zoom_mode:
+            self.full_res_pixmap = self.current_pixmap
+            self.set_preview_pixmap(self.full_res_pixmap)
+            # Don't reset zoom/pan - maintain current view
             return
         
         self.set_preview_pixmap(self.current_pixmap)
@@ -1550,6 +2026,11 @@ class PreviewPanel(QWidget):
         self.exposure_controls.hide()  # Hide exposure controls
         self.text_controls.hide()  # Hide text controls
         
+        # Clear EXR channel info
+        self.current_exr_file_path = None
+        self.current_exr_channels = []
+        self.current_exr_channel = None
+        
         # Hide PDF overlay controls
         self.pdf_prev_overlay.hide()
         self.pdf_next_overlay.hide()
@@ -1565,8 +2046,21 @@ class PreviewPanel(QWidget):
             self.load_full_btn.setChecked(False)
             self.load_full_btn.setText("📄 Load Full")
     
+    def on_exposure_slider_pressed(self):
+        """User started dragging the exposure slider"""
+        self.is_dragging_exposure = True
+    
+    def on_exposure_slider_released(self):
+        """User released the exposure slider - apply exposure at full quality"""
+        self.is_dragging_exposure = False
+        # Apply exposure immediately at FULL quality when slider is released
+        if self.pending_exposure_value is not None:
+            self.exposure_timer.stop()  # Cancel any pending timer
+            # Use apply_exposure_change (full quality) instead of fast path
+            self.apply_exposure_change()
+    
     def on_exposure_changed(self, value):
-        """Handle exposure slider change - debounced for smooth dragging"""
+        """Handle exposure slider change - update preview while dragging"""
         exposure_stops = value / 10.0  # Slider -50 to +50 -> -5.0 to +5.0 stops
         
         # Format label with +/- sign (like Arnold) - update immediately
@@ -1575,10 +2069,79 @@ class PreviewPanel(QWidget):
         else:
             self.exposure_label.setText(f"{exposure_stops:.1f}")
         
-        # Store pending value and restart timer (debounce)
+        # Store pending value
         self.pending_exposure_value = exposure_stops
-        self.exposure_timer.stop()
-        self.exposure_timer.start()
+        
+        # If dragging, apply exposure immediately (fast path from cache)
+        if self.is_dragging_exposure:
+            # Apply directly without timer for smooth dragging
+            self.hdr_exposure = exposure_stops
+            self._apply_exposure_fast()
+        else:
+            # Not dragging (programmatic change or click) - use debounce timer
+            self.exposure_timer.stop()
+            self.exposure_timer.start()
+    
+    def _apply_exposure_fast(self):
+        """Fast exposure application during drag (no debounce) with lower quality"""
+        exposure_stops = self.hdr_exposure
+        
+        # Use lower resolution during drag for performance (like Nuke/Resolve)
+        # Target max 512px on longest side for fast dragging
+        # Even in zoom mode, we can downsample because set_preview_pixmap preserves transform
+        drag_max_size = 512
+        
+        # Check if we're viewing a specific EXR channel
+        if self.current_exr_file_path and self.current_exr_channel:
+            # Channel-specific raw data cache
+            raw_cache_key = f"{self.current_exr_file_path}#{self.current_exr_channel}#raw"
+            if raw_cache_key in self.hdr_raw_cache:
+                rgb_raw, width, height, resolution_str = self.hdr_raw_cache[raw_cache_key]
+                
+                # Downsample for faster tone mapping during drag
+                import cv2
+                import numpy as np
+                
+                # Calculate scale to fit within drag_max_size
+                scale = min(drag_max_size / width, drag_max_size / height)
+                if scale < 1.0:  # Only downsample if needed
+                    drag_width = max(1, int(width * scale))
+                    drag_height = max(1, int(height * scale))
+                    rgb_drag = cv2.resize(rgb_raw, (drag_width, drag_height), interpolation=cv2.INTER_LINEAR)
+                else:
+                    # Already small enough
+                    drag_width, drag_height = width, height
+                    rgb_drag = rgb_raw
+                
+                pixmap = self.apply_hdr_tone_mapping(rgb_drag, drag_width, drag_height, exposure_stops, file_path=self.current_exr_file_path)
+                if pixmap:
+                    self.current_pixmap = pixmap
+                    self.fit_pixmap_to_label()
+                return
+        
+        # Standard HDR/EXR
+        if self.current_hdr_path and self.current_hdr_path in self.hdr_raw_cache:
+            rgb_raw, width, height, resolution_str = self.hdr_raw_cache[self.current_hdr_path]
+            
+            # Downsample for faster tone mapping during drag
+            import cv2
+            import numpy as np
+            
+            # Calculate scale to fit within drag_max_size
+            scale = min(drag_max_size / width, drag_max_size / height)
+            if scale < 1.0:  # Only downsample if needed
+                drag_width = max(1, int(width * scale))
+                drag_height = max(1, int(height * scale))
+                rgb_drag = cv2.resize(rgb_raw, (drag_width, drag_height), interpolation=cv2.INTER_LINEAR)
+            else:
+                # Already small enough
+                drag_width, drag_height = width, height
+                rgb_drag = rgb_raw
+            
+            pixmap = self.apply_hdr_tone_mapping(rgb_drag, drag_width, drag_height, exposure_stops, file_path=self.current_hdr_path)
+            if pixmap:
+                self.current_pixmap = pixmap
+                self.fit_pixmap_to_label()
     
     def apply_exposure_change(self):
         """Actually apply the exposure change (called after debounce timer)"""
@@ -1588,7 +2151,27 @@ class PreviewPanel(QWidget):
         exposure_stops = self.pending_exposure_value
         self.hdr_exposure = exposure_stops
         
-        # Fast re-tone map from cached raw data if available
+        # Check if we're viewing a specific EXR channel
+        if self.current_exr_file_path and self.current_exr_channel:
+            # Channel-specific raw data cache
+            raw_cache_key = f"{self.current_exr_file_path}#{self.current_exr_channel}#raw"
+            if raw_cache_key in self.hdr_raw_cache:
+                print(f"🚀 FAST: Adjusting exposure for channel '{self.current_exr_channel}' (cached raw data)")
+                rgb_raw, width, height, resolution_str = self.hdr_raw_cache[raw_cache_key]
+                
+                # Apply tone mapping with new exposure
+                pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, exposure_stops, file_path=self.current_exr_file_path)
+                
+                if pixmap:
+                    self.current_pixmap = pixmap
+                    # Update title to show channel + exposure
+                    filename = Path(self.current_exr_file_path).name
+                    self.title_label.setText(f"Preview - {filename} [{self.current_exr_channel}]")
+                    # Update preview
+                    self.fit_pixmap_to_label()
+                return
+        
+        # Fast re-tone map from cached raw data if available (standard HDR/EXR)
         if self.current_hdr_path and self.current_hdr_path in self.hdr_raw_cache:
             # print(f"🚀 FAST PATH: Using cached raw data for exposure adjustment")
             rgb_raw, width, height, resolution_str = self.hdr_raw_cache[self.current_hdr_path]
@@ -1976,8 +2559,44 @@ class PreviewPanel(QWidget):
             file_path_str = str(self.current_image_path)
             file_ext = file_path_str.lower()
             
+            # === EXR CHANNEL ZOOM ===
+            if file_ext.endswith('.exr') and self.current_exr_file_path and self.current_exr_channel:
+                # Use cached raw channel data
+                raw_cache_key = f"{self.current_exr_file_path}#{self.current_exr_channel}#raw"
+                
+                if raw_cache_key in self.hdr_raw_cache:
+                    rgb, width, height, resolution_str = self.hdr_raw_cache[raw_cache_key]
+                    print(f"🔍 Entering zoom mode for EXR channel '{self.current_exr_channel}' ({width}×{height})")
+                    
+                    # Apply tone mapping with current exposure
+                    pixmap = self.apply_hdr_tone_mapping(rgb, width, height, self.hdr_exposure, file_path=self.current_exr_file_path)
+                    
+                    if pixmap and not pixmap.isNull():
+                        self.full_res_pixmap = pixmap
+                    else:
+                        print("❌ Failed to create zoom pixmap from EXR channel")
+                        return
+                else:
+                    print(f"⚠️ No cached raw data for EXR channel '{self.current_exr_channel}'")
+                    return
+            
+            # === HDR ZOOM ===
+            elif file_ext.endswith('.hdr') and file_path_str in self.hdr_raw_cache:
+                # Use cached raw HDR data
+                rgb, width, height, resolution_str = self.hdr_raw_cache[file_path_str]
+                print(f"🔍 Entering zoom mode for HDR ({width}×{height})")
+                
+                # Apply tone mapping with current exposure
+                pixmap = self.apply_hdr_tone_mapping(rgb, width, height, self.hdr_exposure, file_path=file_path_str)
+                
+                if pixmap and not pixmap.isNull():
+                    self.full_res_pixmap = pixmap
+                else:
+                    print("❌ Failed to create zoom pixmap from HDR")
+                    return
+            
             # === PDF ZOOM ===
-            if file_ext.endswith('.pdf') and PYMUPDF_AVAILABLE:
+            elif file_ext.endswith('.pdf') and PYMUPDF_AVAILABLE:
                 # Load current PDF page at FULL resolution (max 4096 for quality)
                 pixmap, page_count, resolution = load_pdf_page(
                     self.current_pdf_path,
@@ -2332,6 +2951,32 @@ class PreviewPanel(QWidget):
     
     def set_preview_pixmap(self, pixmap):
         """Set pixmap in graphics view"""
+        # In zoom mode, just update the pixmap without clearing scene (preserve zoom/pan)
+        if self.zoom_mode and self.pixmap_item:
+            if pixmap:
+                # Store the current scene rect (full res size)
+                current_scene_rect = self.graphics_scene.sceneRect()
+                original_width = current_scene_rect.width()
+                original_height = current_scene_rect.height()
+                
+                # Update the pixmap
+                self.pixmap_item.setPixmap(pixmap)
+                
+                # CRITICAL: Scale the pixmap item to fill the original scene rect
+                # This way the downsampled pixmap appears at the same size and position
+                scale_x = original_width / pixmap.width()
+                scale_y = original_height / pixmap.height()
+                
+                from PySide6.QtGui import QTransform
+                item_transform = QTransform()
+                item_transform.scale(scale_x, scale_y)
+                self.pixmap_item.setTransform(item_transform)
+                
+                # Keep the original scene rect
+                self.graphics_scene.setSceneRect(current_scene_rect)
+            return
+        
+        # Normal mode: clear scene and add new pixmap
         self.graphics_scene.clear()
         self.current_text_item = None  # Clear text item reference when showing images
         self.is_showing_text = False  # Reset text mode flag when showing images
@@ -2665,6 +3310,10 @@ class PreviewPanel(QWidget):
         # Exit zoom mode when switching files
         self.exit_zoom_mode()
         
+        # Reset exposure to neutral when switching files
+        self.exposure_slider.setValue(0)
+        self.hdr_exposure = 0.0
+        
         # Clear previous pixmap to avoid showing wrong image on load failure
         self.current_pixmap = None
         self.graphics_scene.clear()
@@ -2761,9 +3410,20 @@ class PreviewPanel(QWidget):
             if is_hdr_exr:
                 self.current_hdr_path = file_path_str
                 self.exposure_controls.show()
-                # Reset exposure to neutral (0.0) when opening new HDR/EXR/HDR-TIFF
+                # Reset exposure to neutral (0.0) when opening new HDR/EXR
                 self.exposure_slider.setValue(0)
                 self.hdr_exposure = 0.0
+                
+                # Clear all caches for old files to force fresh load with exposure=0
+                # This ensures exposure reset works properly
+                old_raw_keys = [k for k in list(self.hdr_raw_cache.keys()) if not k.startswith(file_path_str)]
+                for old_key in old_raw_keys:
+                    del self.hdr_raw_cache[old_key]
+                
+                old_preview_keys = [k for k in list(self.preview_cache.keys()) 
+                                   if k != file_path_str and (k.startswith('\\\\') or k.startswith('/') or ':' in k)]
+                for old_key in old_preview_keys:
+                    del self.preview_cache[old_key]
             else:
                 self.current_hdr_path = None
                 # exposure_controls already hidden above
@@ -2786,19 +3446,21 @@ class PreviewPanel(QWidget):
                         # Use imageio (HDR) or OpenEXR (EXR) with exposure control
                         # Higher quality preview: adjustable via settings
                         
-                        # First, try to load raw float data for fast exposure adjustment
-                        # Use max_preview_size setting (default 1024px for speed)
-                        rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
-                        
-                        if rgb_raw is not None:
-                            # Cache raw data for fast exposure adjustments!
-                            self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
+                        # === EXR Channel Detection ===
+                        if file_ext.endswith('.exr'):
+                            self.detect_exr_channels(file_path_str)
                             
-                            # Apply tone mapping with current exposure (with ACES support)
-                            pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
+                            # Load first channel using new channel loader
+                            if self.current_exr_channels:
+                                pixmap, resolution_str = self.load_exr_channel(file_path_str, self.current_exr_channel)
                         else:
-                            # Fallback: old method (slower, no caching)
-                            pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
+                            # HDR files (not EXR) - load with full res raw data caching
+                            # Clear EXR channel info for HDR files
+                            self.current_exr_file_path = None
+                            self.current_exr_channels = []
+                            self.current_exr_channel = None
+                            
+                            pixmap, resolution_str = self.load_hdr_file(file_path_str)
                         
                         if pixmap:
                             self.current_pixmap = pixmap
@@ -5767,6 +6429,10 @@ class PreviewPanel(QWidget):
             file_path_str = str(frame_path)
             file_ext = file_path_str.lower()
             
+            # Update EXR file path if it's an EXR file (for channel switching support)
+            if file_ext.endswith('.exr'):
+                self.current_exr_file_path = file_path_str
+            
             # Load based on file type (same logic as enter_zoom_mode)
             new_pixmap = None
             
@@ -5801,10 +6467,59 @@ class PreviewPanel(QWidget):
             # HDR/EXR
             elif file_ext.endswith(('.hdr', '.exr')):
                 try:
-                    from .preview_panel import load_hdr_exr_image
-                    new_pixmap, _ = load_hdr_exr_image(file_path_str, max_size=4096, exposure=self.hdr_exposure if hasattr(self, 'hdr_exposure') else 0.0)
-                except:
-                    new_pixmap = QPixmap(file_path_str)
+                    # For EXR, also load channel list
+                    if file_ext.endswith('.exr') and OPENEXR_AVAILABLE:
+                        # Get available channels by opening the file
+                        try:
+                            with OpenEXR.File(file_path_str) as exr_file:
+                                channels = exr_file.channels()
+                                channel_names = list(channels.keys())
+                        except Exception as e:
+                            print(f"⚠️ Failed to read EXR channels: {e}")
+                            channel_names = []
+                        
+                        if channel_names:
+                            self.current_exr_channels = channel_names
+                            # Keep current channel if it exists in new frame, otherwise use first
+                            if self.current_exr_channel and self.current_exr_channel in channel_names:
+                                # Keep current channel selection
+                                pass
+                            else:
+                                # Switch to first available channel
+                                self.current_exr_channel = channel_names[0]
+                            
+                            print(f"🎬 Sequence frame EXR channels: {', '.join(channel_names)} (current: {self.current_exr_channel})")
+                            
+                            # Load the specific channel
+                            new_pixmap, resolution_str = self.load_exr_channel(file_path_str, self.current_exr_channel)
+                        else:
+                            # No channels, load as standard HDR
+                            rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
+                            if rgb_raw is not None:
+                                self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
+                                self.current_hdr_path = file_path_str
+                                new_pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
+                            else:
+                                new_pixmap, _ = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
+                    else:
+                        # HDR file - load raw data and cache it
+                        rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
+                        
+                        if rgb_raw is not None:
+                            # Cache the raw data
+                            self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
+                            self.current_hdr_path = file_path_str
+                            
+                            # Apply tone mapping with current exposure
+                            new_pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
+                        else:
+                            # Fallback to load_hdr_exr_image
+                            new_pixmap, _ = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
+                except Exception as e:
+                    print(f"Error loading HDR/EXR frame in zoom: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    new_pixmap = None
             else:
                 # Fallback
                 new_pixmap = QPixmap(file_path_str)
@@ -5831,9 +6546,11 @@ class PreviewPanel(QWidget):
             frame_path: Path to the frame file
             asset: The sequence AssetItem (for metadata access)
         """
-        self.graphics_scene.clear()
-        self.current_text_item = None
-        self.current_pixmap = None
+        # Don't clear scene if in zoom mode - we'll update the pixmap item instead
+        if not self.zoom_mode:
+            self.graphics_scene.clear()
+            self.current_text_item = None
+            self.current_pixmap = None
         
         file_path_str = str(frame_path)
         file_ext = file_path_str.lower()
@@ -5861,6 +6578,22 @@ class PreviewPanel(QWidget):
             self.current_hdr_path = file_path_str
             self.exposure_controls.show()
             # Keep current exposure value (don't reset for sequences)
+            
+            # For EXR, detect channels (needed for zoom mode)
+            if file_ext.endswith('.exr') and OPENEXR_AVAILABLE:
+                try:
+                    with OpenEXR.File(file_path_str) as exr_file:
+                        channels = exr_file.channels()
+                        channel_names = list(channels.keys())
+                        
+                    if channel_names:
+                        self.current_exr_file_path = file_path_str
+                        self.current_exr_channels = channel_names
+                        # Keep current channel if it exists, otherwise use first
+                        if not self.current_exr_channel or self.current_exr_channel not in channel_names:
+                            self.current_exr_channel = channel_names[0]
+                except Exception as e:
+                    print(f"⚠️ Failed to detect EXR channels: {e}")
         else:
             self.current_hdr_path = None
             self.exposure_controls.hide()
@@ -5870,14 +6603,19 @@ class PreviewPanel(QWidget):
         resolution_str = None
         try:
             if is_hdr_exr:
-                # Load HDR/EXR with exposure
-                rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
-                
-                if rgb_raw is not None:
-                    self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
-                    pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
+                # For EXR with channels, load the specific channel
+                if file_ext.endswith('.exr') and self.current_exr_file_path and self.current_exr_channel:
+                    # Load specific channel (handles caching internally)
+                    pixmap, resolution_str = self.load_exr_channel(file_path_str, self.current_exr_channel)
                 else:
-                    pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
+                    # Load HDR/EXR with exposure (standard RGB)
+                    rgb_raw, width, height, resolution_str = load_hdr_exr_raw(file_path_str, max_size=self.max_preview_size)
+                    
+                    if rgb_raw is not None:
+                        self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
+                        pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
+                    else:
+                        pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
                 
                 if pixmap:
                     self.current_pixmap = pixmap

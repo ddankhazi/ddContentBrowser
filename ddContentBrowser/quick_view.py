@@ -1091,7 +1091,7 @@ class QuickViewWindow(QDialog):
             if file_path.suffix.lower() == '.tx':
                 # RenderMan .tx files - use OpenImageIO with ACES support
                 metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
-                result = load_oiio_image(str(file_path), max_size=4096, metadata_manager=metadata_manager)
+                result = load_oiio_image(str(file_path), max_size=3840, metadata_manager=metadata_manager)
                 if result and result[0]:
                     pixmap = result[0]  # Extract pixmap from tuple
             elif file_path.suffix.lower() in ['.exr', '.hdr']:

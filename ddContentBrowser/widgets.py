@@ -1159,13 +1159,13 @@ def load_hdr_exr_raw(file_path, max_size=2048):
     return None, None, None, None
 
 
-def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False, metadata_manager=None):
+def load_hdr_exr_image(file_path, max_size=3840, exposure=0.0, return_raw=False, metadata_manager=None):
     """
     Load HDR/EXR image with proper float HDR handling and ACES color management support
     
     Args:
         file_path: Path to HDR/EXR file
-        max_size: Maximum width/height for preview (default 2048 for high quality)
+        max_size: Maximum width/height for preview (default 3840 for 4K quality)
         exposure: Exposure compensation in stops (0.0 = neutral, +1.0 = 2x brighter, -1.0 = half)
                  Like Arnold/Maya lighting exposure
         return_raw: If True, also return raw float RGB array (for caching)
