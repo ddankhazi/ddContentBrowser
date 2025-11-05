@@ -796,6 +796,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self.show_favorites_context_menu)
         
+        # Maya-style selection color (same as collections)
+        self.favorites_list.setStyleSheet("""
+            QListWidget::item:selected {
+                background-color: #4b7daa;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(75, 125, 170, 0.3);
+            }
+        """)
+        
         # Set custom delegate for colored bar
         self.favorites_color_delegate = FavoritesColorBarDelegate(self, self.favorites_list)
         self.favorites_list.setItemDelegate(self.favorites_color_delegate)
@@ -2060,9 +2071,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if fav_dict["color"]:
                 label.setStyleSheet(f"""
                     QLabel {{
+                        background-color: transparent;
                         border-left: 6px solid {fav_dict["color"]};
                         padding-left: 6px;
                     }}
+                """)
+            else:
+                label.setStyleSheet("""
+                    QLabel {
+                        background-color: transparent;
+                    }
                 """)
             
             # Make label transparent to mouse events so clicks go to the item
@@ -2377,6 +2395,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     skip_refresh = (i < len(selected_items) - 1)
                     self._update_favorite_property(path, color=None, skip_refresh=skip_refresh)
             self.safe_show_status(f"Color cleared from {len(selected_items)} item(s)")
+        elif action == remove_action:
+            self.remove_from_favorites_multi(selected_items)
         elif set_color_menu:
             # Check if a color was selected
             for act, hexcode in color_actions:
@@ -2391,8 +2411,6 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                             self._update_favorite_property(path, color=hexcode, skip_refresh=skip_refresh)
                     self.safe_show_status(f"Color updated for {len(selected_items)} item(s)")
                     break
-        elif action == remove_action:
-            self.remove_from_favorites_multi(selected_items)
     
     def remove_from_favorites(self, item):
         """Remove single path from favorites (legacy function)"""

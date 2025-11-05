@@ -61,6 +61,7 @@ except ImportError:
 # Import browser as package
 try:
     from ddContentBrowser.browser import DDContentBrowser
+    from ddContentBrowser import __version__
 except ImportError as e:
     # Show error dialog instead of console print
     import tkinter as tk
@@ -162,7 +163,7 @@ def main():
     
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
+    browser.setWindowTitle(f"DD Content Browser v{__version__} (Standalone - PORTABLE)")
     
     # Set window icon for browser window too
     try:
