@@ -1089,8 +1089,9 @@ class QuickViewWindow(QDialog):
             # Load image - use OIIO for .tx, HDR/EXR loader for .exr and .hdr files
             pixmap = None
             if file_path.suffix.lower() == '.tx':
-                # RenderMan .tx files - use OpenImageIO
-                result = load_oiio_image(str(file_path), max_size=4096)
+                # RenderMan .tx files - use OpenImageIO with ACES support
+                metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
+                result = load_oiio_image(str(file_path), max_size=4096, metadata_manager=metadata_manager)
                 if result and result[0]:
                     pixmap = result[0]  # Extract pixmap from tuple
             elif file_path.suffix.lower() in ['.exr', '.hdr']:
@@ -1098,7 +1099,9 @@ class QuickViewWindow(QDialog):
                 #     print(f"[QuickView] Loading HDR/EXR using load_hdr_exr_image: {file_path.name}")
                 # Use the same HDR/EXR loader as PreviewPanel
                 # NOTE: load_hdr_exr_image returns tuple (pixmap, resolution_str)
-                result = load_hdr_exr_image(str(file_path))
+                # Pass metadata_manager for ACES color management
+                metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
+                result = load_hdr_exr_image(str(file_path), metadata_manager=metadata_manager)
                 if result and result[0]:
                     pixmap = result[0]  # Extract pixmap from tuple
                     # if DEBUG_MODE:
@@ -1803,7 +1806,9 @@ class QuickViewWindow(QDialog):
                     # Use normalized PDF loading for consistent sizing
                     pixmap, page_count, _, canvas_size = load_pdf_page_normalized(str(file_path), 0, 2048)
                 elif file_path.suffix.lower() in ['.exr', '.hdr']:
-                    result = load_hdr_exr_image(str(file_path))
+                    # Pass metadata_manager for ACES color management
+                    metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
+                    result = load_hdr_exr_image(str(file_path), metadata_manager=metadata_manager)
                     if result and result[0]:
                         pixmap = result[0]
                     canvas_size = None  # Not a PDF

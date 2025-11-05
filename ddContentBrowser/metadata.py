@@ -30,7 +30,9 @@ class MetadataManager:
     
     def _init_database(self):
         """Initialize database connection and create tables if needed"""
-        self.conn = sqlite3.connect(str(self.db_path))
+        # Allow SQLite connection to be used from multiple threads
+        # This is safe for our use case (mostly reads, occasional tag writes)
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row  # Access columns by name
         
         cursor = self.conn.cursor()

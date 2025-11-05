@@ -435,12 +435,13 @@ class ThumbnailGenerator(QThread):
     generation_failed = Signal(str, str)    # (file_path, error_message)
     cache_status = Signal(str)             # Status message: "cache" or "generating"
     
-    def __init__(self, memory_cache, disk_cache, thumbnail_size=128, jpeg_quality=85):
+    def __init__(self, memory_cache, disk_cache, thumbnail_size=128, jpeg_quality=85, metadata_manager=None):
         super().__init__()
         self.memory_cache = memory_cache
         self.disk_cache = disk_cache
         self.thumbnail_size = thumbnail_size
         self.jpeg_quality = jpeg_quality  # JPEG quality for disk cache (0-100)
+        self.metadata_manager = metadata_manager  # For auto-tagging color spaces
         self.queue = []
         self.is_running = True
         self.current_file = None
@@ -484,9 +485,10 @@ class ThumbnailGenerator(QThread):
         self.total_count = 0
     
     def stop(self):
-        """Stop the generator thread"""
+        """Stop the generator thread gracefully"""
         self.is_running = False
         self.queue.clear()
+        self.current_file = None  # Clear current processing file
     
     def run(self):
         """Main thread loop - process queue"""
@@ -899,6 +901,10 @@ class ThumbnailGenerator(QThread):
         Returns:
             QPixmap or None
         """
+        # Early exit if thread is stopping
+        if not self.is_running:
+            return None
+        
         from .utils import get_thumbnail_method
         
         # Check if this is a sequence - use middle frame for thumbnail
@@ -1059,6 +1065,15 @@ class ThumbnailGenerator(QThread):
             
             # Special handling for .tx files - use OpenImageIO
             if extension == '.tx':
+                # Auto-tag color space FIRST (before thumbnail generation)
+                if self.metadata_manager:
+                    try:
+                        from .aces_color import auto_tag_file_colorspace
+                        auto_tag_file_colorspace(file_path, self.metadata_manager)
+                    except Exception as tag_error:
+                        if DEBUG_MODE:
+                            print(f"[Cache] Warning: Auto-tagging .tx failed: {tag_error}")
+                
                 try:
                     from .widgets import load_oiio_image
                     # Load mip level 1 for fast thumbnail (half resolution)
@@ -1567,6 +1582,16 @@ class ThumbnailGenerator(QThread):
         Returns:
             QPixmap or None
         """
+        # Auto-tag color space FIRST (before thumbnail generation)
+        # This ensures tags are available when preview panel loads the file
+        if self.metadata_manager:
+            try:
+                from .aces_color import auto_tag_file_colorspace
+                auto_tag_file_colorspace(file_path, self.metadata_manager)
+            except Exception as tag_error:
+                if DEBUG_MODE:
+                    print(f"[EXR-OPT] Warning: Auto-tagging failed: {tag_error}")
+        
         import sys
         import os
         
@@ -1738,27 +1763,67 @@ class ThumbnailGenerator(QThread):
                         if DEBUG_MODE:
                             print(f"[EXR-OPT] → No downsampling needed (already small)")
                     
-                    # OPTIMIZATION 2: Simplified tone mapping (no exposure control)
-                    # Simple Reinhard tone mapping: L_out = L_in / (1 + L_in)
-                    # Much faster than ACES filmic, good enough for thumbnails
-                    if DEBUG_MODE:
-                        min_val = np.min(rgb)
-                        max_val = np.max(rgb)
-                        mean_val = np.mean(rgb)
-                        print(f"[EXR-OPT] → HDR range before tone mapping: min={min_val:.3f}, max={max_val:.3f}, mean={mean_val:.3f}")
+                    # Check if we should use ACES color management
+                    use_aces = False
+                    if self.metadata_manager:
+                        try:
+                            file_metadata = self.metadata_manager.get_file_metadata(str(file_path))
+                            file_tags = file_metadata.get('tags', [])
+                            tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                            
+                            # Check for ACEScg tag (case-insensitive)
+                            if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                                use_aces = True
+                                if DEBUG_MODE:
+                                    print(f"[EXR-OPT] → Using ACES view transform for thumbnail")
+                        except Exception as tag_error:
+                            if DEBUG_MODE:
+                                print(f"[EXR-OPT] → Tag check failed: {tag_error}")
                     
-                    rgb = np.clip(rgb, 0, None)  # Clamp negatives
-                    rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
-                    
-                    if DEBUG_MODE:
-                        print(f"[EXR-OPT] → Applied Reinhard tone mapping")
-                    
-                    # Gamma correction (2.2 for sRGB)
-                    gamma = 1.0 / 2.2
-                    rgb_tonemapped = np.power(rgb_tonemapped, gamma)
-                    
-                    if DEBUG_MODE:
-                        print(f"[EXR-OPT] → Applied gamma correction (2.2)")
+                    # Apply tone mapping (ACES or standard)
+                    if use_aces:
+                        # Use ACES RRT + ODT with -1 stop exposure compensation
+                        try:
+                            from .aces_color import apply_aces_view_transform
+                            
+                            if DEBUG_MODE:
+                                min_val = np.min(rgb)
+                                max_val = np.max(rgb)
+                                print(f"[EXR-OPT] → HDR range before ACES: min={min_val:.3f}, max={max_val:.3f}")
+                            
+                            # Apply ACES with -1 stop compensation (matches preview)
+                            rgb_tonemapped = apply_aces_view_transform(rgb, exposure=-1.0)
+                            
+                            if DEBUG_MODE:
+                                print(f"[EXR-OPT] → Applied ACES RRT+ODT (exposure: -1.0)")
+                        except Exception as aces_error:
+                            if DEBUG_MODE:
+                                print(f"[EXR-OPT] → ACES failed, falling back to Reinhard: {aces_error}")
+                            # Fallback to Reinhard
+                            rgb = np.clip(rgb, 0, None)
+                            rgb_tonemapped = rgb / (1.0 + rgb)
+                            gamma = 1.0 / 2.2
+                            rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+                    else:
+                        # Standard Reinhard tone mapping for Linear sRGB
+                        if DEBUG_MODE:
+                            min_val = np.min(rgb)
+                            max_val = np.max(rgb)
+                            mean_val = np.mean(rgb)
+                            print(f"[EXR-OPT] → HDR range before tone mapping: min={min_val:.3f}, max={max_val:.3f}, mean={mean_val:.3f}")
+                        
+                        rgb = np.clip(rgb, 0, None)  # Clamp negatives
+                        rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                        
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Applied Reinhard tone mapping")
+                        
+                        # Gamma correction (2.2 for sRGB)
+                        gamma = 1.0 / 2.2
+                        rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+                        
+                        if DEBUG_MODE:
+                            print(f"[EXR-OPT] → Applied gamma correction (2.2)")
                     
                     # Convert to 8-bit
                     rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
@@ -1826,6 +1891,16 @@ class ThumbnailGenerator(QThread):
         Returns:
             QPixmap or None
         """
+        # Auto-tag color space FIRST (before thumbnail generation)
+        # This ensures tags are available when preview panel loads the file
+        if self.metadata_manager:
+            try:
+                from .aces_color import auto_tag_file_colorspace
+                auto_tag_file_colorspace(file_path, self.metadata_manager)
+            except Exception as tag_error:
+                if DEBUG_MODE:
+                    print(f"[HDR-OPT] Warning: Auto-tagging failed: {tag_error}")
+        
         try:
             import cv2
             import numpy as np
@@ -1892,6 +1967,7 @@ class ThumbnailGenerator(QThread):
                     print(f"[HDR-OPT] → No additional resize needed")
             
             # Simplified tone mapping (Reinhard - fast for thumbnails)
+            # HDR files are always Linear sRGB, no ACES needed
             if DEBUG_MODE:
                 min_val = np.min(rgb)
                 max_val = np.max(rgb)
@@ -1900,9 +1976,6 @@ class ThumbnailGenerator(QThread):
             
             rgb = np.clip(rgb, 0, None)  # Clamp negatives
             rgb_tonemapped = rgb / (1.0 + rgb)
-            
-            if DEBUG_MODE:
-                print(f"[HDR-OPT] → Applied Reinhard tone mapping")
             
             if DEBUG_MODE:
                 print(f"[HDR-OPT] → Applied Reinhard tone mapping")

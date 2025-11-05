@@ -854,10 +854,11 @@ class SequencePlaybackWidget(QWidget):
 class PreviewPanel(QWidget):
     """Preview panel showing file preview and metadata"""
     
-    def __init__(self, settings_manager, config=None, parent=None):
+    def __init__(self, settings_manager, config=None, metadata_manager=None, parent=None):
         super().__init__(parent)
         self.settings = settings_manager
         self.config = config
+        self.metadata_manager = metadata_manager  # For tag-based color management
         self.current_assets = []
         self.current_pixmap = None  # Store scaled preview pixmap
         self.full_res_pixmap = None  # Store full resolution pixmap for zoom
@@ -1592,8 +1593,8 @@ class PreviewPanel(QWidget):
             # print(f"🚀 FAST PATH: Using cached raw data for exposure adjustment")
             rgb_raw, width, height, resolution_str = self.hdr_raw_cache[self.current_hdr_path]
             
-            # Apply tone mapping with new exposure (FAST - no disk I/O!)
-            pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, exposure_stops)
+            # Apply tone mapping with new exposure (FAST - no disk I/O!) with ACES support
+            pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, exposure_stops, file_path=self.current_hdr_path)
             
             if pixmap:
                 self.current_pixmap = pixmap
@@ -1615,30 +1616,74 @@ class PreviewPanel(QWidget):
                 self.add_to_cache(self.current_hdr_path, pixmap, resolution_str)
                 self.fit_pixmap_to_label()
     
-    def apply_hdr_tone_mapping(self, rgb_raw, width, height, exposure_stops):
-        """Apply tone mapping to raw HDR data - FAST (no disk I/O)"""
+    def apply_hdr_tone_mapping(self, rgb_raw, width, height, exposure_stops, file_path=None):
+        """Apply tone mapping to raw HDR data - FAST (no disk I/O)
+        
+        Args:
+            rgb_raw: Raw float RGB data
+            width: Image width
+            height: Image height
+            exposure_stops: Exposure adjustment in stops
+            file_path: Optional file path for tag-based color management
+        """
         if not NUMPY_AVAILABLE:
             return None
         
         try:
-            # Apply exposure compensation in stops
-            exposure_multiplier = pow(2.0, exposure_stops)
-            rgb = rgb_raw * exposure_multiplier
+            # Check if this is an EXR file and if we should use ACES color management
+            use_aces = False
+            if file_path and file_path.lower().endswith('.exr') and self.metadata_manager:
+                # Check for colorspace/view transform tags
+                try:
+                    file_metadata = self.metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names = [tag['name'] for tag in file_tags]
+                    tag_names_lower = [name.lower() for name in tag_names]  # Case-insensitive comparison
+                    
+                    # Check for ACEScg tag or sRGB(ACES) view transform tag (case-insensitive)
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                    elif "linearsrgb" in tag_names_lower or "linear srgb" in tag_names_lower or "srgb" in tag_names_lower:
+                        use_aces = False
+                    else:
+                        # No color space tag found - use default
+                        use_aces = False
+                        
+                except Exception as e:
+                    use_aces = False
             
-            # ACES Filmic tone mapping
-            a = 2.51
-            b = 0.03
-            c = 2.43
-            d = 0.59
-            e = 0.14
-            rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
-            
-            # Gamma correction (2.2 for sRGB)
-            gamma = 1.0 / 2.2
-            rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            # Apply appropriate view transform
+            if use_aces:
+                # Import ACES module
+                from .aces_color import apply_aces_view_transform
+                
+                # Apply -1 stop compensation to match Nuke/Maya reference
+                # This compensates for the inherent brightness difference in our pipeline
+                compensated_exposure = exposure_stops - 1.0
+                
+                rgb_display = apply_aces_view_transform(rgb_raw, exposure=compensated_exposure)
+            else:
+                # Standard tone mapping (existing code)
+                # Apply exposure compensation in stops
+                # Apply -1 stop compensation for consistency with ACES path
+                compensated_exposure = exposure_stops - 1.0
+                exposure_multiplier = pow(2.0, compensated_exposure)
+                rgb = rgb_raw * exposure_multiplier
+                
+                # ACES Filmic tone mapping
+                a = 2.51
+                b = 0.03
+                c = 2.43
+                d = 0.59
+                e = 0.14
+                rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+                
+                # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
+                rgb_display = np.power(rgb_tonemapped, gamma)
             
             # Convert to 8-bit
-            rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+            rgb_8bit = (rgb_display * 255).astype(np.uint8)
             
             # Create QImage
             bytes_per_line = width * 3
@@ -1652,6 +1697,8 @@ class PreviewPanel(QWidget):
             
         except Exception as e:
             print(f"Tone mapping error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def add_to_hdr_raw_cache(self, file_path, rgb_raw, width, height, resolution_str):
@@ -1953,7 +2000,8 @@ class PreviewPanel(QWidget):
                         file_path_str,
                         max_size=4096,  # High quality zoom
                         mip_level=0,
-                        exposure=0.0
+                        exposure=0.0,
+                        metadata_manager=self.metadata_manager
                     )
                     
                     if pixmap and not pixmap.isNull():
@@ -2746,8 +2794,8 @@ class PreviewPanel(QWidget):
                             # Cache raw data for fast exposure adjustments!
                             self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
                             
-                            # Apply tone mapping with current exposure
-                            pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure)
+                            # Apply tone mapping with current exposure (with ACES support)
+                            pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
                         else:
                             # Fallback: old method (slower, no caching)
                             pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
@@ -2774,7 +2822,8 @@ class PreviewPanel(QWidget):
                                     file_path_str,
                                     max_size=1024,  # Preview size
                                     mip_level=0,
-                                    exposure=0.0
+                                    exposure=0.0,
+                                    metadata_manager=self.metadata_manager
                                 )
                                 
                                 if pixmap and not pixmap.isNull():
@@ -5826,7 +5875,7 @@ class PreviewPanel(QWidget):
                 
                 if rgb_raw is not None:
                     self.add_to_hdr_raw_cache(file_path_str, rgb_raw, width, height, resolution_str)
-                    pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure)
+                    pixmap = self.apply_hdr_tone_mapping(rgb_raw, width, height, self.hdr_exposure, file_path=file_path_str)
                 else:
                     pixmap, resolution_str = load_hdr_exr_image(file_path_str, max_size=self.max_preview_size, exposure=self.hdr_exposure)
                 
@@ -5843,7 +5892,8 @@ class PreviewPanel(QWidget):
                             file_path_str,
                             max_size=1024,
                             mip_level=0,
-                            exposure=0.0
+                            exposure=0.0,
+                            metadata_manager=self.metadata_manager
                         )
                     except:
                         pixmap = None

@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import from package modules
+from . import __version__
 from .config import ContentBrowserConfig
 from .utils import get_maya_main_window, MAYA_AVAILABLE
 from .cache import ThumbnailCache, ThumbnailDiskCache, ThumbnailGenerator
@@ -415,6 +416,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         disk_cache_size_mb = self.settings_manager.get("thumbnails", "cache_size_mb", 500)
         self.disk_cache = ThumbnailDiskCache(max_size_mb=disk_cache_size_mb)
         
+        # Get metadata manager for tag-based operations (needed by thumbnail generator)
+        from .metadata import get_metadata_manager
+        self.metadata_manager = get_metadata_manager()
+        
         # Initialize thumbnail generator with size and quality from settings (not config!)
         # This is the GENERATION size (how big thumbnails are created and cached)
         # Display size (grid/list slider) is separate and stored in config.json
@@ -429,7 +434,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.memory_cache,
             self.disk_cache,
             thumbnail_generation_size,
-            jpeg_quality
+            jpeg_quality,
+            self.metadata_manager  # Pass metadata_manager for auto-tagging
         )
         
         # Connect thumbnail generator signals
@@ -549,7 +555,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def setup_ui(self):
         """Setup UI"""
-        self.setWindowTitle("Content Browser for Maya | v1.2.2 | by Denes Dankhazi")
+        self.setWindowTitle(f"Content Browser for Maya | v{__version__} | by Denes Dankhazi")
         self.setMinimumSize(800, 600)
         
         # Create menu bar
@@ -588,7 +594,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.create_browser_panel(self.content_splitter)
         
         # Right panel - Preview (initially visible)
-        self.preview_panel = PreviewPanel(self.settings_manager, config=self.config)
+        self.preview_panel = PreviewPanel(self.settings_manager, config=self.config, metadata_manager=self.metadata_manager)
         self.content_splitter.addWidget(self.preview_panel)
         
         # Set splitter initial sizes (20% nav, 50% browser, 30% preview)
@@ -2518,14 +2524,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_scroll_changed(self, value):
         """Handle scroll - load thumbnails for newly visible items"""
-        # Use timer to avoid generating thumbnails on every scroll tick
+        # Request thumbnails immediately for instant feedback
+        self.request_thumbnails_for_visible_items()
+        
+        # Also set up a debounce timer for when scrolling continues
+        # This prevents overwhelming the queue during rapid scrolling
         if hasattr(self, '_scroll_timer'):
             self._scroll_timer.stop()
         
         self._scroll_timer = QTimer()
         self._scroll_timer.setSingleShot(True)
         self._scroll_timer.timeout.connect(self.request_thumbnails_for_visible_items)
-        self._scroll_timer.start(300)  # Wait 300ms after scroll stops (increased from 100ms)
+        self._scroll_timer.start(150)  # Reduced from 300ms for faster response
     
     def toggle_preview_panel(self):
         """Toggle preview panel visibility"""
@@ -2541,6 +2551,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             
             # Hide panel
             self.preview_panel.setVisible(False)
+            
+            # Clear thumbnail queue and refresh for currently visible items
+            # This stops generating thumbnails for items that scrolled out of view
+            if hasattr(self, 'thumbnail_generator'):
+                self.thumbnail_generator.clear_queue()
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         else:
             # Show panel and restore last sizes
             self.preview_panel.setVisible(True)
@@ -2548,6 +2564,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Refresh preview with current selection
             assets = self.get_selected_assets()
             self.preview_panel.update_preview(assets)
+            
+            # Clear thumbnail queue and refresh for currently visible items
+            # This stops generating thumbnails for items that scrolled out of view
+            if hasattr(self, 'thumbnail_generator'):
+                self.thumbnail_generator.clear_queue()
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
             
             # Restore previous sizes if available
             current_sizes = self.content_splitter.sizes()
@@ -3433,7 +3455,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             
             # Now stop the thread
             self.thumbnail_generator.stop()
-            self.thumbnail_generator.wait(2000)  # Wait max 2 seconds
+            self.thumbnail_generator.wait(5000)  # Wait max 5 seconds for graceful shutdown
+            
+            # Force quit if still running
+            if self.thumbnail_generator.isRunning():
+                self.thumbnail_generator.quit()
+                self.thumbnail_generator.wait(1000)  # Wait another second
         
         # Save geometry
         geometry = self.saveGeometry().toBase64().data().decode()
@@ -3694,6 +3721,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     regen_thumb_text = f"🔄 Regenerate Thumbnail" if len(selected_assets) == 1 else f"🔄 Regenerate {len(selected_assets)} Thumbnails"
                     regen_thumb_action = menu.addAction(regen_thumb_text)
                     regen_thumb_action.triggered.connect(self.regenerate_selected_thumbnails)
+                    
+                    # Auto-detect Color Space (only for HDR/EXR/TX files)
+                    hdr_files = [a for a in selected_assets if str(a.file_path).lower().endswith(('.exr', '.hdr', '.tx'))]
+                    if hdr_files:
+                        auto_tag_text = f"🎨 Auto-detect Color Space" if len(hdr_files) == 1 else f"🎨 Auto-detect Color Space ({len(hdr_files)} files)"
+                        auto_tag_action = menu.addAction(auto_tag_text)
+                        auto_tag_action.triggered.connect(self.auto_detect_colorspace_for_selected)
+                    
                     menu.addSeparator()
                 
                 properties_action = menu.addAction("ℹ️ Properties")
@@ -3886,6 +3921,61 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 model.dataChanged.emit(top_left, bottom_right)
         else:
             self.safe_show_status("No thumbnails were cleared")
+    
+    def auto_detect_colorspace_for_selected(self):
+        """Auto-detect and apply color space tags for selected HDR/EXR/TX files"""
+        selected_assets = self.get_selected_assets()
+        
+        if not selected_assets:
+            return
+        
+        # Filter HDR/EXR/TX files only
+        hdr_files = [asset for asset in selected_assets 
+                     if not asset.is_folder and 
+                     str(asset.file_path).lower().endswith(('.exr', '.hdr', '.tx'))]
+        
+        if not hdr_files:
+            self.safe_show_status("No HDR/EXR/TX files selected")
+            return
+        
+        # Run auto-tagging on each file
+        from .aces_color import auto_tag_file_colorspace
+        
+        tagged_count = 0
+        for asset in hdr_files:
+            try:
+                result = auto_tag_file_colorspace(asset.file_path, self.metadata_manager)
+                if result:
+                    tagged_count += 1
+            except Exception as e:
+                # Silent fail for individual files
+                pass
+        
+        # Show status
+        if tagged_count > 0:
+            plural = "s" if tagged_count > 1 else ""
+            self.safe_show_status(f"Auto-tagged {tagged_count} file{plural} with color space")
+            
+            # Refresh preview if one of the tagged files is currently displayed
+            if self.preview_panel and self.preview_panel.current_hdr_path:
+                current_path = str(self.preview_panel.current_hdr_path)
+                if any(str(asset.file_path) == current_path for asset in hdr_files):
+                    # Clear raw cache for this file to force reload with new color management
+                    if current_path in self.preview_panel.hdr_raw_cache:
+                        del self.preview_panel.hdr_raw_cache[current_path]
+                    # Clear preview cache too
+                    if current_path in self.preview_panel.preview_cache:
+                        del self.preview_panel.preview_cache[current_path]
+                    # Reload preview with new tags
+                    selected_indices = self.file_list.selectionModel().selectedIndexes()
+                    if selected_indices:
+                        # Get the asset for the selected index
+                        asset = self.file_model.data(selected_indices[0], Qt.UserRole)
+                        if asset and not asset.is_folder:
+                            # Use update_preview with list of assets
+                            self.preview_panel.update_preview([asset])
+        else:
+            self.safe_show_status("No files were tagged (already have color space tags)")
     
     def add_folder_to_favorites(self, path):
         """Add folder to favorites"""

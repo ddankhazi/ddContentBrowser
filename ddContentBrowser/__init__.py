@@ -6,6 +6,10 @@ Author: ddankhazi
 License: MIT
 """
 
+# Version - SINGLE SOURCE OF TRUTH
+# MUST be defined BEFORE importing other modules that use it!
+__version__ = '1.3.0'
+
 # Import all modules
 from .config import ContentBrowserConfig
 from .utils import get_maya_main_window, MAYA_AVAILABLE, PYSIDE_VERSION
@@ -41,5 +45,3 @@ __all__ = [
     'DDContentBrowser',
     'show_content_browser',
 ]
-
-__version__ = '1.2.0'

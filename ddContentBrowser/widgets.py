@@ -1159,9 +1159,9 @@ def load_hdr_exr_raw(file_path, max_size=2048):
     return None, None, None, None
 
 
-def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False):
+def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False, metadata_manager=None):
     """
-    Load HDR/EXR image with proper float HDR handling
+    Load HDR/EXR image with proper float HDR handling and ACES color management support
     
     Args:
         file_path: Path to HDR/EXR file
@@ -1169,6 +1169,7 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
         exposure: Exposure compensation in stops (0.0 = neutral, +1.0 = 2x brighter, -1.0 = half)
                  Like Arnold/Maya lighting exposure
         return_raw: If True, also return raw float RGB array (for caching)
+        metadata_manager: Optional metadata manager for tag-based color management
         
     Returns:
         If return_raw=False: tuple (QPixmap, resolution_string) or (None, None) on failure
@@ -1209,27 +1210,46 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                 rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
                 width, height = new_width, new_height
             
-            # Apply exposure compensation in stops (like Arnold/Maya)
-            # Each stop = 2x or 0.5x brightness: multiplier = 2^exposure
-            exposure_multiplier = pow(2.0, exposure)
-            rgb = rgb * exposure_multiplier
+            # Check for ACES color management via tags
+            use_aces = False
+            if file_path_str.lower().endswith('.exr') and metadata_manager:
+                try:
+                    from pathlib import Path
+                    file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                    
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                except:
+                    pass
             
-            # ACES Filmic tone mapping (Stephen Hill's fit)
-            # Used in Unreal Engine, Unity, and many film pipelines
-            # Works great with ACEScg workflow
-            a = 2.51
-            b = 0.03
-            c = 2.43
-            d = 0.59
-            e = 0.14
-            rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+            # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
+            compensated_exposure = exposure - 1.0
             
-            # Gamma correction (2.2 for sRGB)
-            gamma = 1.0 / 2.2
-            rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            if use_aces:
+                # Use ACES view transform
+                from .aces_color import apply_aces_view_transform
+                rgb_display = apply_aces_view_transform(rgb, exposure=compensated_exposure)
+            else:
+                # Standard tone mapping
+                exposure_multiplier = pow(2.0, compensated_exposure)
+                rgb = rgb * exposure_multiplier
+                
+                # ACES Filmic tone mapping
+                a = 2.51
+                b = 0.03
+                c = 2.43
+                d = 0.59
+                e = 0.14
+                rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+                
+                # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
+                rgb_display = np.power(rgb_tonemapped, gamma)
             
             # Convert to 8-bit
-            rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+            rgb_8bit = (rgb_display * 255).astype(np.uint8)
             
             # Create QImage
             bytes_per_line = width * 3
@@ -1373,31 +1393,51 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
                     
                     width, height = new_width, new_height
                 
-                # Apply exposure compensation in stops (like Arnold/Maya)
-                # Each stop = 2x or 0.5x brightness: multiplier = 2^exposure
-                exposure_multiplier = pow(2.0, exposure)
-                rgb = rgb * exposure_multiplier
+                # Check for ACES color management via tags
+                use_aces = False
+                if metadata_manager:
+                    try:
+                        from pathlib import Path
+                        file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                        file_tags = file_metadata.get('tags', [])
+                        tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                        
+                        if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                            use_aces = True
+                    except:
+                        pass
                 
-                # ACES Filmic tone mapping (Stephen Hill's fit)
-                # Used in Unreal Engine, Unity, and many film pipelines
-                # Works great with ACEScg workflow
-                a = 2.51
-                b = 0.03
-                c = 2.43
-                d = 0.59
-                e = 0.14
+                # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
+                compensated_exposure = exposure - 1.0
                 
-                # Suppress numpy warnings for HDR tonemapping (overflow/divide by zero are expected)
-                with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
-                    rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
-                
-                # Gamma correction (2.2 for sRGB)
-                gamma = 1.0 / 2.2
-                rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+                if use_aces:
+                    # Use ACES view transform
+                    from .aces_color import apply_aces_view_transform
+                    with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                        rgb_display = apply_aces_view_transform(rgb, exposure=compensated_exposure)
+                else:
+                    # Standard tone mapping
+                    exposure_multiplier = pow(2.0, compensated_exposure)
+                    rgb = rgb * exposure_multiplier
+                    
+                    # ACES Filmic tone mapping
+                    a = 2.51
+                    b = 0.03
+                    c = 2.43
+                    d = 0.59
+                    e = 0.14
+                    
+                    # Suppress numpy warnings for HDR tonemapping
+                    with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                        rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+                    
+                    # Gamma correction (2.2 for sRGB)
+                    gamma = 1.0 / 2.2
+                    rgb_display = np.power(rgb_tonemapped, gamma)
                 
                 # Convert to 8-bit
                 with np.errstate(invalid='ignore'):
-                    rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+                    rgb_8bit = (rgb_display * 255).astype(np.uint8)
                 
                 # Create QImage
                 bytes_per_line = width * 3
@@ -2340,15 +2380,17 @@ class DragDropCollectionListWidget(QListWidget):
             event.ignore()
 
 
-def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
+def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadata_manager=None):
     """
     Load image using OpenImageIO (supports .tx, .exr, .hdr, and many other formats)
+    with ACES color management support
     
     Args:
         file_path: Path to image file
         max_size: Maximum width/height for preview
         mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.)
         exposure: Exposure compensation in stops (0.0 = neutral)
+        metadata_manager: Optional metadata manager for tag-based color management
         
     Returns:
         tuple: (QPixmap, resolution_string, metadata_dict) or (None, None, None) on failure
@@ -2364,6 +2406,11 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
         import numpy as np
         
         file_path_str = str(file_path)
+        
+        # Debug output for .tx files (disabled for production)
+        # from pathlib import Path
+        # if file_path_str.lower().endswith('.tx'):
+        #     print(f"\n[OIIO] Loading .tx file: {Path(file_path_str).name}")
         
         # Open image
         inp = ImageInput.open(file_path_str)
@@ -2385,6 +2432,12 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
             'compression': spec.get_string_attribute('compression', 'unknown'),
             'color_space': spec.get_string_attribute('oiio:ColorSpace', 'unknown'),
         }
+        
+        # Debug: Print metadata for .tx files (disabled for production)
+        # if file_path_str.lower().endswith('.tx'):
+        #     print(f"[OIIO]   Resolution: {width}x{height}, Channels: {channels}")
+        #     print(f"[OIIO]   Format: {metadata['format']}, Compression: {metadata['compression']}")
+        #     print(f"[OIIO]   Color Space: {metadata['color_space']}")
         
         # If mipmap requested and available
         if mip_level > 0 and spec.get_int_attribute('miplevels', 1) > mip_level:
@@ -2450,27 +2503,77 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
             img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             width, height = new_width, new_height
         
-        # Apply exposure compensation
-        if exposure != 0.0:
-            exposure_multiplier = pow(2.0, exposure)
-            img = img * exposure_multiplier
+        # Detect ACES color space
+        use_aces = False
         
-        # Tone mapping for HDR images (check if values > 1.0)
-        if img.max() > 1.0:
-            # ACES Filmic tone mapping
-            a = 2.51
-            b = 0.03
-            c = 2.43
-            d = 0.59
-            e = 0.14
-            img = np.clip((img * (a * img + b)) / (img * (c * img + d) + e), 0, 1)
+        # Method 1: Check filename for ACEScg marker (RenderMan .tx convention)
+        # Example: "texture_ACEScg.tx" or "env_scene-linear Rec.709-sRGB_ACEScg.hdr.tx"
+        from pathlib import Path
+        filename = Path(file_path_str).stem.lower()  # Get filename without extension
         
-        # Ensure values are in [0, 1]
-        img = np.clip(img, 0, 1)
+        # Debug: Show what we're checking (disabled for production)
+        # if file_path_str.lower().endswith('.tx'):
+        #     print(f"[OIIO] Checking filename stem: '{filename}'")
         
-        # Gamma correction (2.2 for sRGB)
-        gamma = 1.0 / 2.2
-        img = np.power(img, gamma)
+        if '_acescg' in filename or '-acescg' in filename or 'acescg' in filename:
+            use_aces = True
+            # print(f"[OIIO] ✓ Detected ACEScg from filename: {Path(file_path_str).name}")
+        
+        # Method 2: Check OIIO metadata color_space attribute
+        if not use_aces and metadata.get('color_space', '').lower() in ['acescg', 'aces', 'aces_cg']:
+            use_aces = True
+            # print(f"[OIIO] Detected ACEScg from metadata: {metadata['color_space']}")
+        
+        # Method 3: Check tags (if metadata_manager provided)
+        if not use_aces and metadata_manager:
+            try:
+                file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                file_tags = file_metadata.get('tags', [])
+                tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                
+                if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                    use_aces = True
+                    # print(f"[OIIO] Detected ACEScg from tags: {[tag['name'] for tag in file_tags]}")
+            except:
+                pass
+        
+        # Debug: Print final color management decision (disabled for production)
+        # if file_path_str.lower().endswith('.tx'):
+        #     if use_aces:
+        #         print(f"[OIIO] → Using ACES view transform")
+        #     else:
+        #         print(f"[OIIO] → Using standard filmic tone mapping")
+        
+        # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
+        compensated_exposure = exposure - 1.0
+        
+        # Apply color management and tone mapping
+        if use_aces and img.max() > 1.0:
+            # ACES view transform for HDR .tx files
+            from .aces_color import apply_aces_view_transform
+            img = apply_aces_view_transform(img, exposure=compensated_exposure)
+        else:
+            # Standard tone mapping
+            if exposure != 0.0:
+                exposure_multiplier = pow(2.0, compensated_exposure)
+                img = img * exposure_multiplier
+            
+            # Tone mapping for HDR images (check if values > 1.0)
+            if img.max() > 1.0:
+                # ACES Filmic tone mapping
+                a = 2.51
+                b = 0.03
+                c = 2.43
+                d = 0.59
+                e = 0.14
+                img = np.clip((img * (a * img + b)) / (img * (c * img + d) + e), 0, 1)
+            
+            # Ensure values are in [0, 1]
+            img = np.clip(img, 0, 1)
+            
+            # Gamma correction (2.2 for sRGB)
+            gamma = 1.0 / 2.2
+            img = np.power(img, gamma)
         
         # Convert to 8-bit
         img_8bit = (img * 255).astype(np.uint8)
@@ -2491,6 +2594,7 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0):
         return pixmap, resolution_str, metadata
         
     except Exception as e:
+        # Keep error logging for debugging critical failures
         print(f"[OIIO] Failed to load {file_path}: {e}")
         import traceback
         traceback.print_exc()

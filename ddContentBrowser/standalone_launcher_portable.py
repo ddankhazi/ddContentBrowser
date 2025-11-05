@@ -43,6 +43,7 @@ except ImportError:
 # Import browser as package
 try:
     from ddContentBrowser.browser import DDContentBrowser
+    from ddContentBrowser import __version__
 except ImportError as e:
     print(f"Error importing browser: {e}")
     print(f"\nPython path:")
@@ -53,7 +54,7 @@ except ImportError as e:
 def main():
     """Launch standalone content browser (PORTABLE version)"""
     print("=" * 60)
-    print("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
+    print(f"DD Content Browser v{__version__} (Standalone - PORTABLE)")
     print("=" * 60)
     print(f"Python: {sys.version}")
     print(f"Script dir: {script_dir}")
@@ -146,9 +147,11 @@ def main():
             print(f"Icon not found: {icon_path}")
     except Exception as e:
         print(f"Could not load icon: {e}")
+    except:
+        pass
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser v1.2.2 (Standalone - PORTABLE)")
+    browser.setWindowTitle(f"DD Content Browser v{__version__} (Standalone - PORTABLE)")
     # Set window icon for browser window too
     try:
         from PySide6.QtGui import QIcon
