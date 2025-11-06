@@ -1178,6 +1178,23 @@ def load_hdr_exr_image(file_path, max_size=3840, exposure=0.0, return_raw=False,
     file_path_str = str(file_path)
     file_ext = file_path_str.lower()
     
+    # FAST CHECK: Check if EXR is tagged as deep data (skip file check)
+    if file_ext.endswith('.exr') and metadata_manager:
+        try:
+            from pathlib import Path
+            file_metadata = metadata_manager.get_file_metadata(str(file_path))
+            file_tags = file_metadata.get('tags', [])
+            tag_names_lower = [tag['name'].lower() for tag in file_tags]
+            
+            if "deepdata" in tag_names_lower:
+                # Deep EXR - return immediately without loading
+                if return_raw:
+                    return None, "Deep EXR - No Preview", None
+                else:
+                    return None, "Deep EXR - No Preview"
+        except:
+            pass
+    
     # Use OpenCV for .hdr (Radiance RGBE) files if available
     if file_ext.endswith('.hdr') and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
         try:

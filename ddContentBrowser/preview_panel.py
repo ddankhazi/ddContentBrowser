@@ -96,6 +96,68 @@ except ImportError:
 # NOTE: These helper functions were originally in widgets.py but moved here to avoid circular imports
 
 
+def is_deep_exr(file_path):
+    """
+    Check if an EXR file is a deep image (contains deep data)
+    
+    Deep images store multiple samples per pixel and are not supported for preview.
+    
+    Args:
+        file_path: Path to EXR file
+        
+    Returns:
+        bool: True if file is a deep EXR, False otherwise
+    """
+    if not OPENEXR_AVAILABLE:
+        return False
+    
+    try:
+        with OpenEXR.File(str(file_path)) as exr_file:
+            header = exr_file.header()
+            
+            # FAST CHECK: Check if the header contains deep data indicator
+            # Deep images have a 'type' attribute set to 'deepscanline' or 'deeptile'
+            if 'type' in header:
+                type_value = header['type']
+                if isinstance(type_value, str):
+                    is_deep = 'deep' in type_value.lower()
+                    if is_deep:
+                        print(f"🔍 Detected deep EXR (type: {type_value})")
+                        return True
+                # In some versions, type is returned as bytes
+                elif isinstance(type_value, bytes):
+                    is_deep = b'deep' in type_value.lower()
+                    if is_deep:
+                        print(f"🔍 Detected deep EXR (type: {type_value})")
+                        return True
+            
+            # SLOWER CHECK: Only if header check didn't find it
+            # Some deep EXR files might not have explicit type field
+            # Check first channel's pixel dtype (don't check all channels for speed)
+            channels = exr_file.channels()
+            if channels:
+                # Just check the first channel
+                first_channel_name = next(iter(channels.keys()))
+                first_channel = channels[first_channel_name]
+                
+                try:
+                    pixels = first_channel.pixels
+                    # Deep data pixels return object arrays instead of numeric arrays
+                    if pixels is not None and hasattr(pixels, 'dtype'):
+                        import numpy as np
+                        if pixels.dtype == np.object_:
+                            print(f"🔍 Detected deep data in channel '{first_channel_name}' (dtype=object)")
+                            return True
+                except:
+                    pass
+            
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Error checking if EXR is deep: {e}")
+        return False
+
+
 def _load_exr_channel_data(channel, channel_name, width, height):
     """Helper function to load a single EXR channel and convert to RGB"""
     try:
@@ -152,6 +214,12 @@ def load_hdr_exr_raw(file_path, max_size=2048):
     """
     file_path_str = str(file_path)
     file_ext = file_path_str.lower()
+    
+    # Check for deep EXR first
+    if file_ext.endswith('.exr'):
+        if is_deep_exr(file_path):
+            print(f"⚠️ Deep EXR detected - preview not supported")
+            return None, None, None, "Deep EXR - No Preview"
     
     # Use OpenCV for .hdr (Radiance RGBE) files if available (best option!)
     if file_ext.endswith('.hdr') and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
@@ -331,6 +399,9 @@ def load_hdr_exr_image(file_path, max_size=2048, exposure=0.0, return_raw=False)
     rgb, width, height, resolution_str = load_hdr_exr_raw(file_path, max_size)
     
     if rgb is None:
+        # Check if it's a deep EXR (resolution_str will contain "Deep EXR")
+        if resolution_str and "Deep EXR" in resolution_str:
+            return None, resolution_str
         return None, None
     
     import numpy as np
@@ -1164,6 +1235,9 @@ class PreviewPanel(QWidget):
         """
         Load a specific channel from an EXR file directly with OpenEXR
         
+        NOTE: This should only be called for non-deep EXR files.
+        Deep EXR check should be done before calling this function.
+        
         Args:
             file_path: Path to EXR file
             channel_name: Name of channel to load (e.g. "diffuse", "specular", "zdepth")
@@ -1402,7 +1476,12 @@ class PreviewPanel(QWidget):
             return None, None
     
     def detect_exr_channels(self, file_path):
-        """Detect and store available EXR channels"""
+        """
+        Detect and store available EXR channels
+        
+        NOTE: This should only be called for non-deep EXR files.
+        Check with is_deep_exr() before calling this function.
+        """
         if not OPENEXR_AVAILABLE:
             return
         
@@ -2323,6 +2402,38 @@ class PreviewPanel(QWidget):
         # Add metadata note
         self.add_metadata_row("⚠️", "Error", "Failed to load HDR/EXR")
         self.add_metadata_row("💡", "Tip", "Check if file is corrupted")
+    
+    def show_deep_exr_placeholder(self, filename):
+        """Show placeholder for Deep EXR files (not supported for preview)"""
+        # Create a simple placeholder pixmap
+        placeholder = QPixmap(400, 300)
+        placeholder.fill(QColor(60, 60, 60))
+        
+        # Draw icon and text
+        painter = QPainter(placeholder)
+        painter.setPen(QColor(180, 180, 180))
+        
+        # Draw large icon
+        font = QFont(UI_FONT, 48)
+        painter.setFont(font)
+        painter.drawText(placeholder.rect(), Qt.AlignCenter, "🔍")
+        
+        # Draw info text below
+        font = QFont(UI_FONT, 10)
+        painter.setFont(font)
+        text_rect = placeholder.rect().adjusted(20, 100, -20, 0)
+        painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, 
+                        f"Deep EXR - No Preview\n\n{filename}\n\nDeep images contain multiple samples per pixel\nand are not supported for preview.")
+        
+        painter.end()
+        
+        self.current_pixmap = placeholder
+        self.fit_pixmap_to_label()
+        
+        # Add metadata note
+        self.add_metadata_row("ℹ️", "Type", "Deep EXR (multi-sample)")
+        self.add_metadata_row("⚠️", "Preview", "Not supported")
+        self.add_metadata_row("💡", "Info", "Deep data requires specialized tools")
     
     def eventFilter(self, obj, event):
         """Event filter for graphics view - handles mouse events for zoom/pan and PDF navigation"""
@@ -3448,11 +3559,42 @@ class PreviewPanel(QWidget):
                         
                         # === EXR Channel Detection ===
                         if file_ext.endswith('.exr'):
-                            self.detect_exr_channels(file_path_str)
+                            # FAST CHECK: Check if already tagged as deep data (from thumbnail generation)
+                            is_deep = False
+                            if self.metadata_manager:
+                                file_metadata = self.metadata_manager.get_file_metadata(file_path_str)
+                                file_tags = file_metadata.get('tags', [])
+                                tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                                if "deepdata" in tag_names_lower:
+                                    is_deep = True
+                                    if hasattr(self, 'debug_mode') and self.debug_mode:
+                                        print(f"⚡ Deep EXR detected via tag (instant) - skipping preview")
                             
-                            # Load first channel using new channel loader
-                            if self.current_exr_channels:
-                                pixmap, resolution_str = self.load_exr_channel(file_path_str, self.current_exr_channel)
+                            # SLOW CHECK: If not tagged yet, check the file (first time only)
+                            if not is_deep and is_deep_exr(file_path_str):
+                                is_deep = True
+                                # Tag it for next time
+                                if self.metadata_manager:
+                                    try:
+                                        tag_id = self.metadata_manager.add_tag("deepdata", category=None, color=None)
+                                        self.metadata_manager.add_tag_to_file(file_path_str, tag_id)
+                                        if hasattr(self, 'debug_mode') and self.debug_mode:
+                                            print(f"🔖 Tagged as 'deepdata' for future fast detection")
+                                    except:
+                                        pass
+                            
+                            if is_deep:
+                                print(f"⚠️ Deep EXR detected - skipping preview")
+                                self.graphics_scene.clear()
+                                self.current_text_item = None
+                                self.show_deep_exr_placeholder(asset.name)
+                                pixmap = None  # Skip further processing
+                            else:
+                                self.detect_exr_channels(file_path_str)
+                                
+                                # Load first channel using new channel loader
+                                if self.current_exr_channels:
+                                    pixmap, resolution_str = self.load_exr_channel(file_path_str, self.current_exr_channel)
                         else:
                             # HDR files (not EXR) - load with full res raw data caching
                             # Clear EXR channel info for HDR files
@@ -3467,9 +3609,15 @@ class PreviewPanel(QWidget):
                             self.add_to_cache(file_path_str, pixmap, resolution_str)
                             self.fit_pixmap_to_label()
                         else:
-                            self.graphics_scene.clear()
-                            self.current_text_item = None
-                            self.show_hdr_placeholder(asset.name)
+                            # Check if it's a deep EXR
+                            if resolution_str and "Deep EXR" in resolution_str:
+                                self.graphics_scene.clear()
+                                self.current_text_item = None
+                                self.show_deep_exr_placeholder(asset.name)
+                            else:
+                                self.graphics_scene.clear()
+                                self.current_text_item = None
+                                self.show_hdr_placeholder(asset.name)
                     else:
                         # Standard image formats (PNG, JPG, TIF, etc.) - NO exposure control
                         self.current_hdr_path = None

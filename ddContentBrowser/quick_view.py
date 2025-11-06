@@ -1097,6 +1097,25 @@ class QuickViewWindow(QDialog):
             elif file_path.suffix.lower() in ['.exr', '.hdr']:
                 # if DEBUG_MODE:
                 #     print(f"[QuickView] Loading HDR/EXR using load_hdr_exr_image: {file_path.name}")
+                
+                # FAST CHECK: Check if EXR is tagged as deep data (skip file check)
+                is_deep = False
+                if file_path.suffix.lower() == '.exr':
+                    metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
+                    if metadata_manager:
+                        file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                        file_tags = file_metadata.get('tags', [])
+                        tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                        if "deepdata" in tag_names_lower:
+                            is_deep = True
+                
+                if is_deep:
+                    # Deep EXR detected via tag - instant skip
+                    print(f"⚡ Deep EXR detected via tag (instant) - no preview available")
+                    self.label.setText("Deep EXR - No Preview Available\n\nDeep images contain multiple samples per pixel\nand are not supported for preview.")
+                    self.label.setAlignment(Qt.AlignCenter)
+                    return
+                
                 # Use the same HDR/EXR loader as PreviewPanel
                 # NOTE: load_hdr_exr_image returns tuple (pixmap, resolution_str)
                 # Pass metadata_manager for ACES color management
@@ -1106,6 +1125,19 @@ class QuickViewWindow(QDialog):
                     pixmap = result[0]  # Extract pixmap from tuple
                     # if DEBUG_MODE:
                     #     print(f"[QuickView] HDR/EXR loaded successfully: {pixmap.width()}×{pixmap.height()}")
+                elif result and result[1] and "Deep EXR" in str(result[1]):
+                    # Deep EXR detected during load - show message and tag it
+                    print(f"⚠️ Deep EXR detected in Quick View - no preview available")
+                    if metadata_manager:
+                        try:
+                            tag_id = metadata_manager.add_tag("deepdata", category=None, color=None)
+                            metadata_manager.add_tag_to_file(str(file_path), tag_id)
+                            print(f"🔖 Tagged as 'deepdata' for future fast detection")
+                        except:
+                            pass
+                    self.label.setText("Deep EXR - No Preview Available\n\nDeep images contain multiple samples per pixel\nand are not supported for preview.")
+                    self.label.setAlignment(Qt.AlignCenter)
+                    return
                 # else:
                 #     if DEBUG_MODE:
                 #         print(f"[QuickView] HDR/EXR load failed or returned None")
@@ -1806,11 +1838,37 @@ class QuickViewWindow(QDialog):
                     # Use normalized PDF loading for consistent sizing
                     pixmap, page_count, _, canvas_size = load_pdf_page_normalized(str(file_path), 0, 2048)
                 elif file_path.suffix.lower() in ['.exr', '.hdr']:
+                    # FAST CHECK: Skip deep EXR files immediately via tag
+                    is_deep = False
+                    if file_path.suffix.lower() == '.exr':
+                        metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
+                        if metadata_manager:
+                            file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                            file_tags = file_metadata.get('tags', [])
+                            tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                            if "deepdata" in tag_names_lower:
+                                is_deep = True
+                    
+                    if is_deep:
+                        # Deep EXR detected via tag - skip instantly
+                        print(f"⚡ Skipping deep EXR in slideshow (tagged): {file_path.name}")
+                        continue
+                    
                     # Pass metadata_manager for ACES color management
                     metadata_manager = self.browser.metadata_manager if hasattr(self.browser, 'metadata_manager') else None
                     result = load_hdr_exr_image(str(file_path), metadata_manager=metadata_manager)
                     if result and result[0]:
                         pixmap = result[0]
+                    elif result and result[1] and "Deep EXR" in str(result[1]):
+                        # Deep EXR detected during load - tag and skip
+                        print(f"⚠️ Skipping deep EXR in slideshow: {file_path.name}")
+                        if metadata_manager:
+                            try:
+                                tag_id = metadata_manager.add_tag("deepdata", category=None, color=None)
+                                metadata_manager.add_tag_to_file(str(file_path), tag_id)
+                            except:
+                                pass
+                        continue
                     canvas_size = None  # Not a PDF
                 elif file_path.suffix.lower() in ['.tga', '.psd']:
                     # Use PIL for TGA files, psd-tools for PSD files

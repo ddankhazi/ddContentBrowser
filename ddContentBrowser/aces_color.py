@@ -34,18 +34,84 @@ def detect_exr_colorspace(filepath, channels=None, width=None, height=None, meta
         print(f"[ACES]   Resolution: {width}x{height}")
         print(f"[ACES]   Aspect ratio: {width/height if height else 'N/A'}")
     
-    # Rule 1: Check if it's a lat-long HDRI (2:1 aspect ratio)
-    # These are typically Linear sRGB
-    if width and height:
-        aspect_ratio = width / height
-        if abs(aspect_ratio - 2.0) < 0.01:  # Close to 2:1
-            # Check common HDRI resolutions
-            if width in [2048, 4096, 8192, 16384] and height == width // 2:
+    # Rule 0: Check renderer-specific color space metadata (HIGHEST PRIORITY)
+    # This is explicit and 100% reliable when present
+    if metadata:
+        # Arnold renderer
+        if 'arnold/color_space' in metadata:
+            arnold_cs = str(metadata['arnold/color_space']).strip()
+            if DEBUG_ACES:
+                print(f"[ACES]   Found Arnold metadata: arnold/color_space = '{arnold_cs}'")
+            
+            # Map Arnold color space names to our internal names
+            arnold_map = {
+                'ACEScg': 'ACEScg',
+                'ACES2065-1': 'ACEScg',  # Treat as ACEScg for display
+                'aces_cg': 'ACEScg',
+                'lin_ap1': 'ACEScg',
+                'sRGB': 'Linear sRGB',
+                'Rec.709': 'Linear sRGB',
+                'linear': 'Linear sRGB',
+                'scene_linear': 'Linear sRGB',
+            }
+            
+            for key, value in arnold_map.items():
+                if key.lower() in arnold_cs.lower():
+                    if DEBUG_ACES:
+                        print(f"[ACES] ✓✓✓ Explicit Arnold color space → {value}")
+                    return value
+        
+        # V-Ray renderer (check common field names)
+        vray_keys = ['vray/colorspace', 'vray/color_space', 'VRayColorSpace']
+        for key in vray_keys:
+            if key in metadata:
+                vray_cs = str(metadata[key]).strip()
                 if DEBUG_ACES:
-                    print(f"[ACES] ✓ Detected as lat-long HDRI (2:1 aspect) → Linear sRGB")
+                    print(f"[ACES]   Found V-Ray metadata: {key} = '{vray_cs}'")
+                
+                if 'aces' in vray_cs.lower() or 'ap1' in vray_cs.lower():
+                    if DEBUG_ACES:
+                        print(f"[ACES] ✓✓✓ Explicit V-Ray color space → ACEScg")
+                    return "ACEScg"
+                elif 'srgb' in vray_cs.lower() or '709' in vray_cs.lower() or 'linear' in vray_cs.lower():
+                    if DEBUG_ACES:
+                        print(f"[ACES] ✓✓✓ Explicit V-Ray color space → Linear sRGB")
+                    return "Linear sRGB"
+        
+        # Redshift renderer
+        redshift_keys = ['redshift/colorSpace', 'redshift/color_space', 'redshiftOptions/colorSpace']
+        for key in redshift_keys:
+            if key in metadata:
+                rs_cs = str(metadata[key]).strip()
+                if DEBUG_ACES:
+                    print(f"[ACES]   Found Redshift metadata: {key} = '{rs_cs}'")
+                
+                if 'aces' in rs_cs.lower() or 'ap1' in rs_cs.lower():
+                    if DEBUG_ACES:
+                        print(f"[ACES] ✓✓✓ Explicit Redshift color space → ACEScg")
+                    return "ACEScg"
+                elif 'srgb' in rs_cs.lower() or '709' in rs_cs.lower():
+                    if DEBUG_ACES:
+                        print(f"[ACES] ✓✓✓ Explicit Redshift color space → Linear sRGB")
+                    return "Linear sRGB"
+        
+        # Cycles/Blender (check for OCIO config)
+        if 'blender/colorspace' in metadata or 'cycles/colorspace' in metadata:
+            key = 'blender/colorspace' if 'blender/colorspace' in metadata else 'cycles/colorspace'
+            cycles_cs = str(metadata[key]).strip()
+            if DEBUG_ACES:
+                print(f"[ACES]   Found Blender/Cycles metadata: {key} = '{cycles_cs}'")
+            
+            if 'aces' in cycles_cs.lower():
+                if DEBUG_ACES:
+                    print(f"[ACES] ✓✓✓ Explicit Blender/Cycles color space → ACEScg")
+                return "ACEScg"
+            elif 'linear' in cycles_cs.lower() or 'srgb' in cycles_cs.lower():
+                if DEBUG_ACES:
+                    print(f"[ACES] ✓✓✓ Explicit Blender/Cycles color space → Linear sRGB")
                 return "Linear sRGB"
     
-    # Rule 2: Check channel count
+    # Rule 1: Check channel count
     # Multi-channel (more than 4) typically indicates render output = ACEScg
     if channels:
         channel_count = len(channels)
@@ -57,18 +123,23 @@ def detect_exr_colorspace(filepath, channels=None, width=None, height=None, meta
                 print(f"[ACES] ✓ Multi-channel ({channel_count} channels) → ACEScg")
             return "ACEScg"
     
-    # Rule 3: Check metadata (if available)
-    # Look for chromaticities or colorSpace attributes
-    if metadata:
-        # TODO: Parse OpenEXR metadata for color space info
-        pass
-    
-    # Rule 4: Filename pattern (optional heuristic)
+    # Rule 2: Filename pattern (optional heuristic)
     filename = Path(filepath).stem.lower()
     if "acescg" in filename or "aces" in filename:
         if DEBUG_ACES:
             print(f"[ACES] ✓ Filename contains 'aces' → ACEScg")
         return "ACEScg"
+    
+    # Rule 3: Check if it's a lat-long HDRI (2:1 aspect ratio) - LOWEST PRIORITY
+    # These are typically Linear sRGB, but this is the most uncertain heuristic
+    if width and height:
+        aspect_ratio = width / height
+        if abs(aspect_ratio - 2.0) < 0.01:  # Close to 2:1
+            # Common HDRI resolutions (including 1024x512, 2048x1024, etc.)
+            if height > 0 and width == height * 2:
+                if DEBUG_ACES:
+                    print(f"[ACES] ⚠ Detected as lat-long HDRI (2:1 aspect) → Linear sRGB (uncertain)")
+                return "Linear sRGB"
     
     # Default: Assume ACEScg for non-HDRI EXR files
     # (Most modern render outputs are ACEScg)
@@ -321,13 +392,13 @@ def auto_tag_file_colorspace(file_path, metadata_manager=None):
                 channels = exr_file.channels()
                 channel_count = len(channels)
                 
-                # Use existing detection logic
+                # Use existing detection logic with full header metadata
                 detected_colorspace = detect_exr_colorspace(
                     str(file_path),
                     channels=list(channels.keys()),
                     width=width,
                     height=height,
-                    metadata=None
+                    metadata=header  # Pass full header for metadata detection
                 )
         except Exception as e:
             return None

@@ -1582,7 +1582,26 @@ class ThumbnailGenerator(QThread):
         Returns:
             QPixmap or None
         """
-        # Auto-tag color space FIRST (before thumbnail generation)
+        # Check if this is a deep EXR - skip thumbnail generation and TAG it
+        from .preview_panel import is_deep_exr
+        if is_deep_exr(file_path):
+            if DEBUG_MODE:
+                print(f"[EXR-OPT] Deep EXR detected - skipping thumbnail and tagging: {Path(file_path).name}")
+            
+            # Tag as deep data for fast future checks
+            if self.metadata_manager:
+                try:
+                    tag_id = self.metadata_manager.add_tag("deepdata", category=None, color=None)
+                    self.metadata_manager.add_tag_to_file(str(file_path), tag_id)
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] Tagged as 'deepdata' for fast future detection")
+                except Exception as tag_error:
+                    if DEBUG_MODE:
+                        print(f"[EXR-OPT] Warning: Failed to tag deep EXR: {tag_error}")
+            
+            return None
+        
+        # Auto-tag color space (before thumbnail generation)
         # This ensures tags are available when preview panel loads the file
         if self.metadata_manager:
             try:
