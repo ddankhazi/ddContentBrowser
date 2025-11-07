@@ -55,6 +55,9 @@ def qt_message_handler(msg_type, context, message):
 # Install the message handler
 qInstallMessageHandler(qt_message_handler)
 
+# Debug mode flag
+DEBUG_MODE = False
+
 # Check for numpy (required for HDR/EXR processing)
 try:
     import numpy as np
@@ -3268,6 +3271,89 @@ class PreviewPanel(QWidget):
         # Add the row widget to metadata layout
         self.metadata_layout.addWidget(row_widget)
     
+    def add_compact_exif_header(self, meta):
+        """Add compact EXIF header (Adobe Bridge style)
+        Shows: f/2.8 · 1/1000s · ISO 1600 | 7952×5304 | 9.09 MB · 350 ppi
+        """
+        parts = []
+        
+        # Exposure data
+        if 'aperture' in meta:
+            parts.append(meta['aperture'])
+        if 'shutter_speed' in meta:
+            parts.append(meta['shutter_speed'])
+        if 'iso' in meta:
+            parts.append(f"ISO {meta['iso']}")
+        
+        exposure_str = " · ".join(parts) if parts else ""
+        
+        # Resolution
+        resolution_str = meta.get('dimensions', '')
+        
+        # File size
+        size_str = ""
+        if 'file_size' in meta:
+            size = meta['file_size']
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.2f} KB"
+            elif size < 1024 * 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.2f} MB"
+            else:
+                size_str = f"{size / (1024 * 1024 * 1024):.2f} GB"
+        
+        # Create compact header widget
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(5, 8, 5, 8)
+        header_layout.setSpacing(10)
+        
+        # Exposure label (bold, larger)
+        if exposure_str:
+            exposure_label = QLabel(f"<b>{exposure_str}</b>")
+            exposure_label.setStyleSheet(f"font-size: 12px; font-family: {UI_FONT}; color: #ffffff;")
+            header_layout.addWidget(exposure_label)
+            
+            # Separator
+            sep1 = QLabel("|")
+            sep1.setStyleSheet(f"color: #555; font-size: 12px;")
+            header_layout.addWidget(sep1)
+        
+        # Resolution
+        if resolution_str:
+            res_label = QLabel(resolution_str)
+            res_label.setStyleSheet(f"font-size: 11px; font-family: {UI_FONT}; color: #b0b0b0;")
+            header_layout.addWidget(res_label)
+            
+            if size_str:
+                sep2 = QLabel("|")
+                sep2.setStyleSheet(f"color: #555; font-size: 12px;")
+                header_layout.addWidget(sep2)
+        
+        # Size
+        if size_str:
+            size_label = QLabel(size_str)
+            size_label.setStyleSheet(f"font-size: 11px; font-family: {UI_FONT}; color: #b0b0b0;")
+            header_layout.addWidget(size_label)
+        
+        header_layout.addStretch()
+        
+        # Add separator line before header (same style as multi-select)
+        self.metadata_layout.addSpacing(6)
+        separator = QLabel("─" * 40)
+        separator.setStyleSheet("color: #555;")
+        self.metadata_layout.addWidget(separator)
+        
+        # Add header
+        self.metadata_layout.addWidget(header_widget)
+        
+        # Add separator line after header (same style as multi-select)
+        separator2 = QLabel("─" * 40)
+        separator2.setStyleSheet("color: #555;")
+        self.metadata_layout.addWidget(separator2)
+        self.metadata_layout.addSpacing(6)
+    
     def add_metadata_tags_display(self, assets):
         """Add read-only tags display in metadata tab with Edit button"""
         # Create row widget similar to other metadata rows
@@ -3853,8 +3939,62 @@ class PreviewPanel(QWidget):
                 # Other non-image, non-text files - show icon/placeholder
                 self.graphics_scene.clear()
         
-        # Add metadata
+        # Add metadata - Adobe Bridge style layout
+        # 1. Basic file information
         self.add_metadata_row("📄", "Name", asset.name)
+        
+        # File type with special handling for PDF and folders
+        if asset.is_folder:
+            file_type = "Folder"
+        elif asset.is_pdf_file:
+            file_type = "PDF Document"
+        elif asset.extension:
+            file_type = asset.extension.upper() + " file"
+        else:
+            file_type = "File"
+        self.add_metadata_row("🗂️", "Type", file_type)
+        
+        # Modified date
+        try:
+            mod_time = datetime.fromtimestamp(asset.file_path.stat().st_mtime)
+            date_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
+            self.add_metadata_row("�", "Modified", date_str)
+        except:
+            pass
+        
+        # Path (show directory, not filename which is already shown)
+        path_str = str(asset.file_path.parent)  # Get directory only
+        if len(path_str) > 60:
+            # Show beginning + end, cut middle
+            path_str = path_str[:30] + "..." + path_str[-27:]
+        self.add_metadata_row("📂", "Path", path_str)
+        
+        # 2. Compact EXIF header (if image with EXIF data)
+        exif_meta = None
+        if asset.is_image_file:
+            try:
+                from .metadata_extractor import FileMetadata
+                file_meta = FileMetadata(asset.file_path, extract_full=True)
+                exif_meta = file_meta.get_metadata()
+                
+                # Build metadata dict for compact header
+                header_data = {}
+                if 'aperture' in exif_meta:
+                    header_data['aperture'] = exif_meta['aperture']
+                if 'shutter_speed' in exif_meta:
+                    header_data['shutter_speed'] = exif_meta['shutter_speed']
+                if 'iso' in exif_meta:
+                    header_data['iso'] = exif_meta['iso']
+                if resolution_str:
+                    header_data['dimensions'] = resolution_str
+                header_data['file_size'] = asset.size
+                
+                # Only show compact header if we have EXIF data
+                if 'aperture' in header_data or 'shutter_speed' in header_data or 'iso' in header_data:
+                    self.add_compact_exif_header(header_data)
+            except:
+                # EXIF extraction failed - skip silently
+                pass
         
         # If this is a sequence, add sequence-specific metadata
         if asset.is_sequence and asset.sequence:
@@ -3866,37 +4006,63 @@ class PreviewPanel(QWidget):
                 self.add_metadata_row("⚠️", "Missing", f"{missing_count} frames")
             self.add_metadata_row("💾", "Total Size", self.format_file_size(seq.total_size))
         
-        # File type with special handling for PDF
-        if asset.is_pdf_file:
-            file_type = "PDF Document"
-        else:
-            file_type = asset.extension.upper() + " file"
-        self.add_metadata_row("🗂️", "Type", file_type)
-        
-        if not asset.is_sequence:
-            # Only show individual file size if not a sequence
-            self.add_metadata_row("💾", "Size", self.format_file_size(asset.size))
-        
-        # Image resolution (use cached value if available)
-        if asset.is_image_file and resolution_str:
-            self.add_metadata_row("📐", "Resolution", resolution_str)
-        
-        # Modified date
-        try:
-            mod_time = datetime.fromtimestamp(asset.file_path.stat().st_mtime)
-            date_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
-            self.add_metadata_row("📅", "Modified", date_str)
-        except:
-            pass
-        
-        # Path (shortened)
-        path_str = str(asset.file_path)
-        if len(path_str) > 50:
-            path_str = "..." + path_str[-47:]
-        self.add_metadata_row("📂", "Path", path_str)
-        
-        # Add tags display in metadata (read-only)
+        # 3. Add tags display in metadata (read-only)
         self.add_metadata_tags_display([asset])
+        
+        # 4. Detailed Camera Data (EXIF) section
+        if exif_meta and asset.is_image_file:
+            # Add section header
+            section_header = QLabel("<b>Camera Data (EXIF)</b>")
+            section_header.setStyleSheet(f"color: #ffffff; font-size: 12px; font-family: {UI_FONT}; padding: 8px 0 4px 0;")
+            self.metadata_layout.addWidget(section_header)
+            
+            # Camera info
+            if 'camera_make' in exif_meta and 'camera_model' in exif_meta:
+                camera = f"{exif_meta['camera_make']} {exif_meta['camera_model']}"
+                self.add_metadata_row("📷", "Camera", camera)
+            elif 'camera_model' in exif_meta:
+                self.add_metadata_row("📷", "Camera", exif_meta['camera_model'])
+            
+            # Lens
+            if 'lens' in exif_meta:
+                self.add_metadata_row("🔭", "Lens", exif_meta['lens'])
+            
+            # ISO
+            if 'iso' in exif_meta:
+                iso_str = f"{exif_meta['iso']}"
+                if 'iso_category' in exif_meta:
+                    iso_str += f" ({exif_meta['iso_category']})"
+                self.add_metadata_row("📊", "ISO", iso_str)
+            
+            # Aperture
+            if 'aperture' in exif_meta:
+                aperture_str = exif_meta['aperture']
+                if 'aperture_category' in exif_meta:
+                    aperture_str += f" ({exif_meta['aperture_category']})"
+                self.add_metadata_row("🔍", "Aperture", aperture_str)
+            
+            # Shutter Speed
+            if 'shutter_speed' in exif_meta:
+                self.add_metadata_row("⏱️", "Shutter", exif_meta['shutter_speed'])
+            
+            # Focal Length
+            if 'focal_length' in exif_meta:
+                focal_str = exif_meta['focal_length']
+                if 'focal_length_category' in exif_meta:
+                    focal_str += f" ({exif_meta['focal_length_category']})"
+                self.add_metadata_row("�", "Focal Length", focal_str)
+            
+            # White Balance
+            if 'white_balance' in exif_meta:
+                self.add_metadata_row("⚪", "White Balance", exif_meta['white_balance'])
+            
+            # Flash
+            if 'flash' in exif_meta:
+                self.add_metadata_row("⚡", "Flash", exif_meta['flash'])
+            
+            # Resolution (if we have it)
+            if resolution_str:
+                self.add_metadata_row("📐", "Resolution", resolution_str)
         
         # Load tags for this asset (in Tags tab)
         self.load_tags(asset)
@@ -3963,13 +4129,32 @@ class PreviewPanel(QWidget):
             self.add_metadata_row("💾", "Total size", self.format_file_size(total_size))
             
             # Count file types (quick, no I/O)
+            folders_count = sum(1 for a in assets if a.is_folder)
+            files_count = count - folders_count
+            
+            # Build types breakdown
             type_counts = {}
             for asset in assets:
-                ext = asset.extension.upper()
-                type_counts[ext] = type_counts.get(ext, 0) + 1
+                if not asset.is_folder and asset.extension:
+                    ext = asset.extension.upper()
+                    type_counts[ext] = type_counts.get(ext, 0) + 1
             
-            types_str = ", ".join([f"{count} {ext}" for ext, count in sorted(type_counts.items())])
-            self.add_metadata_row("🗂️", "Types", types_str)
+            # Build types string
+            types_parts = []
+            
+            # Add folders if any
+            if folders_count > 0:
+                folder_label = "Folder" if folders_count == 1 else "Folders"
+                types_parts.append(f"{folders_count} {folder_label}")
+            
+            # Add file types if any
+            if type_counts:
+                types_parts.extend([f"{cnt} {ext}" for ext, cnt in sorted(type_counts.items())])
+            
+            # Show Types row if we have anything to show
+            if types_parts:
+                types_str = ", ".join(types_parts)
+                self.add_metadata_row("🗂️", "Types", types_str)
         
         # Add tags display in metadata (read-only)
         self.add_metadata_tags_display(assets)
@@ -4561,7 +4746,8 @@ class PreviewPanel(QWidget):
             # Apply to input
             self.tag_input.setCompleter(completer)
             
-            print(f"Autocomplete loaded with {len(tag_names)} tags")
+            if DEBUG_MODE:
+                print(f"Autocomplete loaded with {len(tag_names)} tags")
         except Exception as e:
             print(f"Error setting up tag autocomplete: {e}")
     

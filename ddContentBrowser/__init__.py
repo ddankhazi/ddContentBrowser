@@ -8,7 +8,7 @@ License: MIT
 
 # Version - SINGLE SOURCE OF TRUTH
 # MUST be defined BEFORE importing other modules that use it!
-__version__ = '1.4.1'
+__version__ = '1.5.0'
 
 # Import all modules
 from .config import ContentBrowserConfig

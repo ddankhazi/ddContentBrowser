@@ -1492,6 +1492,9 @@ class ThumbnailGenerator(QThread):
                 
                 reader = QImageReader(str(file_path))
                 
+                # Enable EXIF auto-rotation (CRITICAL for correct thumbnail orientation!)
+                reader.setAutoTransform(True)
+                
                 # Get original size
                 original_size = reader.size()
                 if original_size.isValid():

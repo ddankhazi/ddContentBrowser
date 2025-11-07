@@ -128,18 +128,52 @@ class FileMetadata:
                 self.metadata['height'] = img.height
                 self.metadata['dimensions'] = f"{img.width} x {img.height}"
                 
+                # Resolution category based on larger dimension
+                max_dimension = max(img.width, img.height)
+                if max_dimension <= 512:
+                    self.metadata['resolution_category'] = "S (≤512px)"
+                elif max_dimension <= 1024:
+                    self.metadata['resolution_category'] = "M (≤1K)"
+                elif max_dimension <= 2048:
+                    self.metadata['resolution_category'] = "L (≤2K)"
+                elif max_dimension <= 4096:
+                    self.metadata['resolution_category'] = "XL (≤4K)"
+                elif max_dimension <= 8192:
+                    self.metadata['resolution_category'] = "XXL (≤8K)"
+                elif max_dimension <= 16384:
+                    self.metadata['resolution_category'] = "XXXL (≤16K)"
+                else:
+                    self.metadata['resolution_category'] = "Ultra (>16K)"
+                
                 # Aspect ratio category
                 aspect = img.width / img.height if img.height > 0 else 1.0
-                if 0.9 <= aspect <= 1.1:
+                
+                # Check common aspect ratios (with tolerance)
+                if 0.95 <= aspect <= 1.05:
                     self.metadata['aspect_ratio'] = "Square (1:1)"
-                elif 1.7 <= aspect <= 1.8:
-                    self.metadata['aspect_ratio'] = "16:9"
-                elif 1.3 <= aspect <= 1.4:
+                # Photo aspect ratios
+                elif 1.48 <= aspect <= 1.52:
+                    self.metadata['aspect_ratio'] = "3:2"
+                elif 0.66 <= aspect <= 0.68:
+                    self.metadata['aspect_ratio'] = "2:3 (Portrait)"
+                elif 1.32 <= aspect <= 1.35:
                     self.metadata['aspect_ratio'] = "4:3"
-                elif aspect > 2:
+                elif 0.74 <= aspect <= 0.76:
+                    self.metadata['aspect_ratio'] = "3:4 (Portrait)"
+                # Cinema/Video aspect ratios
+                elif 1.77 <= aspect <= 1.79:
+                    self.metadata['aspect_ratio'] = "16:9"
+                elif 0.56 <= aspect <= 0.57:
+                    self.metadata['aspect_ratio'] = "9:16 (Portrait)"
+                elif 2.35 <= aspect <= 2.40:
+                    self.metadata['aspect_ratio'] = "Cinema (2.39:1)"
+                elif 2.0 <= aspect <= 2.1:
+                    self.metadata['aspect_ratio'] = "Univisium (2:1)"
+                # Wide formats
+                elif aspect > 2.5:
                     self.metadata['aspect_ratio'] = "Panoramic"
-                elif aspect < 0.8:
-                    self.metadata['aspect_ratio'] = "Portrait"
+                elif aspect < 0.5:
+                    self.metadata['aspect_ratio'] = "Portrait (Tall)"
                 else:
                     self.metadata['aspect_ratio'] = "Other"
                 
@@ -165,6 +199,78 @@ class FileMetadata:
                             self.metadata['camera_model'] = exif[272]
                         if 271 in exif:  # Make
                             self.metadata['camera_make'] = exif[271]
+                        
+                        # Lens info
+                        if 42036 in exif:  # LensModel
+                            self.metadata['lens'] = exif[42036]
+                        
+                        # Exposure settings
+                        if 34855 in exif:  # ISOSpeedRatings
+                            iso = exif[34855]
+                            self.metadata['iso'] = iso
+                            # ISO category for filtering
+                            if iso <= 400:
+                                self.metadata['iso_category'] = "Low (≤400)"
+                            elif iso <= 1600:
+                                self.metadata['iso_category'] = "Medium (400-1600)"
+                            elif iso <= 6400:
+                                self.metadata['iso_category'] = "High (1600-6400)"
+                            else:
+                                self.metadata['iso_category'] = "Very High (>6400)"
+                        
+                        if 33434 in exif:  # ExposureTime
+                            exposure = exif[33434]
+                            if isinstance(exposure, tuple):
+                                # Already in fraction format
+                                self.metadata['shutter_speed'] = f"{exposure[0]}/{exposure[1]}s"
+                            else:
+                                # Convert decimal to fraction (e.g., 0.001 -> 1/1000s)
+                                if exposure >= 1:
+                                    self.metadata['shutter_speed'] = f"{exposure:.1f}s"
+                                else:
+                                    # Convert to 1/x format for speeds < 1 second
+                                    denominator = int(round(1 / exposure))
+                                    self.metadata['shutter_speed'] = f"1/{denominator}s"
+                        
+                        if 33437 in exif:  # FNumber
+                            fnumber = exif[33437]
+                            if isinstance(fnumber, tuple):
+                                aperture = fnumber[0] / fnumber[1]
+                            else:
+                                aperture = fnumber
+                            self.metadata['aperture'] = f"f/{aperture:.1f}"
+                            # Aperture category
+                            if aperture <= 2.8:
+                                self.metadata['aperture_category'] = "Fast (≤f/2.8)"
+                            elif aperture <= 5.6:
+                                self.metadata['aperture_category'] = "Medium (f/2.8-5.6)"
+                            else:
+                                self.metadata['aperture_category'] = "Narrow (>f/5.6)"
+                        
+                        if 37386 in exif:  # FocalLength
+                            focal = exif[37386]
+                            if isinstance(focal, tuple):
+                                focal_mm = focal[0] / focal[1]
+                            else:
+                                focal_mm = focal
+                            self.metadata['focal_length'] = f"{focal_mm:.0f}mm"
+                            # Focal length category
+                            if focal_mm < 35:
+                                self.metadata['focal_length_category'] = "Wide (<35mm)"
+                            elif focal_mm <= 70:
+                                self.metadata['focal_length_category'] = "Normal (35-70mm)"
+                            else:
+                                self.metadata['focal_length_category'] = "Tele (>70mm)"
+                        
+                        # White Balance
+                        if 41987 in exif:  # WhiteBalance
+                            wb = exif[41987]
+                            self.metadata['white_balance'] = "Auto" if wb == 0 else "Manual"
+                        
+                        # Flash
+                        if 37385 in exif:  # Flash
+                            flash = exif[37385]
+                            self.metadata['flash'] = "Yes" if flash & 1 else "No"
                         
                         # Orientation
                         if 274 in exif:

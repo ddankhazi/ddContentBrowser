@@ -1508,6 +1508,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         include_subfolders = bool(state == Qt.Checked or state == 2)
         self.file_model.include_subfolders = include_subfolders
         
+        # Clear advanced filters when subfolders toggle (asset list will change)
+        if hasattr(self, 'advanced_filters_panel'):
+            print(f"[Browser] Subfolders toggled to {include_subfolders} - clearing advanced filters")
+            self.advanced_filters_panel.refresh()
+        
         # Hide Load More button when toggling
         self.load_more_btn.setVisible(False)
         self._limit_reached_shown = False
