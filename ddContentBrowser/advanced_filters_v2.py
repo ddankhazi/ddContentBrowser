@@ -347,7 +347,14 @@ class AdvancedFiltersPanelV2(QWidget):
         self.analyze_btn.setText("⏳ Analyzing...")
         
         # Store original unfiltered asset list
-        self.original_assets = self.file_model.assets.copy()
+        # Use _ungrouped_assets if available (to work with ungrouped files)
+        # This ensures advanced filters work on individual files, not grouped sequences
+        if hasattr(self.file_model, '_ungrouped_assets') and self.file_model._ungrouped_assets:
+            self.original_assets = self.file_model._ungrouped_assets.copy()
+            print(f"[AdvancedFilters] Using _ungrouped_assets: {len(self.original_assets)} assets")
+        else:
+            self.original_assets = self.file_model.assets.copy()
+            print(f"[AdvancedFilters] Using assets: {len(self.original_assets)} assets")
         
         # Count folders
         folder_count = sum(1 for asset in self.original_assets if asset.is_folder)
@@ -619,7 +626,21 @@ class AdvancedFiltersPanelV2(QWidget):
         
         # Update file model
         self.file_model.assets = filtered_assets
-        self.file_model.layoutChanged.emit()
+        
+        # IMPORTANT: Also update _ungrouped_assets so sequence toggle works correctly
+        # This ensures sequence mode toggle doesn't lose the advanced filter state
+        self.file_model._ungrouped_assets = filtered_assets.copy()
+        
+        print(f"[AdvancedFilters] Applied filters: {len(filtered_assets)} assets (updated _ungrouped_assets)")
+        
+        # CRITICAL: If sequence mode is ON, reapply grouping to the filtered assets
+        # This ensures the UI shows grouped sequences after filtering
+        if self.file_model.sequence_mode:
+            print(f"[AdvancedFilters] Sequence mode is ON - reapplying grouping after filter")
+            self.file_model.reapplySequenceGrouping()
+        else:
+            # Only emit layoutChanged if we're NOT reapplying grouping (which emits it itself)
+            self.file_model.layoutChanged.emit()
         
         # Emit signals
         self.filters_changed.emit(self.active_filters)

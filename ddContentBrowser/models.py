@@ -34,7 +34,7 @@ from .utils import (
 )
 
 # Debug flag - set to False to disable verbose logging
-DEBUG_MODE = False
+DEBUG_MODE = False  # Set to True for debugging
 
 
 def natural_sort_key(text):
@@ -347,6 +347,10 @@ class FileSystemModel(QAbstractListModel):
         self.sort_column = "name"  # "name", "size", "date", "type"
         self.sort_ascending = True
         
+        # Sequence grouping
+        self.sequence_mode = False  # When True, group image sequences into single items
+        self._ungrouped_assets = []  # Store ungrouped assets for quick sequence mode toggle
+        
         # Recursive subfolder browsing
         self.include_subfolders = False
         self.max_recursive_files = 10000  # Limit for "Include Subfolders" (shows all files)
@@ -468,6 +472,11 @@ class FileSystemModel(QAbstractListModel):
         # Reset interrupt flag at start of refresh
         self._interrupt_search = False
         
+        if DEBUG_MODE:
+            print(f"[Model] refresh() called - force={force}, filter_text='{self.filter_text}', "
+                  f"search_in_subfolders={self.search_in_subfolders}, collection_mode={self.collection_mode}, "
+                  f"current_path={self.current_path}")
+        
         # Collection mode - load files from collection list instead of directory
         if self.collection_mode:
             self._load_collection_files()
@@ -488,9 +497,11 @@ class FileSystemModel(QAbstractListModel):
         # 1. Not forcing refresh (force=False)
         # 2. NOT in subfolder mode (include_subfolders=False)
         # 3. NOT in search subfolder mode with active search (search_in_subfolders=False OR no search text)
-        # 4. Cache is valid (not expired and directory not modified)
+        # 4. NOT filtering by search text (filter_text is empty)
+        # 5. Cache is valid (not expired and directory not modified)
         use_subfolders = self.include_subfolders or (self.search_in_subfolders and self.filter_text)
-        if not force and not use_subfolders and self._is_cache_valid(path_str, current_mtime):
+        has_search_filter = bool(self.filter_text)
+        if not force and not use_subfolders and not has_search_filter and self._is_cache_valid(path_str, current_mtime):
             cached_assets = self._get_from_cache(path_str)
         
         try:
@@ -504,6 +515,12 @@ class FileSystemModel(QAbstractListModel):
             # 1. include_subfolders is ON (always show all files), OR
             # 2. search_in_subfolders is ON AND there's search text present
             should_search_recursively = self.include_subfolders or (self.search_in_subfolders and self.filter_text)
+            
+            if DEBUG_MODE:
+                print(f"[Model] should_search_recursively={should_search_recursively} "
+                      f"(include_subfolders={self.include_subfolders}, "
+                      f"search_in_subfolders={self.search_in_subfolders}, "
+                      f"filter_text='{self.filter_text}')")
             
             if should_search_recursively:
                 # Recursive mode - collect files from all subfolders
@@ -729,12 +746,20 @@ class FileSystemModel(QAbstractListModel):
             
             # Only process if we didn't use cache
             if cached_assets is None:
+                if DEBUG_MODE:
+                    print(f"[Model] No cache - loaded {len(all_items)} items from filesystem")
+                
                 # Filter based on search text (applies to both folders and files)
                 if self.filter_text:
                     all_items = [f for f in all_items if self._matches_search(f.name, self.filter_text)]
+                    if DEBUG_MODE:
+                        print(f"[Model] After search filter: {len(all_items)} items")
                 
                 # Convert to AssetItem objects with LAZY LOADING
                 self.assets = [AssetItem(f, lazy_load=True) for f in all_items]
+                
+                if DEBUG_MODE:
+                    print(f"[Model] Created {len(self.assets)} AssetItem objects")
                 
                 # Apply advanced filters
                 # Ellenőrizzük, hogy kell-e stat info (méret/dátum szűrés)
@@ -783,6 +808,9 @@ class FileSystemModel(QAbstractListModel):
                 
                 self.assets = filtered_assets
             
+            # Store ungrouped assets BEFORE sequence grouping for quick toggle
+            self._ungrouped_assets = self.assets.copy()
+            
             # Group image sequences if sequence mode is enabled
             if self.sequence_mode:
                 try:
@@ -804,7 +832,9 @@ class FileSystemModel(QAbstractListModel):
                 traceback.print_exc()
             
             # Add to cache AFTER filtering and sorting (only if we loaded from filesystem)
-            if cached_assets is None:
+            # BUT: Don't cache if we have search filter or other filters applied
+            # because cache should only store the raw directory contents
+            if cached_assets is None and not self.filter_text:
                 self._add_to_cache(path_str, self.assets, current_mtime)
             
         except Exception as e:
@@ -838,9 +868,13 @@ class FileSystemModel(QAbstractListModel):
         from .utils import group_image_sequences
         from collections import defaultdict
         
+        print(f"[Model] _group_sequences called with {len(self.assets)} assets")
+        
         # Separate folders and files
         folders = [asset for asset in self.assets if asset.is_folder]
         files = [asset for asset in self.assets if not asset.is_folder]
+        
+        print(f"[Model] Separated: {len(folders)} folders, {len(files)} files")
         
         # Separate image files from other files
         image_files = []
@@ -852,6 +886,8 @@ class FileSystemModel(QAbstractListModel):
             else:
                 other_files.append(asset)
         
+        print(f"[Model] Found {len(image_files)} image files, {len(other_files)} other files")
+        
         # Group image sequences PER FOLDER
         if image_files:
             # Group image files by their parent directory
@@ -860,14 +896,22 @@ class FileSystemModel(QAbstractListModel):
                 folder = asset.file_path.parent
                 files_by_folder[folder].append(asset)
             
+            print(f"[Model] Grouping {len(image_files)} images across {len(files_by_folder)} folders")
+            
             # Process each folder separately
             sequence_assets = []
+            total_sequences = 0
             for folder, folder_assets in files_by_folder.items():
                 # Convert AssetItems to Path objects for this folder only
                 image_paths = [asset.file_path for asset in folder_assets]
                 
                 # Group into sequences (only within this folder)
                 sequences_dict = group_image_sequences(image_paths)
+                
+                sequences_in_folder = sum(1 for files in sequences_dict.values() if len(files) > 1)
+                if sequences_in_folder > 0:
+                    print(f"[Model] Folder {folder.name}: {sequences_in_folder} sequences from {len(folder_assets)} images")
+                    total_sequences += sequences_in_folder
                 
                 # Create AssetItems for sequences and single files
                 for pattern, file_list in sequences_dict.items():
@@ -939,9 +983,7 @@ class FileSystemModel(QAbstractListModel):
             self.filter_text = text
             # When clearing search (text is empty), force refresh to ensure 
             # we get current directory state (not cached subfolder results)
-            # Also disable subfolder search mode
             if text == "":
-                self.search_in_subfolders = False
                 force_refresh = True
             else:
                 force_refresh = False
@@ -1019,8 +1061,48 @@ class FileSystemModel(QAbstractListModel):
         self.beginResetModel()
         self.collection_mode = False
         self.collection_files = []
-        self.refresh()
+        # Force refresh to ensure we get current directory state, not cached search results
+        self.refresh(force=True)
         self.endResetModel()
+    
+    def reapplySequenceGrouping(self):
+        """
+        Reapply sequence grouping and sorting to current assets WITHOUT reloading from filesystem.
+        This is much faster than a full refresh and should be used when only sequence mode changes.
+        Uses the stored ungrouped assets list to avoid rescanning directories.
+        """
+        print(f"[Model] reapplySequenceGrouping called - have {len(self._ungrouped_assets)} ungrouped assets, sequence_mode={self.sequence_mode}")
+        
+        if not self._ungrouped_assets:
+            # No ungrouped assets stored - need full refresh
+            print("[Model] No ungrouped assets available - performing full refresh")
+            self.refresh(force=True)
+            return
+        
+        # Restore ungrouped assets
+        self.assets = self._ungrouped_assets.copy()
+        print(f"[Model] Restored {len(self.assets)} assets from ungrouped")
+        
+        # Apply sequence grouping if enabled
+        if self.sequence_mode:
+            print(f"[Model] Sequence mode is ON - grouping sequences...")
+            try:
+                self._group_sequences()
+                print(f"[Model] After grouping: {len(self.assets)} assets")
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] Sequence grouping failed: {e}")
+                traceback.print_exc()
+        else:
+            print(f"[Model] Sequence mode is OFF - not grouping")
+        
+        # Apply sorting
+        try:
+            self._sort_assets()
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] Sorting failed: {e}")
+            traceback.print_exc()
     
     def _load_collection_files(self):
         """Load files and folders from collection list (collection mode)"""

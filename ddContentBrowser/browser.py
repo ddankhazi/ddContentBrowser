@@ -1330,9 +1330,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if hasattr(self, 'thumbnail_generator'):
             self.thumbnail_generator.clear_queue()
         
-        # If clearing search, ensure we're back to normal mode
+        # If clearing search, clear progress display
         if not text:
-            self.file_model.search_in_subfolders = False
             self.search_bar.clear_search_progress()
         
         self.file_model.setFilterText(text)
@@ -1346,7 +1345,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Get search text
         search_text = self.search_bar.get_text()
         if not search_text:
-            self.safe_show_status("Enter search text first")
+            # Empty search - clear any existing search and return to folder view
+            if self.file_model.filter_text:
+                # Had search before, now clearing it
+                self.file_model.setFilterText("")
+                self.safe_show_status("Search cleared - showing current folder")
+                QTimer.singleShot(50, self.update_search_match_count)
+                QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+            else:
+                # Already no search
+                self.safe_show_status("Enter search text first")
             return
         
         # Show initial progress
@@ -1431,18 +1439,41 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Handle search option (case/regex/subfolders) toggle"""
         self.file_model.case_sensitive_search = self.search_bar.is_case_sensitive()
         self.file_model.regex_search = self.search_bar.is_regex_enabled()
-        self.file_model.search_in_subfolders = self.search_bar.is_subfolders_enabled()
+        
+        # Check if subfolders setting changed
+        old_subfolders = self.file_model.search_in_subfolders
+        new_subfolders = self.search_bar.is_subfolders_enabled()
+        subfolders_changed = old_subfolders != new_subfolders
+        
+        self.file_model.search_in_subfolders = new_subfolders
         
         # Save to settings
         self.settings_manager.set("filters", "case_sensitive_search", self.search_bar.is_case_sensitive())
         self.settings_manager.set("filters", "regex_search", self.search_bar.is_regex_enabled())
-        self.settings_manager.set("filters", "search_in_subfolders", self.search_bar.is_subfolders_enabled())
+        self.settings_manager.set("filters", "search_in_subfolders", new_subfolders)
         self.settings_manager.save()
         
         # Refresh search with new options
+        # Use force=True if subfolders setting changed to bypass cache
         if self.search_bar.get_text():
-            self.file_model.refresh()
+            # Has search text - refresh with force if subfolders changed
+            if subfolders_changed:
+                # Subfolders changed - need full model reset
+                self.file_model.beginResetModel()
+                self.file_model.refresh(force=True)
+                self.file_model.endResetModel()
+            else:
+                # Just options changed - regular refresh
+                self.file_model.refresh()
             QTimer.singleShot(50, self.update_search_match_count)
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        elif subfolders_changed and old_subfolders and not new_subfolders:
+            # No search text, but subfolders was just disabled (going from subfolder search to normal)
+            # Force refresh to return to current folder view
+            self.file_model.beginResetModel()
+            self.file_model.refresh(force=True)
+            self.file_model.endResetModel()
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
     
     def update_search_match_count(self):
         """Update search match count display"""
@@ -1467,9 +1498,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.search_bar.set_match_count(0, 0)
         
         # Clear filter text in model
+        # DON'T clear search_in_subfolders - it's a user preference that should persist
         if self.file_model.filter_text:
             self.file_model.filter_text = ""
-            self.file_model.search_in_subfolders = False
     
     def on_subfolder_toggle(self, state):
         """Handle include subfolders checkbox toggle"""
@@ -2632,16 +2663,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Update model
         self.file_model.sequence_mode = is_checked
         
-        # Clear BOTH thumbnail cache AND directory cache!
-        # This ensures thumbnails are regenerated with correct cache keys
-        # AND the asset list is reloaded from filesystem (not from cached grouped list)
+        # Clear thumbnail cache to regenerate with correct cache keys
         self.memory_cache.clear()
-        self.file_model.clear_cache()
         
-        # Refresh view to apply grouping (force=True bypasses cache)
+        # Reapply sequence grouping WITHOUT reloading from filesystem
+        # This uses the stored ungrouped assets list for instant toggle
         self.file_model.beginResetModel()
-        self.file_model.refresh(force=True)
+        self.file_model.reapplySequenceGrouping()
         self.file_model.endResetModel()
+        
+        # Request thumbnails for new state
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
         # Update status
         if is_checked:
@@ -4258,6 +4290,10 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         # CLEAR thumbnail generator queue when clearing collection
         if hasattr(self, 'thumbnail_generator'):
             self.thumbnail_generator.clear_queue()
+        
+        # Clear all search state BEFORE clearing collection filter
+        # This ensures we return to normal folder view, not cached search results
+        self.clear_search_state()
         
         # Clear collection filter
         self.file_model.clearCollectionFilter()
