@@ -868,13 +868,15 @@ class FileSystemModel(QAbstractListModel):
         from .utils import group_image_sequences
         from collections import defaultdict
         
-        print(f"[Model] _group_sequences called with {len(self.assets)} assets")
+        if DEBUG_MODE:
+            print(f"[Model] _group_sequences called with {len(self.assets)} assets")
         
         # Separate folders and files
         folders = [asset for asset in self.assets if asset.is_folder]
         files = [asset for asset in self.assets if not asset.is_folder]
         
-        print(f"[Model] Separated: {len(folders)} folders, {len(files)} files")
+        if DEBUG_MODE:
+            print(f"[Model] Separated: {len(folders)} folders, {len(files)} files")
         
         # Separate image files from other files
         image_files = []
@@ -886,7 +888,8 @@ class FileSystemModel(QAbstractListModel):
             else:
                 other_files.append(asset)
         
-        print(f"[Model] Found {len(image_files)} image files, {len(other_files)} other files")
+        if DEBUG_MODE:
+            print(f"[Model] Found {len(image_files)} image files, {len(other_files)} other files")
         
         # Group image sequences PER FOLDER
         if image_files:
@@ -896,7 +899,8 @@ class FileSystemModel(QAbstractListModel):
                 folder = asset.file_path.parent
                 files_by_folder[folder].append(asset)
             
-            print(f"[Model] Grouping {len(image_files)} images across {len(files_by_folder)} folders")
+            if DEBUG_MODE:
+                print(f"[Model] Grouping {len(image_files)} images across {len(files_by_folder)} folders")
             
             # Process each folder separately
             sequence_assets = []
@@ -909,7 +913,7 @@ class FileSystemModel(QAbstractListModel):
                 sequences_dict = group_image_sequences(image_paths)
                 
                 sequences_in_folder = sum(1 for files in sequences_dict.values() if len(files) > 1)
-                if sequences_in_folder > 0:
+                if DEBUG_MODE and sequences_in_folder > 0:
                     print(f"[Model] Folder {folder.name}: {sequences_in_folder} sequences from {len(folder_assets)} images")
                     total_sequences += sequences_in_folder
                 
@@ -1071,30 +1075,36 @@ class FileSystemModel(QAbstractListModel):
         This is much faster than a full refresh and should be used when only sequence mode changes.
         Uses the stored ungrouped assets list to avoid rescanning directories.
         """
-        print(f"[Model] reapplySequenceGrouping called - have {len(self._ungrouped_assets)} ungrouped assets, sequence_mode={self.sequence_mode}")
+        if DEBUG_MODE:
+            print(f"[Model] reapplySequenceGrouping called - have {len(self._ungrouped_assets)} ungrouped assets, sequence_mode={self.sequence_mode}")
         
         if not self._ungrouped_assets:
             # No ungrouped assets stored - need full refresh
-            print("[Model] No ungrouped assets available - performing full refresh")
+            if DEBUG_MODE:
+                print("[Model] No ungrouped assets available - performing full refresh")
             self.refresh(force=True)
             return
         
         # Restore ungrouped assets
         self.assets = self._ungrouped_assets.copy()
-        print(f"[Model] Restored {len(self.assets)} assets from ungrouped")
+        if DEBUG_MODE:
+            print(f"[Model] Restored {len(self.assets)} assets from ungrouped")
         
         # Apply sequence grouping if enabled
         if self.sequence_mode:
-            print(f"[Model] Sequence mode is ON - grouping sequences...")
+            if DEBUG_MODE:
+                print(f"[Model] Sequence mode is ON - grouping sequences...")
             try:
                 self._group_sequences()
-                print(f"[Model] After grouping: {len(self.assets)} assets")
+                if DEBUG_MODE:
+                    print(f"[Model] After grouping: {len(self.assets)} assets")
             except Exception as e:
                 import traceback
                 print(f"[ERROR] Sequence grouping failed: {e}")
                 traceback.print_exc()
         else:
-            print(f"[Model] Sequence mode is OFF - not grouping")
+            if DEBUG_MODE:
+                print(f"[Model] Sequence mode is OFF - not grouping")
         
         # Apply sorting
         try:
