@@ -3,7 +3,7 @@ REM DD Content Browser - Standalone Launcher BAT
 REM Uses company Python 3.11 installation
 
 echo ============================================================
-echo DD Content Browser v1.2.0 (Standalone)
+echo DD Content Browser v1.4.1 (Standalone)
 echo ============================================================
 
 REM Set Python 3.11 path

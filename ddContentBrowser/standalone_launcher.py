@@ -42,6 +42,7 @@ except ImportError:
 
 # Import browser as package
 from ddContentBrowser.browser import DDContentBrowser
+from ddContentBrowser import __version__
 
 
 def main():
@@ -137,7 +138,7 @@ def main():
     
     # Create and show browser (parent=None for standalone)
     browser = DDContentBrowser(parent=None)
-    browser.setWindowTitle("DD Content Browser v1.2.0 (Standalone)")
+    browser.setWindowTitle(f"DD Content Browser v{__version__} (Standalone)")
     
     # Set window icon for browser window too
     try:
