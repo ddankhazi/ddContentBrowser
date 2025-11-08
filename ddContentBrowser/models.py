@@ -208,6 +208,7 @@ class AssetItem:
         self.is_hda_file = self.category == "houdini"
         self.is_blend_file = self.category == "blender"
         self.is_sbsar_file = self.category == "substance"
+        self.is_video_file = self.category == "video"
         
         # Thumbnail generation - using registry
         self.should_generate_thumbnail = not self.is_folder and utils_should_generate_thumbnail(self.extension)

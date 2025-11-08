@@ -918,7 +918,8 @@ class FileFormatEditDialog(QDialog):
             ("opencv_optimized", "⭐ RECOMMENDED for TIFF - DCT subsampling (2-8× faster)"),
             ("openexr", "OpenEXR loader (EXR files with HDR)"),
             ("pymupdf", "PyMuPDF loader (PDF first page)"),
-            ("oiio", "⭐ RECOMMENDED for .tx - OpenImageIO (RenderMan textures, all compressions)")
+            ("oiio", "⭐ RECOMMENDED for .tx - OpenImageIO (RenderMan textures, all compressions)"),
+            ("video", "Video frame extractor (MP4, MOV, AVI, MKV - extracts middle frame)")
         ]
         
         for method, tooltip in methods:
@@ -940,6 +941,7 @@ class FileFormatEditDialog(QDialog):
             "• qimage_optimized - Best for JPG/PNG/GIF (fast)\n"
             "• opencv_optimized - Best for TIFF (fast)\n"
             "• oiio - Best for .tx RenderMan textures\n"
+            "• video - Best for video files (MP4, MOV, AVI, MKV)\n"
             "• none - No thumbnails (show colored icon only)"
         )
         

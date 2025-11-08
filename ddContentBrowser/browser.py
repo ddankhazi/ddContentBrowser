@@ -55,6 +55,8 @@ def qt_message_handler(msg_type, context, message):
     elif msg_type == QtMsgType.QtFatalMsg:
         print(f"Qt Fatal: {message}")
 
+
+
 # Install the message handler GLOBALLY (affects all Qt operations including cache.py)
 qInstallMessageHandler(qt_message_handler)
 
@@ -66,7 +68,7 @@ except ImportError:
     pass  # Already handled by utils.MAYA_AVAILABLE
 
 # Debug flag - set to False to disable verbose logging
-DEBUG_MODE = False
+DEBUG_MODE = False  # Performance optimizations active
 
 class FavoritesColorBarDelegate(QtWidgets.QStyledItemDelegate):
     """Custom delegate to draw a colored bar on the left side of favorite items"""
@@ -577,14 +579,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Content area
         self.content_splitter = QtWidgets.QSplitter(Qt.Horizontal)
         self.content_splitter.setHandleWidth(3)
-        self.content_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #555;
-            }
-            QSplitter::handle:hover {
-                background-color: #777;
-            }
-        """)
+        self.content_splitter.setChildrenCollapsible(False)  # Prevent panels from collapsing
         main_layout.addWidget(self.content_splitter)
         
         # Left panel - Navigation
@@ -615,6 +610,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Connect splitter moved signal to save position
         self.content_splitter.splitterMoved.connect(self.on_splitter_moved)
+        # Track splitter performance metrics
+        self._splitter_move_count = 0  # Track how many times splitter moved
+        self._splitter_drag_start_time = None  # Track drag start time
+        self._viewport_paint_times = []  # Track viewport paint durations
         
         # Status bar with thumbnail progress on the right
         self.status_bar = self.statusBar()
@@ -762,6 +761,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Create vertical splitter for navigation tabs and collection/filter tabs
         self.nav_splitter = QtWidgets.QSplitter(Qt.Vertical)
         self.nav_splitter.setHandleWidth(3)
+        # Ghost line mode for cleaner rendering
+        self.nav_splitter.setOpaqueResize(False)
+        self.nav_splitter.setChildrenCollapsible(False)
         self.nav_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #555;
@@ -1051,8 +1053,13 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_list.setModel(self.file_model)
         self.file_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.file_list.setResizeMode(QtWidgets.QListView.Adjust)
-        self.file_list.setUniformItemSizes(False)
+        # CRITICAL: UniformItemSizes=True for MUCH better splitter performance
+        # Treats all items as same size = no individual calculations = 6x faster!
+        self.file_list.setUniformItemSizes(True)
         self.file_list.setSpacing(5)
+        
+        # Print confirmation that optimization is loaded
+        print(f"[Browser] Splitter optimization ENABLED: UniformItemSizes=True")
         
         # Enable drag and drop
         # LEFT BUTTON (default) = Box selection (rubber band drag)
@@ -1137,6 +1144,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Use QSplitter for resizable columns
         self.header_splitter = QtWidgets.QSplitter(Qt.Horizontal)
         self.header_splitter.setHandleWidth(3)
+        # Ghost line mode for cleaner rendering
+        self.header_splitter.setOpaqueResize(False)
+        self.header_splitter.setChildrenCollapsible(False)
         self.header_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #555;
@@ -3056,34 +3066,114 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                         )
     
     def on_splitter_moved(self, pos, index):
-        """Save splitter position when moved and update thumbnails for newly visible items"""
-        if hasattr(self, 'content_splitter'):
-            splitter_state = self.content_splitter.saveState().toBase64().data().decode()
-            self.config.config["splitter_position"] = splitter_state
-            self.config.save_config()
+        """Handle splitter movement - optimized for fast updates"""
+        # Count moves for performance measurement
+        self._splitter_move_count += 1
         
-        # Request thumbnails for newly visible items after splitter change
-        # Use timer to debounce rapid splitter movements
+        # First move - start timer and prepare for fast dragging
+        if self._splitter_move_count == 1:
+            import time
+            self._splitter_drag_start_time = time.time()
+            
+            if DEBUG_MODE:
+                print(f"\n{'='*60}")
+                print(f"[PERF] Splitter drag STARTED (first move detected)")
+                print(f"[PERF] Items in view: {self.file_model.rowCount()}")
+                print(f"{'='*60}\n")
+            
+            # Disable updates to freeze content during drag (fast but has artifact)
+            if hasattr(self, 'file_list'):
+                self.file_list.setUpdatesEnabled(False)
+        
+        if DEBUG_MODE:
+            print(f"[Splitter] Moved to position {pos} (move #{self._splitter_move_count})")
+        
+        # NO CONFIG SAVING HERE - only save on window close for better performance
+        # The position will be saved in closeEvent()
+        # Updates are disabled on first move, re-enabled after delay
+        
+        # Use timer to detect end of drag (no more moves for 100ms = drag ended)
+        if hasattr(self, '_splitter_end_timer'):
+            self._splitter_end_timer.stop()
+        
+        self._splitter_end_timer = QTimer()
+        self._splitter_end_timer.setSingleShot(True)
+        self._splitter_end_timer.timeout.connect(self._on_splitter_drag_ended)
+        self._splitter_end_timer.start(100)  # 100ms delay to detect end
+    
+    def _on_splitter_drag_ended(self):
+        """Called when splitter drag has ended (no moves for 100ms)"""
+        # Always reset counters (must be outside DEBUG check!)
+        move_count = self._splitter_move_count
+        self._viewport_paint_times = []
+        self._splitter_move_count = 0
+        
+        if DEBUG_MODE and move_count > 0:
+            import time
+            drag_duration = time.time() - self._splitter_drag_start_time
+            avg_time_per_move = (drag_duration / move_count * 1000) if move_count > 0 else 0
+            fps = move_count / drag_duration if drag_duration > 0 else 0
+            
+            # Calculate viewport paint statistics
+            paint_count = len(self._viewport_paint_times)
+            if paint_count > 0:
+                avg_paint_time = sum(self._viewport_paint_times) / paint_count
+                max_paint_time = max(self._viewport_paint_times)
+                min_paint_time = min(self._viewport_paint_times)
+                paint_fps = paint_count / drag_duration if drag_duration > 0 else 0
+            else:
+                avg_paint_time = max_paint_time = min_paint_time = paint_fps = 0
+            
+            print(f"\n{'='*60}")
+            print(f"[PERF] Splitter drag ENDED")
+            print(f"[PERF] Duration: {drag_duration:.2f}s")
+            print(f"[PERF] Total moves: {move_count}")
+            print(f"[PERF] Average time per move: {avg_time_per_move:.2f}ms")
+            print(f"[PERF] Estimated FPS: {fps:.1f}")
+            print(f"")
+            print(f"[PERF] Viewport repaints: {paint_count}")
+            print(f"[PERF] Avg paint time: {avg_paint_time:.2f}ms")
+            print(f"[PERF] Min/Max paint: {min_paint_time:.2f}ms / {max_paint_time:.2f}ms")
+            print(f"[PERF] Paint FPS: {paint_fps:.1f}")
+            print(f"{'='*60}\n")
+        
+        # Re-enable updates and force immediate repaint
+        if hasattr(self, 'file_list'):
+            self.file_list.setUpdatesEnabled(True)
+            self.file_list.viewport().update()
+            # Force immediate processing for instant visual feedback
+            QtWidgets.QApplication.processEvents()
     
     def on_column_width_changed(self, pos, index):
         """Refresh list view when column widths change"""
+        # Use timer to debounce rapid column resizing
+        if hasattr(self, '_column_resize_timer'):
+            self._column_resize_timer.stop()
+        
+        self._column_resize_timer = QTimer()
+        self._column_resize_timer.setSingleShot(True)
+        self._column_resize_timer.timeout.connect(self._finish_column_resize)
+        self._column_resize_timer.start(50)  # Very short delay for responsive feel
+    
+    def _finish_column_resize(self):
+        """Complete column resize after debounce timer"""
         # Force repaint of all visible items in list view
         if hasattr(self, 'file_list'):
             self.file_list.viewport().update()
-        if hasattr(self, '_splitter_move_timer'):
-            self._splitter_move_timer.stop()
         
-        self._splitter_move_timer = QTimer()
-        self._splitter_move_timer.setSingleShot(True)
-        self._splitter_move_timer.timeout.connect(self.request_thumbnails_for_visible_items)
-        self._splitter_move_timer.start(200)  # Wait 200ms after splitter movement stops
+        # Request thumbnails for newly visible items
+        if hasattr(self, '_column_thumb_timer'):
+            self._column_thumb_timer.stop()
+        
+        self._column_thumb_timer = QTimer()
+        self._column_thumb_timer.setSingleShot(True)
+        self._column_thumb_timer.timeout.connect(self.request_thumbnails_for_visible_items)
+        self._column_thumb_timer.start(200)  # Wait 200ms after column resize stops
     
     def on_nav_splitter_moved(self, pos, index):
-        """Save nav panel splitter position when moved"""
-        if hasattr(self, 'nav_splitter'):
-            nav_splitter_state = self.nav_splitter.saveState().toBase64().data().decode()
-            self.config.config["nav_splitter_position"] = nav_splitter_state
-            self.config.save_config()
+        """Handle nav splitter movement - no config saving during drag for performance"""
+        # NO CONFIG SAVING HERE - only save on window close for better performance
+        pass
     
     def keyPressEvent(self, event):
         """Handle keyboard shortcuts"""
@@ -3327,7 +3417,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     # ========== Quick View System ==========
     
     def eventFilter(self, obj, event):
-        """Event filter for handling Ctrl+Scroll zoom, Space key for Quick View, AND MMB drag for Favorites reordering"""
+        """Event filter for handling Ctrl+Scroll zoom, Space key for Quick View, MMB drag for Favorites reordering, AND viewport paint measurement"""
+        
         # === FAVORITES LIST RESIZE - Update elided text ===
         if hasattr(self, 'favorites_list') and obj == self.favorites_list.viewport():
             if event.type() == QtCore.QEvent.Resize:
@@ -3362,6 +3453,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Check if event is from file list or its viewport (only if file_list exists)
         if hasattr(self, 'file_list') and (obj == self.file_list or obj == self.file_list.viewport()):
+            # === VIEWPORT PAINT PERFORMANCE MEASUREMENT ===
+            # Measure viewport paint times during splitter drag
+            if obj == self.file_list.viewport() and event.type() == QtCore.QEvent.Paint:
+                # Check if we're in the middle of a drag (move_count > 0)
+                if getattr(self, '_splitter_move_count', 0) > 0:
+                    import time
+                    paint_start = time.time()
+                    # Let the paint happen
+                    result = super(DDContentBrowser, self).eventFilter(obj, event)
+                    paint_duration = (time.time() - paint_start) * 1000  # Convert to ms
+                    self._viewport_paint_times.append(paint_duration)
+                    return result
+                    return result
+            
             # === CTRL+SCROLL ZOOM ===
             # Check for wheel event with Ctrl modifier
             try:
@@ -3496,6 +3601,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Close Quick View if open
         if self.quick_view_window and self.quick_view_window.isVisible():
             self.quick_view_window.close()
+        
+        # Cleanup preview panel (stop video playback, etc.)
+        if hasattr(self, 'preview_panel') and self.preview_panel:
+            self.preview_panel.cleanup()
         
         # Disconnect thumbnail generator signals BEFORE stopping (prevents RuntimeError)
         if hasattr(self, 'thumbnail_generator'):

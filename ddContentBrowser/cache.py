@@ -1028,6 +1028,91 @@ class ThumbnailGenerator(QThread):
         
         return result
     
+    def _generate_video_thumbnail(self, file_path):
+        """
+        Generate thumbnail from video file by extracting middle frame
+        
+        Args:
+            file_path: Path to video file
+            
+        Returns:
+            QPixmap or None
+        """
+        try:
+            print(f"[VIDEO THUMB] Starting video thumbnail generation for: {Path(file_path).name}")
+            import cv2
+            import numpy as np
+            
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtGui import QImage, QPixmap
+                from PySide6.QtCore import Qt
+            else:
+                from PySide2.QtGui import QImage, QPixmap
+                from PySide2.QtCore import Qt
+            
+            # Open video file
+            print(f"[VIDEO THUMB] Opening video with OpenCV...")
+            cap = cv2.VideoCapture(str(file_path))
+            
+            if not cap.isOpened():
+                print(f"[VIDEO THUMB] ERROR: Could not open video file: {Path(file_path).name}")
+                return None
+            
+            # Get total frame count
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print(f"[VIDEO THUMB] Video has {frame_count} frames")
+            
+            if frame_count <= 0:
+                print(f"[VIDEO THUMB] ERROR: Video has no frames: {Path(file_path).name}")
+                cap.release()
+                return None
+            
+            # Use 10% position for thumbnail (good balance between intro and content)
+            target_frame = int(frame_count * 0.10)
+            print(f"[VIDEO THUMB] Using 10% position: frame {target_frame}/{frame_count}")
+            
+            # Seek to target frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            
+            # Read frame
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                print(f"[VIDEO THUMB] ERROR: Could not read frame from video: {Path(file_path).name}")
+                return None
+            
+            print(f"[VIDEO THUMB] Frame read successfully, shape: {frame.shape}")
+            
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Get frame dimensions
+            h, w = frame_rgb.shape[:2]
+            
+            # Create QImage from numpy array
+            bytes_per_line = 3 * w
+            q_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            
+            # Convert to pixmap and scale to thumbnail size
+            pixmap = QPixmap.fromImage(q_image)
+            
+            # Scale to thumbnail size maintaining aspect ratio
+            pixmap = pixmap.scaled(
+                self.thumbnail_size, 
+                self.thumbnail_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            
+            print(f"[VIDEO THUMB] SUCCESS! Generated thumbnail: {pixmap.width()}x{pixmap.height()}")
+            return pixmap
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[Cache] Video thumbnail generation failed for {Path(file_path).name}: {e}")
+            return None
+    
     def _generate_image_thumbnail(self, file_path):
         """
         Generate thumbnail from image file (including PDF first page)
@@ -1084,6 +1169,18 @@ class ThumbnailGenerator(QThread):
                         raise Exception("OIIO loader returned null pixmap")
                 except Exception as e:
                     print(f"[Cache] OIIO .tx loading failed: {e}, using default icon...")
+                    return self._get_default_icon(file_path)
+            
+            # Special handling for video files - extract middle frame
+            if extension in ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv']:
+                print(f"[CACHE] Detected video file: {extension}, calling _generate_video_thumbnail()")
+                pixmap = self._generate_video_thumbnail(file_path)
+                if pixmap and not pixmap.isNull():
+                    print(f"[CACHE] Video thumbnail generated successfully!")
+                    return pixmap
+                else:
+                    # Video thumbnail failed, use default icon
+                    print(f"[CACHE] Video thumbnail generation failed, using default icon")
                     return self._get_default_icon(file_path)
             
             # Special handling for EXR files - OPTIMIZED fast thumbnail generation

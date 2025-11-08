@@ -22,6 +22,8 @@ try:
     from PySide6.QtGui import *
     from PySide6.QtCore import *
     from PySide6 import QtCore, QtWidgets
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtMultimediaWidgets import QVideoWidget
     UI_FONT = "Segoe UI"
     PYSIDE_VERSION = 6
 except ImportError:
@@ -29,6 +31,13 @@ except ImportError:
     from PySide2.QtGui import *
     from PySide2.QtCore import *
     from PySide2 import QtCore, QtWidgets
+    try:
+        from PySide2.QtMultimedia import QMediaPlayer, QMediaContent
+        from PySide2.QtMultimediaWidgets import QVideoWidget
+    except ImportError:
+        QMediaPlayer = None
+        QVideoWidget = None
+        print("[Preview] Qt Multimedia not available - video playback will use OpenCV fallback")
     UI_FONT = "Segoe UI"
     PYSIDE_VERSION = 2
 
@@ -1710,6 +1719,201 @@ class PreviewPanel(QWidget):
         preview_layout.addWidget(self.sequence_playback)
         self.sequence_playback.hide()  # Hidden by default, shown only for sequences
         
+        # === Video Playback (QMediaPlayer with Qt Multimedia) ===
+        has_qt_multimedia = QMediaPlayer is not None
+        self.video_widget = QVideoWidget() if has_qt_multimedia else QLabel("Video playback not available")
+        self.video_widget.setStyleSheet("background-color: black; border: none; outline: none;")
+        self.video_widget.setFocusPolicy(Qt.NoFocus)  # Disable focus to prevent border
+        self.video_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)  # Fill available space
+        self.video_widget.setMinimumHeight(200)  # Match graphics_view minimum height
+        self.video_widget.setMouseTracking(True)  # Enable mouse tracking for scrubbing
+        self.video_widget.installEventFilter(self)  # Install event filter for drag scrubbing
+        if has_qt_multimedia and hasattr(self.video_widget, 'setAspectRatioMode'):
+            # Qt.KeepAspectRatio ensures video fits and is centered
+            self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
+        preview_layout.addWidget(self.video_widget, 1)  # stretch factor 1 to fill space
+        self.video_widget.hide()
+        
+        # Video drag scrubbing state
+        self.video_dragging = False
+        self.video_drag_start_x = 0
+        self.video_drag_start_position = 0
+        
+        # Qt Multimedia player
+        if has_qt_multimedia:
+            if PYSIDE_VERSION == 6:
+                self.media_player = QMediaPlayer()
+                self.audio_output = QAudioOutput()
+                self.media_player.setAudioOutput(self.audio_output)
+                self.media_player.setVideoOutput(self.video_widget)
+                # Connect to mediaStatusChanged for initial frame display
+                self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
+            else:
+                # PySide2 fallback
+                from PySide2.QtMultimedia import QMediaPlayer as QMediaPlayerClass
+                self.media_player = QMediaPlayerClass(None, QMediaPlayerClass.VideoSurface)
+                self.media_player.setVideoOutput(self.video_widget)
+                # Connect to mediaStatusChanged for initial frame display
+                self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
+        else:
+            self.media_player = None
+        
+        # Video playback controls widget
+        self.video_playback = QWidget()
+        video_layout = QHBoxLayout(self.video_playback)
+        video_layout.setContentsMargins(5, 2, 5, 2)
+        video_layout.setSpacing(5)
+        
+        # Stop button
+        self.video_stop_button = QToolButton()
+        self.video_stop_button.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+        self.video_stop_button.setToolTip("Stop")
+        self.video_stop_button.setFixedSize(28, 28)
+        self.video_stop_button.clicked.connect(self.stop_video_playback)
+        video_layout.addWidget(self.video_stop_button)
+        
+        # Skip backward button (5 seconds)
+        self.video_skip_back_button = QToolButton()
+        self.video_skip_back_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipBackward))
+        self.video_skip_back_button.setToolTip("Skip backward 5s")
+        self.video_skip_back_button.setFixedSize(28, 28)
+        self.video_skip_back_button.clicked.connect(self.skip_backward_video)
+        video_layout.addWidget(self.video_skip_back_button)
+        
+        # Previous frame button
+        self.video_prev_frame_button = QToolButton()
+        self.video_prev_frame_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
+        self.video_prev_frame_button.setToolTip("Previous frame")
+        self.video_prev_frame_button.setFixedSize(28, 28)
+        self.video_prev_frame_button.clicked.connect(self.video_prev_frame)
+        video_layout.addWidget(self.video_prev_frame_button)
+        
+        # Play/Pause button
+        self.video_play_button = QToolButton()
+        self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.video_play_button.setToolTip("Play/Pause (Space)")
+        self.video_play_button.setFixedSize(36, 28)
+        self.video_play_button.clicked.connect(self.toggle_video_playback)
+        video_layout.addWidget(self.video_play_button)
+        
+        # Next frame button
+        self.video_next_frame_button = QToolButton()
+        self.video_next_frame_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.video_next_frame_button.setToolTip("Next frame")
+        self.video_next_frame_button.setFixedSize(28, 28)
+        self.video_next_frame_button.clicked.connect(self.video_next_frame)
+        video_layout.addWidget(self.video_next_frame_button)
+        
+        # Skip forward button (5 seconds)
+        self.video_skip_forward_button = QToolButton()
+        self.video_skip_forward_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipForward))
+        self.video_skip_forward_button.setToolTip("Skip forward 5s")
+        self.video_skip_forward_button.setFixedSize(28, 28)
+        self.video_skip_forward_button.clicked.connect(self.skip_forward_video)
+        video_layout.addWidget(self.video_skip_forward_button)
+        
+        # Volume button (mute/unmute)
+        self.video_volume_button = QToolButton()
+        self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+        self.video_volume_button.setToolTip("Mute/Unmute (Right-click for volume slider)")
+        self.video_volume_button.setFixedSize(28, 28)
+        # Don't use InstantPopup - we want manual control
+        video_layout.addWidget(self.video_volume_button)
+        
+        # Volume popup widget (vertical slider)
+        self.video_volume_popup = QWidget()
+        self.video_volume_popup.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.video_volume_popup.setStyleSheet("""
+            QWidget {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+                border-radius: 4px;
+            }
+            QSlider::groove:vertical {
+                background: #2a2a2a;
+                width: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:vertical {
+                background: #808080;
+                border: 1px solid #555;
+                height: 12px;
+                margin: -3px 0;
+                border-radius: 6px;
+            }
+            QSlider::handle:vertical:hover {
+                background: #999;
+            }
+            QLabel {
+                color: #bbb;
+                font-size: 9pt;
+            }
+        """)
+        volume_popup_layout = QVBoxLayout(self.video_volume_popup)
+        volume_popup_layout.setContentsMargins(8, 8, 8, 8)
+        volume_popup_layout.setSpacing(5)
+        
+        # Vertical volume slider
+        self.video_volume_slider = QtWidgets.QSlider(Qt.Vertical)
+        self.video_volume_slider.setMinimum(0)
+        self.video_volume_slider.setMaximum(100)
+        self.video_volume_slider.setValue(100)  # 100% default
+        self.video_volume_slider.setFixedHeight(100)
+        self.video_volume_slider.setFixedWidth(24)
+        self.video_volume_slider.setToolTip("Volume")
+        if has_qt_multimedia:
+            self.video_volume_slider.valueChanged.connect(self.on_video_volume_changed)
+        volume_popup_layout.addWidget(self.video_volume_slider, 0, Qt.AlignCenter)
+        
+        # Volume percentage label
+        self.video_volume_label = QLabel("100%")
+        self.video_volume_label.setAlignment(Qt.AlignCenter)
+        volume_popup_layout.addWidget(self.video_volume_label)
+        
+        # Connect volume button - left click = mute toggle
+        self.video_volume_button.clicked.connect(self.toggle_video_mute)
+        # Install event filter for right-click to show volume popup
+        self.video_volume_button.installEventFilter(self)
+        
+        # Timeline slider (use CachedFrameSlider for click-to-jump behavior)
+        self.video_slider = CachedFrameSlider(Qt.Horizontal)
+        self.video_slider.setMinimum(0)
+        self.video_slider.setMaximum(1000)
+        self.video_slider.setValue(0)
+        self.video_slider_dragging = False  # Track if user is dragging
+        self.video_slider_updating = False  # Track if we're updating programmatically
+        if has_qt_multimedia:
+            # Use sliderPressed to track drag start
+            self.video_slider.sliderPressed.connect(self.on_video_slider_pressed)
+            # Use valueChanged to handle all position changes (click and drag)
+            self.video_slider.valueChanged.connect(self.on_video_slider_value_changed)
+            # Use sliderReleased for final seek when released
+            self.video_slider.sliderReleased.connect(self.on_video_slider_released)
+        video_layout.addWidget(self.video_slider)
+        
+        # Time label
+        self.video_time_label = QLabel("0:00 / 0:00")
+        self.video_time_label.setMinimumWidth(100)
+        self.video_time_label.setStyleSheet(f"font-family: {UI_FONT}; color: #aaa;")
+        video_layout.addWidget(self.video_time_label)
+        
+        preview_layout.addWidget(self.video_playback)
+        self.video_playback.hide()
+        
+        # Connect media player signals
+        if has_qt_multimedia:
+            if PYSIDE_VERSION == 6:
+                self.media_player.positionChanged.connect(self.on_video_position_changed)
+                self.media_player.durationChanged.connect(self.on_video_duration_changed)
+                self.media_player.playbackStateChanged.connect(self.on_video_state_changed)
+            else:
+                self.media_player.positionChanged.connect(self.on_video_position_changed)
+                self.media_player.durationChanged.connect(self.on_video_duration_changed)
+                self.media_player.stateChanged.connect(self.on_video_state_changed)
+        
+        # Video slider state (prevent feedback loop)
+        self.video_slider_updating = False
+        
         # Text file preview controls (only visible for text files)
         self.text_controls = QWidget()
         text_controls_layout = QHBoxLayout(self.text_controls)
@@ -2107,6 +2311,21 @@ class PreviewPanel(QWidget):
         self.clear_metadata()
         self.exposure_controls.hide()  # Hide exposure controls
         self.text_controls.hide()  # Hide text controls
+        self.video_playback.hide()  # Hide video controls
+        
+        # Stop video playback and hide video widget
+        if self.media_player:
+            self.media_player.stop()
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtCore import QUrl
+                self.media_player.setSource(QUrl())  # Clear source
+            else:
+                from PySide2.QtMultimedia import QMediaContent
+                self.media_player.setMedia(QMediaContent())  # Clear media
+            # Reset button icon
+            self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.video_widget.hide()
+        self.graphics_view.show()  # Show graphics view again
         
         # Clear EXR channel info
         self.current_exr_file_path = None
@@ -2439,9 +2658,55 @@ class PreviewPanel(QWidget):
         self.add_metadata_row("💡", "Info", "Deep data requires specialized tools")
     
     def eventFilter(self, obj, event):
-        """Event filter for graphics view - handles mouse events for zoom/pan and PDF navigation"""
+        """Event filter for graphics view and video widget - handles mouse events for zoom/pan and scrubbing"""
+        
+        # === Volume Button Right-Click ===
+        if (hasattr(self, 'video_volume_button') and obj == self.video_volume_button):
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+                self.show_volume_popup()
+                return True
+        
+        # === Video Widget Drag Scrubbing ===
+        if (hasattr(self, 'video_widget') and hasattr(self, 'media_player') and 
+            obj == self.video_widget and self.media_player):
+            event_type = event.type()
+            
+            if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                # Start drag scrubbing
+                self.video_dragging = True
+                self.video_drag_start_x = event.position().x()
+                self.video_drag_start_position = self.media_player.position()
+                return True
+            
+            elif event_type == QEvent.MouseMove and self.video_dragging:
+                # Drag scrubbing - move through video
+                delta_x = event.position().x() - self.video_drag_start_x
+                duration = self.media_player.duration()
+                
+                if duration > 0:
+                    # 1 pixel = 100ms movement
+                    delta_ms = int(delta_x * 100)
+                    new_position = max(0, min(duration, self.video_drag_start_position + delta_ms))
+                    
+                    # Seek to new position
+                    self.media_player.setPosition(new_position)
+                    
+                    # Update slider manually (since positionChanged is blocked during drag)
+                    if hasattr(self, 'video_slider'):
+                        self.video_slider_updating = True
+                        slider_value = int((new_position / duration) * 1000)
+                        self.video_slider.setValue(slider_value)
+                        self.video_slider_updating = False
+                return True
+            
+            elif event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                # End drag scrubbing
+                self.video_dragging = False
+                return True
+        
+        # === Graphics View Events ===
         # Only filter events from graphics_view or its viewport
-        if obj not in (self.graphics_view, self.graphics_view.viewport()):
+        if not hasattr(self, 'graphics_view') or obj not in (self.graphics_view, self.graphics_view.viewport()):
             return super().eventFilter(obj, event)
         
         event_type = event.type()
@@ -3925,6 +4190,9 @@ class PreviewPanel(QWidget):
                     self.graphics_scene.clear()
                     self.current_text_item = None
                     self.add_metadata_row("⚠️", "Error", f"Load error: {str(e)}")
+        elif asset.is_video_file:
+            # Video file - extract middle frame for preview
+            self.show_video_preview(asset)
         elif asset.is_pdf_file:
             # PDF file - show preview with page navigation
             self.show_pdf_preview(asset)
@@ -4005,6 +4273,41 @@ class PreviewPanel(QWidget):
                 missing_count = len(seq.missing_frames)
                 self.add_metadata_row("⚠️", "Missing", f"{missing_count} frames")
             self.add_metadata_row("💾", "Total Size", self.format_file_size(seq.total_size))
+        
+        # If this is a video file, add video-specific metadata
+        if asset.is_video_file:
+            try:
+                import cv2
+                cap = cv2.VideoCapture(str(asset.file_path))
+                if cap.isOpened():
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    duration = frame_count / fps if fps > 0 else 0
+                    
+                    # Video info
+                    self.add_metadata_row("📐", "Resolution", f"{width} x {height}")
+                    self.add_metadata_row("🎬", "Frames", f"{frame_count}")
+                    self.add_metadata_row("📊", "FPS", f"{fps:.2f}")
+                    
+                    # Duration (formatted as MM:SS or HH:MM:SS)
+                    if duration >= 3600:
+                        hours = int(duration // 3600)
+                        minutes = int((duration % 3600) // 60)
+                        seconds = int(duration % 60)
+                        duration_str = f"{hours}h {minutes}m {seconds}s"
+                    elif duration >= 60:
+                        minutes = int(duration // 60)
+                        seconds = int(duration % 60)
+                        duration_str = f"{minutes}m {seconds}s"
+                    else:
+                        duration_str = f"{duration:.1f}s"
+                    self.add_metadata_row("⏱️", "Duration", duration_str)
+                    
+                    cap.release()
+            except Exception as e:
+                print(f"[PREVIEW] Error extracting video metadata: {e}")
         
         # 3. Add tags display in metadata (read-only)
         self.add_metadata_tags_display([asset])
@@ -4445,6 +4748,63 @@ class PreviewPanel(QWidget):
             self.pdf_prev_overlay.hide()
             self.pdf_next_overlay.hide()
             self.pdf_page_overlay.hide()
+    
+    def show_video_preview(self, asset):
+        """Show video file preview using Qt Multimedia (QMediaPlayer)"""
+        # Hide other controls
+        self.exposure_controls.hide()
+        self.text_controls.hide()
+        self.sequence_playback.hide()
+        
+        if not self.media_player:
+            # Fallback: show placeholder if Qt Multimedia not available
+            self.show_placeholder_with_text("⚠️ Qt Multimedia not available\nVideo playback requires PySide6.QtMultimedia")
+            return
+        
+        try:
+            # Stop previous video if playing
+            self.media_player.stop()
+            
+            video_path = str(asset.file_path)
+            
+            # Reset slider to beginning
+            self.video_slider.setValue(0)
+            self.video_time_label.setText("0:00 / 0:00")
+            
+            # Hide graphics view, show video widget
+            self.graphics_view.hide()
+            self.video_widget.show()
+            self.video_playback.show()
+            
+            # Detect FPS using OpenCV
+            try:
+                import cv2
+                cap = cv2.VideoCapture(video_path)
+                self.video_fps = cap.get(cv2.CAP_PROP_FPS)
+                cap.release()
+                if self.video_fps <= 0:
+                    self.video_fps = 24.0  # Fallback
+            except:
+                self.video_fps = 24.0  # Default fallback
+            
+            # Load video with QMediaPlayer
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtCore import QUrl
+                self.media_player.setSource(QUrl.fromLocalFile(video_path))
+            else:
+                # PySide2
+                from PySide2.QtCore import QUrl
+                from PySide2.QtMultimedia import QMediaContent
+                self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(video_path)))
+            
+            # Wait for media to be loaded, then play-pause to show first frame
+            self._video_needs_initial_pause = True
+            
+        except Exception as e:
+            print(f"[PREVIEW] Video preview error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_placeholder_with_text(f"⚠️ Video preview error:\n{str(e)}")
     
     def show_pdf_preview(self, asset):
         """Show PDF file preview with floating overlay navigation"""
@@ -7059,6 +7419,278 @@ class PreviewPanel(QWidget):
             print(f"Error loading sequence frame {frame_path}: {e}")
             self.graphics_scene.clear()
             self.current_text_item = None
+    
+    # ========================================================================
+    # VIDEO PLAYBACK CONTROLS
+    # ========================================================================
+    
+    def toggle_video_playback(self):
+        """Toggle video play/pause using QMediaPlayer"""
+        if not self.media_player:
+            return
+        
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtMultimedia import QMediaPlayer
+            if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+                self.media_player.pause()
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            else:
+                self.media_player.play()
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        else:
+            # PySide2
+            from PySide2.QtMultimedia import QMediaPlayer
+            if self.media_player.state() == QMediaPlayer.PlayingState:
+                self.media_player.pause()
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            else:
+                self.media_player.play()
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+    
+    def on_video_state_changed(self, state):
+        """Update play/pause button icon when playback state changes"""
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtMultimedia import QMediaPlayer
+            if state == QMediaPlayer.PlayingState:
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            else:
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        else:
+            from PySide2.QtMultimedia import QMediaPlayer
+            if state == QMediaPlayer.PlayingState:
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            else:
+                self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+    
+    def on_video_slider_pressed(self):
+        """Handle slider press - mark that user is dragging"""
+        self.video_slider_dragging = True
+    
+    def on_video_slider_value_changed(self, value):
+        """Handle slider value change - seek when clicked (not when updating from playback)"""
+        if not self.media_player or getattr(self, 'video_slider_updating', False):
+            return
+        
+        # Seek to new position (works for both click and drag)
+        duration = self.media_player.duration()
+        if duration > 0:
+            position = int((value / 1000.0) * duration)
+            self.media_player.setPosition(position)
+    
+    def on_video_slider_released(self):
+        """Handle slider released - stop blocking position updates"""
+        self.video_slider_dragging = False
+    
+    def on_video_position_changed(self, position):
+        """Update slider when video position changes"""
+        if not self.media_player:
+            return
+        
+        # Don't update slider if user is dragging it or dragging on video widget
+        if getattr(self, 'video_slider_dragging', False) or getattr(self, 'video_dragging', False):
+            return
+        
+        duration = self.media_player.duration()
+        if duration > 0:
+            # Prevent feedback loop
+            self.video_slider_updating = True
+            slider_value = int((position / duration) * 1000)
+            self.video_slider.setValue(slider_value)
+            self.video_slider_updating = False
+            
+            # Update time label
+            current_time = self.format_time(position)
+            total_time = self.format_time(duration)
+            self.video_time_label.setText(f"{current_time} / {total_time}")
+    
+    def on_video_duration_changed(self, duration):
+        """Handle video duration change"""
+        total_time = self.format_time(duration)
+        self.video_time_label.setText(f"0:00 / {total_time}")
+    
+    def format_time(self, ms):
+        """Format milliseconds to MM:SS"""
+        seconds = ms // 1000
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{int(minutes)}:{int(seconds):02d}"
+    
+    def stop_video_playback(self):
+        """Stop video and reset to beginning"""
+        if not self.media_player:
+            return
+        self.media_player.stop()
+        self.video_slider.setValue(0)
+        self.video_time_label.setText("0:00 / 0:00")
+        self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+    
+    def skip_backward_video(self):
+        """Skip backward 5 seconds"""
+        if not self.media_player:
+            return
+        current_pos = self.media_player.position()
+        new_pos = max(0, current_pos - 5000)  # 5 seconds = 5000ms
+        self.media_player.setPosition(new_pos)
+    
+    def skip_forward_video(self):
+        """Skip forward 5 seconds"""
+        if not self.media_player:
+            return
+        current_pos = self.media_player.position()
+        duration = self.media_player.duration()
+        new_pos = min(duration, current_pos + 5000)  # 5 seconds = 5000ms
+        self.media_player.setPosition(new_pos)
+    
+    def video_prev_frame(self):
+        """Go to previous frame (1 frame back based on FPS)"""
+        if not self.media_player:
+            return
+        
+        # Get FPS from detected value
+        fps = getattr(self, 'video_fps', 24.0)
+        duration = self.media_player.duration()
+        
+        if duration > 0:
+            # Calculate frame duration in milliseconds
+            frame_duration_ms = 1000.0 / fps
+            current_pos = self.media_player.position()
+            new_pos = max(0, current_pos - frame_duration_ms)
+            
+            # Just seek - frame should be visible from initial play-pause on load
+            self.media_player.setPosition(int(new_pos))
+    
+    def video_next_frame(self):
+        """Go to next frame (1 frame forward based on FPS)"""
+        if not self.media_player:
+            return
+        
+        # Get FPS from detected value
+        fps = getattr(self, 'video_fps', 24.0)
+        duration = self.media_player.duration()
+        
+        if duration > 0:
+            # Calculate frame duration in milliseconds
+            frame_duration_ms = 1000.0 / fps
+            current_pos = self.media_player.position()
+            new_pos = min(duration, current_pos + frame_duration_ms)
+            
+            # Just seek - frame should be visible from initial play-pause on load
+            self.media_player.setPosition(int(new_pos))
+    
+    def _pause_and_reset_video(self):
+        """Helper to pause video and show first frame after brief play"""
+        if self.media_player:
+            self.media_player.pause()
+            # Only reset to 0 if we actually want the first frame (initial load)
+            # Don't reset if user already seeked somewhere
+            if getattr(self, '_video_needs_initial_pause', False):
+                self.media_player.setPosition(0)
+            # Set button icon to Play (since we're pausing)
+            self.video_play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+    
+    def on_media_status_changed(self, status):
+        """Handle media status changes - show first frame when loaded"""
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtMultimedia import QMediaPlayer
+            if status == QMediaPlayer.LoadedMedia:
+                if getattr(self, '_video_needs_initial_pause', False):
+                    self._video_needs_initial_pause = False
+                    self.media_player.setPosition(0)
+                    self.media_player.play()
+                    QtCore.QTimer.singleShot(100, lambda: self._pause_and_reset_video())
+        else:
+            from PySide2.QtMultimedia import QMediaPlayer
+            if status == QMediaPlayer.LoadedMedia:
+                if getattr(self, '_video_needs_initial_pause', False):
+                    self._video_needs_initial_pause = False
+                    self.media_player.setPosition(0)
+                    self.media_player.play()
+                    QtCore.QTimer.singleShot(100, lambda: self._pause_and_reset_video())
+    
+    def show_volume_popup(self):
+        """Show volume slider popup below the volume button"""
+        if not self.media_player:
+            return
+        
+        # Ensure popup is properly sized before positioning
+        self.video_volume_popup.adjustSize()
+        
+        # Position popup above the volume button
+        button_pos = self.video_volume_button.mapToGlobal(QPoint(0, 0))
+        popup_x = button_pos.x() - (self.video_volume_popup.width() // 2) + (self.video_volume_button.width() // 2)
+        popup_y = button_pos.y() - self.video_volume_popup.height() - 5  # Above button
+        
+        self.video_volume_popup.move(popup_x, popup_y)
+        self.video_volume_popup.show()
+    
+    def toggle_video_mute(self):
+        """Toggle mute/unmute"""
+        if not self.media_player:
+            return
+        
+        if PYSIDE_VERSION == 6:
+            # PySide6 uses QAudioOutput
+            if hasattr(self, 'audio_output'):
+                current_volume = self.audio_output.volume()
+                if current_volume > 0:
+                    # Mute: save current volume and set to 0
+                    self._saved_volume = current_volume
+                    self.audio_output.setVolume(0)
+                    self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+                else:
+                    # Unmute: restore saved volume or default to 100%
+                    restore_volume = getattr(self, '_saved_volume', 1.0)
+                    self.audio_output.setVolume(restore_volume)
+                    self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+                    # Update slider to match
+                    self.video_volume_slider.setValue(int(restore_volume * 100))
+        else:
+            # PySide2
+            is_muted = self.media_player.isMuted()
+            self.media_player.setMuted(not is_muted)
+            if not is_muted:
+                self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+            else:
+                self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+    
+    def on_video_volume_changed(self, value):
+        """Handle volume slider change"""
+        if not self.media_player:
+            return
+        
+        # Update volume label
+        self.video_volume_label.setText(f"{value}%")
+        
+        if PYSIDE_VERSION == 6:
+            # PySide6: value is 0-100, convert to 0.0-1.0
+            if hasattr(self, 'audio_output'):
+                volume = value / 100.0
+                self.audio_output.setVolume(volume)
+                # Update mute button icon
+                if volume == 0:
+                    self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+                else:
+                    self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+        else:
+            # PySide2
+            self.media_player.setVolume(value)
+            if value == 0:
+                self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+            else:
+                self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+    
+    def cleanup(self):
+        """Cleanup resources (called on close)"""
+        # Stop video playback and release resources
+        if self.media_player:
+            self.media_player.stop()
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtCore import QUrl
+                self.media_player.setSource(QUrl())
+            else:
+                from PySide2.QtMultimedia import QMediaContent
+                self.media_player.setMedia(QMediaContent())
+        print("[PREVIEW] Cleanup completed")
     
     # Cache system removed for simplification
     # Will be reimplemented if needed

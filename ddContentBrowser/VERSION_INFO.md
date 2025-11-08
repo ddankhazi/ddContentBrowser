@@ -1,6 +1,6 @@
 # Version Management
 
-## Current Version: 1.3.0
+## Current Version: 1.6.0
 
 ## How to Update Version
 

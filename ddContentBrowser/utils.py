@@ -57,6 +57,10 @@ def set_ui_font(font_family):
 # FILE TYPE REGISTRY - Central definition of all supported file types
 # ============================================================================
 
+# Version of the registry - increment when adding/modifying default formats
+# FILE_TYPE_REGISTRY version (increment to trigger config merge)
+FILE_TYPE_REGISTRY_VERSION = "1.2"
+
 FILE_TYPE_REGISTRY = {
     # Category: (extensions_list, display_label, filter_group_name)
     "maya": {
@@ -129,6 +133,14 @@ FILE_TYPE_REGISTRY = {
         "filter_label": "Text (.txt)",
         "importable": False,
         "generate_thumbnail": False,
+        "is_3d": False
+    },
+    "video": {
+        "extensions": [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".wmv"],
+        "label": "Video Files",
+        "filter_label": "Video (.mp4/.mov/.avi/.mkv/.webm)",
+        "importable": False,  # Not directly importable to Maya (could be image plane in future)
+        "generate_thumbnail": True,  # Extract middle frame
         "is_3d": False
     },
     "other": {
@@ -369,6 +381,15 @@ def get_default_icon_colors(extension):
         '.py': ([60, 120, 180], [100, 160, 220]),    # Python blue
         '.mel': ([70, 160, 100], [100, 200, 140]),   # Maya green (Maya native)
         '.txt': ([160, 160, 160], [200, 200, 200]),  # Gray (plain text)
+        # Video files
+        '.mp4': ([200, 80, 120], [255, 120, 160]),   # Pink-red gradient (video)
+        '.mov': ([180, 100, 200], [220, 140, 240]),  # Purple gradient (QuickTime)
+        '.avi': ([80, 120, 200], [120, 160, 240]),   # Blue gradient (AVI)
+        '.mkv': ([100, 200, 120], [140, 240, 160]),  # Green gradient (Matroska)
+        '.webm': ([220, 140, 80], [255, 180, 120]),  # Orange gradient (WebM)
+        '.m4v': ([200, 80, 120], [255, 120, 160]),   # Pink-red (like MP4)
+        '.flv': ([200, 120, 80], [240, 160, 120]),   # Orange-brown (Flash)
+        '.wmv': ([100, 140, 200], [140, 180, 240]),  # Light blue (Windows Media)
     }
     
     return color_schemes.get(extension, ([100, 100, 100], [150, 150, 150]))
@@ -407,6 +428,8 @@ def get_default_thumbnail_method(extension):
         return 'openimageio'
     elif extension == '.gif':
         return 'qimage_optimized'
+    elif extension in ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv']:
+        return 'video'
     else:
         return 'none'
 
@@ -513,10 +536,64 @@ def save_file_formats_config(config):
         return False
 
 
+def merge_registry_updates(user_config):
+    """
+    Merge & UPDATE formats from FILE_TYPE_REGISTRY into user config.
+    
+    Strategy:
+    1. STANDARD extension (exists in registry) → OVERRIDE with default (fresh config!)
+    2. CUSTOM extension (user-only) → PRESERVE (user added it)
+    3. NEW category → add
+    
+    This ensures all standard formats always use the latest configuration!
+    """
+    default_config = generate_default_file_formats_config()
+    
+    # Ensure extensions and categories dicts exist
+    if "extensions" not in user_config:
+        user_config["extensions"] = {}
+    if "categories" not in user_config:
+        user_config["categories"] = {}
+    
+    # Merge categories - add new categories
+    for cat_key, cat_data in default_config["categories"].items():
+        if cat_key not in user_config["categories"]:
+            user_config["categories"][cat_key] = cat_data
+            print(f"  + Added category: {cat_key}")
+    
+    # Merge extensions
+    updated_count = 0
+    added_count = 0
+    custom_count = 0
+    
+    # 1. Update/Add all standard extensions from registry
+    for ext, ext_config in default_config["extensions"].items():
+        if ext in user_config["extensions"]:
+            # OVERRIDE - registry version is always newer
+            user_config["extensions"][ext] = ext_config
+            print(f"  ↻ Updated standard extension: {ext}")
+            updated_count += 1
+        else:
+            # New extension
+            user_config["extensions"][ext] = ext_config
+            print(f"  + Added extension: {ext}")
+            added_count += 1
+    
+    # 2. Count custom extensions (user added, not in registry)
+    for ext in list(user_config["extensions"].keys()):
+        if ext not in default_config["extensions"]:
+            custom_count += 1
+            print(f"  ✓ Preserved custom extension: {ext}")
+    
+    print(f"[File Formats] Updated {updated_count}, Added {added_count}, Preserved {custom_count} custom")
+    return user_config
+
+
 def ensure_file_formats_config():
     """
     Ensure file_formats.json exists and return loaded config.
     Auto-generates from FILE_TYPE_REGISTRY on first run.
+    Auto-merges new formats when registry version changes.
     Uses cache to avoid repeated file reads.
     """
     global _file_formats_config_cache
@@ -531,10 +608,18 @@ def ensure_file_formats_config():
         # First run or upgrade - generate default
         print("[File Formats] No config found, generating default...")
         config = generate_default_file_formats_config()
+        config["registry_version"] = FILE_TYPE_REGISTRY_VERSION
         save_file_formats_config(config)
     else:
         # Load existing config
         config = load_file_formats_config()
+        
+        # Check if registry was updated - merge new formats
+        if config.get("registry_version") != FILE_TYPE_REGISTRY_VERSION:
+            print(f"[File Formats] Registry updated ({config.get('registry_version', '0.0')} → {FILE_TYPE_REGISTRY_VERSION}), merging changes...")
+            config = merge_registry_updates(config)
+            config["registry_version"] = FILE_TYPE_REGISTRY_VERSION
+            save_file_formats_config(config)
     
     # Cache it
     _file_formats_config_cache = config
