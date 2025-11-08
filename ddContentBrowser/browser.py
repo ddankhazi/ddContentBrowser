@@ -580,6 +580,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.content_splitter = QtWidgets.QSplitter(Qt.Horizontal)
         self.content_splitter.setHandleWidth(3)
         self.content_splitter.setChildrenCollapsible(False)  # Prevent panels from collapsing
+        # Use opaque resize (real-time resize) for smooth dragging
+        # With UniformItemSizes=True on file_list, this is VERY fast!
+        self.content_splitter.setOpaqueResize(True)
         main_layout.addWidget(self.content_splitter)
         
         # Left panel - Navigation
@@ -1057,9 +1060,6 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Treats all items as same size = no individual calculations = 6x faster!
         self.file_list.setUniformItemSizes(True)
         self.file_list.setSpacing(5)
-        
-        # Print confirmation that optimization is loaded
-        print(f"[Browser] Splitter optimization ENABLED: UniformItemSizes=True")
         
         # Enable drag and drop
         # LEFT BUTTON (default) = Box selection (rubber band drag)
@@ -3081,16 +3081,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 print(f"[PERF] Items in view: {self.file_model.rowCount()}")
                 print(f"{'='*60}\n")
             
-            # Disable updates to freeze content during drag (fast but has artifact)
-            if hasattr(self, 'file_list'):
-                self.file_list.setUpdatesEnabled(False)
+            # NO LONGER DISABLING UPDATES - opaque resize handles it smoothly
+            # UniformItemSizes=True makes real-time resize FAST enough
         
         if DEBUG_MODE:
             print(f"[Splitter] Moved to position {pos} (move #{self._splitter_move_count})")
         
         # NO CONFIG SAVING HERE - only save on window close for better performance
         # The position will be saved in closeEvent()
-        # Updates are disabled on first move, re-enabled after delay
         
         # Use timer to detect end of drag (no more moves for 100ms = drag ended)
         if hasattr(self, '_splitter_end_timer'):
@@ -3137,12 +3135,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             print(f"[PERF] Paint FPS: {paint_fps:.1f}")
             print(f"{'='*60}\n")
         
-        # Re-enable updates and force immediate repaint
+        # NO LONGER NEEDED - updates were never disabled
+        # Just ensure a final refresh for good measure
         if hasattr(self, 'file_list'):
-            self.file_list.setUpdatesEnabled(True)
             self.file_list.viewport().update()
-            # Force immediate processing for instant visual feedback
-            QtWidgets.QApplication.processEvents()
     
     def on_column_width_changed(self, pos, index):
         """Refresh list view when column widths change"""

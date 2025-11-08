@@ -12,6 +12,12 @@ Handles:
 - Tag management
 """
 
+# Suppress Qt Multimedia FFmpeg output BEFORE importing Qt
+import os
+os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg=false"
+os.environ["QT_LOGGING_RULES"] = "*=false"  # Nuclear option - disable ALL Qt logging
+os.environ["QT_DEBUG_PLUGINS"] = "0"
+
 # Standard library imports
 from pathlib import Path
 from datetime import datetime
@@ -67,6 +73,16 @@ qInstallMessageHandler(qt_message_handler)
 # Debug mode flag
 DEBUG_MODE = False
 
+# Suppress OpenCV/FFmpeg verbose output
+import os
+import sys
+
+# Environment variables to suppress FFmpeg output
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "loglevel;quiet"
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
+os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "0"
+os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
+
 # Check for numpy (required for HDR/EXR processing)
 try:
     import numpy as np
@@ -78,10 +94,13 @@ except ImportError:
 # Check for OpenCV (for advanced TIFF support)
 try:
     import cv2
+    # Set OpenCV logging level to ERROR only (suppresses INFO/DEBUG spam)
+    cv2.setLogLevel(0)  # 0 = Silent
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
     print("[Preview Panel] Info: OpenCV not available - using QImageReader for TIFF")
+
 
 # Check for OpenEXR (for .exr files)
 try:
@@ -3795,6 +3814,18 @@ class PreviewPanel(QWidget):
         self.pdf_next_overlay.hide()
         self.pdf_page_overlay.hide()
         
+        # CRITICAL FIX: Always ensure correct widget visibility when switching files
+        # If we're NOT showing a video, ensure graphics_view is visible and video_widget is hidden
+        # This fixes the issue where video → image switching doesn't update the display
+        if not asset.is_video_file:
+            # Stop any playing video first
+            if hasattr(self, 'media_player') and self.media_player:
+                self.media_player.stop()
+            # Hide video widgets, show graphics view
+            self.video_widget.hide()
+            self.video_playback.hide()
+            self.graphics_view.show()
+        
         self.title_label.setText(f"Preview: {asset.name}")
         self.clear_metadata()
         
@@ -4278,6 +4309,8 @@ class PreviewPanel(QWidget):
         if asset.is_video_file:
             try:
                 import cv2
+                # Suppress OpenCV/FFmpeg verbose output
+                cv2.setLogLevel(0)  # 0 = Silent
                 cap = cv2.VideoCapture(str(asset.file_path))
                 if cap.isOpened():
                     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -4779,6 +4812,8 @@ class PreviewPanel(QWidget):
             # Detect FPS using OpenCV
             try:
                 import cv2
+                # Suppress OpenCV/FFmpeg verbose output
+                cv2.setLogLevel(0)  # 0 = Silent
                 cap = cv2.VideoCapture(video_path)
                 self.video_fps = cap.get(cv2.CAP_PROP_FPS)
                 cap.release()

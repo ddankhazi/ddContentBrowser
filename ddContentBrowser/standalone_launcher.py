@@ -7,7 +7,29 @@ Usage:
 """
 
 import sys
+import os
 from pathlib import Path
+
+# SUPPRESS Qt Multimedia FFmpeg output BEFORE any Qt imports!
+os.environ["QT_LOGGING_RULES"] = "*.critical=false;*.debug=false;*.info=false;*.warning=false"
+os.environ["QT_DEBUG_PLUGINS"] = "0"
+os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"
+os.environ["AV_LOG_LEVEL"] = "-8"  # FFmpeg: AV_LOG_QUIET
+os.environ["FFREPORT"] = "level=-8"
+
+# NUCLEAR OPTION: Redirect stderr to devnull to suppress ALL FFmpeg C++ output
+# This must be done at OS level BEFORE any libraries load
+if sys.platform == 'win32':
+    import msvcrt
+    import ctypes
+    try:
+        # Open NUL device
+        nul_fd = os.open('nul', os.O_WRONLY)
+        # Duplicate stderr to NUL
+        os.dup2(nul_fd, 2)  # 2 = stderr file descriptor
+        os.close(nul_fd)
+    except:
+        pass  # If fails, continue anyway
 
 # Get script directory
 script_dir = Path(__file__).parent

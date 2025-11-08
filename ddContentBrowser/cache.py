@@ -32,26 +32,11 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-# Suppress OpenCV error messages for unsupported formats
-# (We handle them gracefully with PIL fallback)
-os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
-if hasattr(sys, 'stderr'):
-    # Redirect stderr temporarily to suppress OpenCV errors
-    original_stderr = sys.stderr
-    
-    class SuppressedStderr:
-        def write(self, text):
-            # Only suppress OpenCV TIFF errors, pass through others
-            if "opencv" in text.lower() and "channels" in text.lower():
-                return
-            if "cv::imread_" in text and "can't read header" in text:
-                return
-            original_stderr.write(text)
-        
-        def flush(self):
-            original_stderr.flush()
-    
-    sys.stderr = SuppressedStderr()
+# Suppress OpenCV/FFmpeg verbose output
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "loglevel;quiet"
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
+os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "0"
+os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
 
 try:
     from PySide6.QtCore import QThread, Signal, Qt
@@ -63,6 +48,7 @@ except ImportError:
     from PySide2.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QLinearGradient, QBrush, QTransform
     from PySide2.QtCore import QRect
     PYSIDE_VERSION = 2
+
 
 
 def apply_exif_orientation(pixmap, file_path):
@@ -585,6 +571,8 @@ class ThumbnailGenerator(QThread):
             OpenCV imread flags (int)
         """
         import cv2
+        # Suppress OpenCV/FFmpeg verbose output
+        cv2.setLogLevel(0)  # 0 = Silent
         
         # For small thumbnails, use aggressive downsampling during decode
         # This is MUCH faster for large TIFF files (2-8× speedup)
@@ -1040,8 +1028,12 @@ class ThumbnailGenerator(QThread):
         """
         try:
             print(f"[VIDEO THUMB] Starting video thumbnail generation for: {Path(file_path).name}")
+            
             import cv2
             import numpy as np
+            
+            # Suppress OpenCV/FFmpeg verbose output
+            cv2.setLogLevel(0)  # 0 = Silent
             
             if PYSIDE_VERSION == 6:
                 from PySide6.QtGui import QImage, QPixmap
@@ -1226,6 +1218,9 @@ class ThumbnailGenerator(QThread):
                     # Try OpenCV first for 16-bit/32-bit TIFF and TGA support
                     import cv2
                     import numpy as np
+                    
+                    # Suppress OpenCV/FFmpeg verbose output
+                    cv2.setLogLevel(0)  # 0 = Silent
                     
                     # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
                     imread_flags = self._get_opencv_imread_flags()
@@ -1505,6 +1500,9 @@ class ThumbnailGenerator(QThread):
                     # Try OpenCV for large files - better memory handling with optimized flags
                     import cv2
                     import numpy as np
+                    
+                    # Suppress OpenCV/FFmpeg verbose output
+                    cv2.setLogLevel(0)  # 0 = Silent
                     
                     # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
                     imread_flags = self._get_opencv_imread_flags()
@@ -1867,6 +1865,9 @@ class ThumbnailGenerator(QThread):
                     # OPTIMIZATION 1: Downsample BEFORE tone mapping (much faster!)
                     # Use area interpolation for best quality at reduced size
                     import cv2
+                    
+                    # Suppress OpenCV/FFmpeg verbose output
+                    cv2.setLogLevel(0)  # 0 = Silent
                     if width > self.thumbnail_size or height > self.thumbnail_size:
                         scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
                         new_width = int(width * scale)
@@ -2023,6 +2024,9 @@ class ThumbnailGenerator(QThread):
         try:
             import cv2
             import numpy as np
+            
+            # Suppress OpenCV/FFmpeg verbose output
+            cv2.setLogLevel(0)  # 0 = Silent
             
             if DEBUG_MODE:
                 print(f"[HDR-OPT] Loading HDR with OpenCV: {Path(file_path).name}")
