@@ -71,7 +71,7 @@ def qt_message_handler(msg_type, context, message):
 qInstallMessageHandler(qt_message_handler)
 
 # Debug mode flag
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # Suppress OpenCV/FFmpeg verbose output
 import os
@@ -1072,6 +1072,16 @@ class SequencePlaybackWidget(QWidget):
         if event.key() == Qt.Key_Space:
             self.toggle_play_pause()
             event.accept()
+        elif event.key() == Qt.Key_F:
+            # Toggle fullscreen for video
+            if hasattr(self, 'video_widget') and self.video_widget and self.video_widget.isVisible():
+                self.toggle_video_fullscreen()
+                event.accept()
+        elif event.key() == Qt.Key_Escape:
+            # Exit fullscreen if in fullscreen mode
+            if hasattr(self, 'video_widget') and self.video_widget and self.video_widget.isFullScreen():
+                self.toggle_video_fullscreen()
+                event.accept()
         elif event.key() == Qt.Key_Right:
             self.pause()  # Pause if playing
             self.step_forward()
@@ -1155,6 +1165,9 @@ class PreviewPanel(QWidget):
         self.current_exr_file_path = None  # Current EXR file path
         self.current_exr_channels = []     # List of channel names
         self.current_exr_channel = None    # Currently displayed channel name
+        
+        # Video fullscreen widget
+        self._fullscreen_widget = None  # Fullscreen container for video + controls
         
         self.setMinimumWidth(250)  # Minimum width when visible
         self.setup_ui()
@@ -1611,9 +1624,9 @@ class PreviewPanel(QWidget):
         
         # Top part: Preview area + controls in a container
         preview_container = QWidget()
-        preview_layout = QVBoxLayout(preview_container)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.setSpacing(5)
+        self.preview_layout = QVBoxLayout(preview_container)
+        self.preview_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_layout.setSpacing(5)
         
         # Preview image area using QGraphicsView (allows free positioning, no forced centering!)
         self.graphics_view = QGraphicsView()
@@ -1644,7 +1657,7 @@ class PreviewPanel(QWidget):
                 # Apply saved background mode
         self._apply_background()
         
-        preview_layout.addWidget(self.graphics_view)
+        self.preview_layout.addWidget(self.graphics_view)
         
         # Zoom controls toolbar (only visible in zoom mode)
         self.zoom_controls = QWidget()
@@ -1690,7 +1703,7 @@ class PreviewPanel(QWidget):
         self.zoom_exit_btn.clicked.connect(self.exit_zoom_mode)
         zoom_controls_layout.addWidget(self.zoom_exit_btn)
         
-        preview_layout.addWidget(self.zoom_controls)
+        self.preview_layout.addWidget(self.zoom_controls)
         self.zoom_controls.hide()  # Hidden by default
         
         # HDR/EXR Exposure control (always visible for HDR/EXR files)
@@ -1727,7 +1740,7 @@ class PreviewPanel(QWidget):
         reset_btn.clicked.connect(lambda: self.exposure_slider.setValue(0))
         exposure_layout.addWidget(reset_btn)
         
-        preview_layout.addWidget(self.exposure_controls)
+        self.preview_layout.addWidget(self.exposure_controls)
         self.exposure_controls.hide()  # Hidden by default, shown only for HDR/EXR
         
         # === Sequence Playback Controls (only visible for image sequences) ===
@@ -1735,7 +1748,7 @@ class PreviewPanel(QWidget):
         # Cache disabled for now
         # self.sequence_playback.cache = self.sequence_frame_cache
         self.sequence_playback.frame_changed.connect(self.on_sequence_frame_changed)
-        preview_layout.addWidget(self.sequence_playback)
+        self.preview_layout.addWidget(self.sequence_playback)
         self.sequence_playback.hide()  # Hidden by default, shown only for sequences
         
         # === Video Playback (QMediaPlayer with Qt Multimedia) ===
@@ -1750,7 +1763,7 @@ class PreviewPanel(QWidget):
         if has_qt_multimedia and hasattr(self.video_widget, 'setAspectRatioMode'):
             # Qt.KeepAspectRatio ensures video fits and is centered
             self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
-        preview_layout.addWidget(self.video_widget, 1)  # stretch factor 1 to fill space
+        self.preview_layout.addWidget(self.video_widget, 1)  # stretch factor 1 to fill space
         self.video_widget.hide()
         
         # Video drag scrubbing state
@@ -1916,7 +1929,30 @@ class PreviewPanel(QWidget):
         self.video_time_label.setStyleSheet(f"font-family: {UI_FONT}; color: #aaa;")
         video_layout.addWidget(self.video_time_label)
         
-        preview_layout.addWidget(self.video_playback)
+        # Fullscreen button (AFTER timeline slider)
+        self.video_fullscreen_button = QToolButton()
+        # Use text instead of icon for consistent color
+        self.video_fullscreen_button.setText("⛶")
+        self.video_fullscreen_button.setStyleSheet(f"""
+            QToolButton {{
+                font-size: 14pt;
+                color: #808080;
+                background: transparent;
+                border: none;
+                padding-bottom: 2px;
+            }}
+            QToolButton:hover {{
+                color: #aaa;
+            }}
+        """)
+        self.video_fullscreen_button.setToolTip("Fullscreen (F)")
+        self.video_fullscreen_button.setFixedSize(28, 28)
+        self.video_fullscreen_button.clicked.connect(self.toggle_video_fullscreen)
+        video_layout.addWidget(self.video_fullscreen_button)
+
+
+        
+        self.preview_layout.addWidget(self.video_playback)
         self.video_playback.hide()
         
         # Connect media player signals
@@ -1979,7 +2015,7 @@ class PreviewPanel(QWidget):
         self.copy_text_btn.clicked.connect(self.copy_text_to_clipboard)
         text_controls_layout.addWidget(self.copy_text_btn)
         
-        preview_layout.addWidget(self.text_controls)
+        self.preview_layout.addWidget(self.text_controls)
         self.text_controls.hide()  # Hidden by default, shown only for text files
         
         # Store current text content for controls
@@ -2678,6 +2714,19 @@ class PreviewPanel(QWidget):
     
     def eventFilter(self, obj, event):
         """Event filter for graphics view and video widget - handles mouse events for zoom/pan and scrubbing"""
+        
+        # === Fullscreen Widget Events ===
+        if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget:
+            # Handle events from fullscreen widget or video widget when in fullscreen
+            if obj == self._fullscreen_widget or (obj == self.video_widget and self._fullscreen_widget.isVisible()):
+                if event.type() == QEvent.KeyPress:
+                    if event.key() == Qt.Key_Escape or event.key() == Qt.Key_F:
+                        self.toggle_video_fullscreen()
+                        return True
+                elif event.type() == QEvent.MouseMove:
+                    # Show controls on mouse movement
+                    self._show_fullscreen_controls()
+                    return False
         
         # === Volume Button Right-Click ===
         if (hasattr(self, 'video_volume_button') and obj == self.video_volume_button):
@@ -7713,6 +7762,144 @@ class PreviewPanel(QWidget):
                 self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
             else:
                 self.video_volume_button.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+    
+    def toggle_video_fullscreen(self):
+        """Toggle fullscreen mode for video widget with controls"""
+        if not self.video_widget:
+            return
+        
+        if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget and self._fullscreen_widget.isVisible():
+            # Exit fullscreen
+            self._fullscreen_widget.hide()
+            
+            try:
+                # Stop and cleanup hide timer
+                if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                    self._fullscreen_hide_timer.stop()
+                    self._fullscreen_hide_timer.deleteLater()
+                    self._fullscreen_hide_timer = None
+                
+                # Remove opacity effect and reset mouse transparency
+                if hasattr(self, '_fullscreen_opacity_effect'):
+                    try:
+                        if self._fullscreen_opacity_effect:
+                            self.video_playback.setGraphicsEffect(None)
+                            self._fullscreen_opacity_effect.deleteLater()
+                    except RuntimeError:
+                        # Already deleted, that's fine
+                        pass
+                    del self._fullscreen_opacity_effect
+                
+                # Re-enable mouse events on controls (in case it was disabled)
+                if hasattr(self, 'video_playback') and self.video_playback:
+                    self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                
+                # Reset video playback controls style to normal
+                self.video_playback.setStyleSheet("")
+                
+                # Re-parent video widget back to preview layout (after graphics_view)
+                # Find the correct index (video should be after graphics_view, before controls)
+                graphics_view_index = self.preview_layout.indexOf(self.graphics_view)
+                self.preview_layout.insertWidget(graphics_view_index + 1, self.video_widget, 1)  # stretch factor 1
+                
+                # Re-parent controls back to preview layout (at the end)
+                self.preview_layout.addWidget(self.video_playback)
+                
+                # Show the widgets
+                self.video_widget.show()
+                self.video_playback.show()
+                
+                # Update button text (exit fullscreen mode)
+                self.video_fullscreen_button.setText("⛶")
+                self.video_fullscreen_button.setToolTip("Fullscreen (F)")
+                
+                # Delete fullscreen widget
+                self._fullscreen_widget.deleteLater()
+                self._fullscreen_widget = None
+                
+            except Exception as e:
+                print(f"ERROR during fullscreen exit: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            # Create fullscreen widget
+            self._fullscreen_widget = QWidget()
+            self._fullscreen_widget.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            self._fullscreen_widget.setStyleSheet("background-color: black;")
+            self._fullscreen_widget.setMouseTracking(True)  # Track mouse movement
+            
+            # Create layout for fullscreen widget
+            fullscreen_layout = QVBoxLayout(self._fullscreen_widget)
+            fullscreen_layout.setContentsMargins(0, 0, 0, 0)
+            fullscreen_layout.setSpacing(0)  # No spacing - controls overlay at bottom
+            
+            # Re-parent video widget to fullscreen widget (with stretch)
+            fullscreen_layout.addWidget(self.video_widget, 1)  # stretch factor 1 - fill space
+            
+            # Enable mouse tracking on video widget too
+            self.video_widget.setMouseTracking(True)
+            
+            # Install event filter on video widget for mouse movement
+            self.video_widget.installEventFilter(self)
+            
+            # Style the video playback controls for fullscreen
+            # Use same gray background as preview panel (#2a2a2a)
+            self.video_playback.setStyleSheet("""
+                QWidget {
+                    background-color: #2a2a2a;
+                }
+            """)
+            
+            # Re-parent controls to fullscreen widget (no stretch - fixed height at bottom)
+            fullscreen_layout.addWidget(self.video_playback, 0)  # stretch factor 0 - fixed size
+            
+            # Install event filter for ESC key and mouse tracking
+            self._fullscreen_widget.installEventFilter(self)
+            
+            # Create auto-hide timer for controls
+            self._fullscreen_hide_timer = QtCore.QTimer()
+            self._fullscreen_hide_timer.setSingleShot(True)
+            self._fullscreen_hide_timer.setInterval(3000)  # Hide after 3 seconds of inactivity
+            self._fullscreen_hide_timer.timeout.connect(self._hide_fullscreen_controls)
+            self._fullscreen_hide_timer.start()
+            
+            # Create opacity effect for controls
+            self._fullscreen_opacity_effect = QGraphicsOpacityEffect(self.video_playback)
+            self.video_playback.setGraphicsEffect(self._fullscreen_opacity_effect)
+            self._fullscreen_opacity_effect.setOpacity(1.0)  # Start fully visible
+            
+            # Show fullscreen
+            self._fullscreen_widget.showFullScreen()
+            
+            # Ensure widgets are visible
+            self.video_widget.show()
+            self.video_playback.show()
+            
+            # Update button text (fullscreen mode - show exit icon)
+            self.video_fullscreen_button.setText("⛝")  # Exit fullscreen icon
+            self.video_fullscreen_button.setToolTip("Exit Fullscreen (F or Esc)")
+    
+    def _hide_fullscreen_controls(self):
+        """Hide controls in fullscreen mode by setting opacity to 0"""
+        if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
+            self._fullscreen_opacity_effect.setOpacity(0.0)
+            # Disable mouse events when invisible so they pass through to video widget
+            if hasattr(self, 'video_playback') and self.video_playback:
+                self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+    
+    def _show_fullscreen_controls(self):
+        """Show controls in fullscreen mode and restart hide timer"""
+        if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
+            self._fullscreen_opacity_effect.setOpacity(1.0)
+            # Re-enable mouse events when visible
+            if hasattr(self, 'video_playback') and self.video_playback:
+                self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        
+        # Restart hide timer
+        if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+            self._fullscreen_hide_timer.stop()
+            self._fullscreen_hide_timer.start()
+
     
     def cleanup(self):
         """Cleanup resources (called on close)"""
