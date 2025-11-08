@@ -266,6 +266,7 @@ def load_hdr_exr_raw(file_path, max_size=2048):
             # OpenCV loads as BGR, convert to RGB
             rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             
+            # Get ORIGINAL resolution BEFORE scaling (for metadata display)
             height, width = rgb.shape[:2]
             resolution_str = f"{width} x {height}"
             
@@ -1404,6 +1405,9 @@ class PreviewPanel(QWidget):
                 if rgb.dtype == np.float16:
                     rgb = rgb.astype(np.float32)
                 
+                # Store ORIGINAL resolution BEFORE downsampling (for metadata display)
+                resolution_str = f"{width} x {height}"
+                
                 # Downsample to max preview size (4K) if needed
                 # This saves memory and improves tone mapping performance
                 import cv2
@@ -1416,7 +1420,6 @@ class PreviewPanel(QWidget):
                     width, height = new_width, new_height
                 
                 # Store downsampled raw data in cache for high quality exposure adjustments
-                resolution_str = f"{width} x {height}"
                 raw_cache_key = f"{file_path}#{channel_name}#raw"
                 self.hdr_raw_cache[raw_cache_key] = (rgb, width, height, resolution_str)
                 
@@ -1485,7 +1488,9 @@ class PreviewPanel(QWidget):
             # OpenCV loads as BGR, convert to RGB
             rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             
+            # Get ORIGINAL resolution BEFORE downsampling (for metadata display)
             height, width = rgb.shape[:2]
+            resolution_str = f"{width} x {height}"
             
             # Convert float16 to float32 if needed
             if rgb.dtype == np.float16:
@@ -1501,7 +1506,6 @@ class PreviewPanel(QWidget):
                 width, height = new_width, new_height
             
             # Store downsampled raw data in cache
-            resolution_str = f"{width} x {height}"
             self.hdr_raw_cache[file_path] = (rgb, width, height, resolution_str)
             
             # Apply tone mapping with current exposure
