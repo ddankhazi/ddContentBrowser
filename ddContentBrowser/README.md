@@ -295,51 +295,7 @@ Commercial redistribution is not permitted without the author's permission.
 
 ---
 
-## 🔥 Recent Updates
-
-### v1.6.0 (November 8, 2025) - Video Support
-- ✨ **Video file support** - 8 formats (.mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv)
-- ✨ **Video thumbnails** - Middle frame extraction with OpenCV
-- ✨ **Config version system** - Auto-update with user customization preservation
-- ✨ **Custom color schemes** - Each video format has unique gradient
-
-### v1.5.0 (October 18, 2025) - Collections & Quick View
-- ✨ **Collections System** - Virtual folders with drag & drop, export to folder
-- ✨ **Quick View** - macOS Quick Look-style floating preview with multi-file grid
-- ✨ **Tag System** - SQLite backend with 75+ default tags, Advanced Filters integration
-- 🔧 **Cache fixes** - Filter compatibility, recursive mode fixes
-- 🎨 **Dark theme** - Maya-style unified theme for standalone
-
-### v1.4.0 (October 16, 2025) - Performance & UX
-- 🚀 **Directory cache** - 1785x faster on repeat visits (0.007s vs 12.5s)
-- 🚀 **os.scandir()** - 55x faster than iterdir/glob
-- 🚀 **Lazy loading** - Deferred stat() calls for metadata
-- ✨ **Recent folders dropdown** - 🕒 button with 20 recent paths
-- ✨ **Multi-select favorites** - Batch add/remove
-- 🔧 **Include subfolders fix** - Proper cache bypass
-
-### v1.3.1 (October 16, 2025) - Bug Fixes
-- 🔧 **Text preview resize fix** - Removed processEvents() feedback loop
-- ✨ **Open file feature** - Windows default program integration
-
-### v1.3.0 (October 15, 2025) - Batch Rename & Settings
-- ✨ **Multi-rule Batch Renamer** - 7 rule types with live preview
-- ✨ **Complete Settings System** - Multi-tab GUI with JSON persistence
-- ✨ **Cache management** - Visual display, one-click clear
-
-### v1.2.0 (October 14, 2025) - TIFF Support
-- ✨ **16/32-bit TIFF** - OpenCV integration with proper normalization
-- 🔧 **Search filter fix** - Works with cached directories
-- 🔧 **EXR cache** - Restored OpenEXR loader
-
-### v1.1.0 (October 13, 2025) - HDR/EXR
-- ✨ **HDR/EXR preview** - Exposure control (-5 to +5 stops)
-- ✨ **ACES tone mapping** - Professional workflow
-- ✨ **Raw data caching** - Fast exposure adjustment (35-45ms)
-
----
-
-## 🔮 Planned Features (v2.0)
+##  Planned Features (v2.0)
 
 ### High Priority:
 1. **Smart Material Generator** - Auto-generate aiStandardSurface from texture sets
