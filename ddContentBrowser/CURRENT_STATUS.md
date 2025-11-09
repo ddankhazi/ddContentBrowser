@@ -10,7 +10,7 @@
 
 DD Content Browser is a **fast, visual asset browser** for Autodesk Maya featuring advanced HDR/EXR preview, exposure control, 16/32-bit TIFF support, and Maya-style workflow integration.
 
-**Current Development:** Tag System (v3.0 Phase 2) - ✅ **Phase 1 & 2 Complete!** Tag management + Advanced Filters integration working with SQLite backend!
+**Current Development:** Tag System Complete! ✅ Tag management + Advanced Filters integration working with SQLite backend!
 
 ------
 
@@ -113,10 +113,10 @@ DD Content Browser is a **fast, visual asset browser** for Autodesk Maya featuri
 
 ---
 
-## 🔥 Previous Updates (v2.5.0-dev) - October 18, 2025
+## 🔥 Previous Updates (v1.5.0) - October 18, 2025
 
-### Code Quality & Bug Fixes - Phase 5.7 Complete! 🔧✨
-**Completion Date:** October 18, 2025 (Today - Final Session!)
+### Code Quality & Bug Fixes 🔧✨
+**Completion Date:** October 18, 2025
 
 #### What's New:
 
@@ -232,8 +232,8 @@ def contextMenuEvent(self, event):
 
 ---
 
-### Quick View System - Phase 5.5 Complete! 👁️✨
-**Completion Date:** October 18, 2025 (Today - Earlier!)
+### Quick View System 👁️✨
+**Completion Date:** October 18, 2025
 
 #### What's New:
 
@@ -356,7 +356,7 @@ translate(delta)                 # Compensate position
 ---
 
 ### Collections System Implementation Complete! 📁✨
-**Completion Date:** October 18, 2025 (Today - Earlier!)
+**Completion Date:** October 18, 2025
 
 #### What's New:
 
@@ -497,7 +497,7 @@ translate(delta)                 # Compensate position
 ---
 
 ### UI Enhancement: Dark Theme Unification 🎨
-**Completion Date:** October 18, 2025 (Today - Evening!)
+**Completion Date:** October 18, 2025
 
 #### What's New:
 
@@ -536,8 +536,8 @@ translate(delta)                 # Compensate position
 
 ---
 
-### Tag System - Phase 2: Advanced Filters Integration Complete! 🏷️🔍✨
-**Completion Date:** October 18, 2025 (Today - Earlier!)
+### Tag System - Advanced Filters Integration 🏷️🔍✨
+**Completion Date:** October 18, 2025
 
 #### What's New Today:
 
@@ -595,9 +595,9 @@ translate(delta)                 # Compensate position
 
 ---
 
-## 🔥 Previous Updates (v2.5.0-dev) - October 17, 2025
+## 🔥 Previous Updates (v1.4.0) - October 17, 2025
 
-### Tag System - Phase 1 Implementation Complete! 🏷️✨
+### Tag System - Initial Implementation 🏷️✨
 **Completion Date:** October 17, 2025
 
 #### What's Working Now:
@@ -665,8 +665,7 @@ translate(delta)                 # Compensate position
   - Added `setup_tag_autocomplete()` - Autocomplete setup
   - Added tag loading call in `show_single_file()`
 
-#### Next Steps (Phase 3):
-- [x] ✅ Tag Filter Panel (filter files by tags) - **DONE!**
+#### Next Steps:
 - [ ] Star Rating System (0-5 stars)
 - [ ] Color Label System (8 colors)
 - [ ] Bulk tagging (multi-file operations)
@@ -676,7 +675,7 @@ translate(delta)                 # Compensate position
 
 ------
 
-## 🔥 Previous Updates (v2.4.3) - October 17, 2025 (Earlier Today)
+## 🔥 Previous Updates (v1.4.0) - October 17, 2025
 
 ### Cache + Filter System Complete Overhaul 🔧
 **Completion Date:** October 17, 2025
@@ -803,7 +802,7 @@ def update_filter_visual_feedback(self):
 
 ------
 
-## 🔥 Previous Updates (v2.4.2) - October 16, 2025
+## 🔥 Previous Updates (v1.3.0-1.3.1) - October 16, 2025
 
 ### Preview Panel Zoom Controls & Search Filter Fix 🔍
 **Completion Date:** October 16, 2025
@@ -876,7 +875,7 @@ else:
 
 ------
 
-## 🔥 Previous Updates (v2.4.1) - October 16, 2025
+## 🔥 Previous Updates (v1.2.0-1.3.0) - October 15-16, 2025
 
 ### Navigation Panel Restructure & UI Polish 🎨
 **Completion Date:** October 16, 2025
@@ -954,7 +953,7 @@ Multiple (3 items): "Remove 3 from Favorites"
 
 ------
 
-## 🔥 Previous Updates (v2.4.0) - October 16, 2025
+## 🔥 Previous Updates (v1.2.0) - October 15-16, 2025
 
 ### Performance Optimizations & UX Improvements
 **Completion Date:** October 16, 2025
@@ -1062,10 +1061,10 @@ document.pdf
 
 ------
 
-## 🔥 Previous Updates (v2.3.1) - October 16, 2025
+## 🔥 Previous Updates (v1.1.0) - October 15, 2025
 
 ### Bug Fixes & UI Improvements
-**Completion Date:** October 16, 2025
+**Completion Date:** October 15, 2025
 
 #### 1. Text Preview Resize Bug Fix 🐛
 - ✅ **Fixed separator jumping/teleporting** during text file preview resize
@@ -1104,9 +1103,9 @@ document.pdf
 
 ------
 
-## 🔥 Previous Updates (v2.3) - October 15, 2025
+## 🔥 Previous Updates (v1.0.0) - October 15, 2025
 
-### Multi-Rule Batch Renamer System (NEW!)
+### Multi-Rule Batch Renamer System
 **Completion Date:** October 15, 2025
 
 - ✅ **Multi-Rule System** - Chain multiple rename operations sequentially
@@ -1252,7 +1251,7 @@ document.pdf
 
 ## ✅ Completed Features
 
-### Multi-Rule Batch Renamer (v2.3 - NEW!)
+### Multi-Rule Batch Renamer
 **Lines of Code:** ~700 lines  
 **Completion Date:** October 15, 2025
 
@@ -1286,7 +1285,7 @@ document.pdf
 
 ---
 
-### Settings System (v2.3 - NEW!)
+### Settings System
 **Lines of Code:** ~800 lines  
 **Completion Date:** October 15, 2025
 
@@ -1483,7 +1482,7 @@ document.pdf
 
 - ✅ Delete files (with confirmation)
 - ✅ Rename files (input dialog)
-- ✅ **Open files with default program** (NEW v2.3.1!)
+- ✅ **Open files with default program**
 - ✅ Copy path to clipboard
 - ✅ Open in Explorer (Win/Mac/Linux)
 - ✅ File properties dialog
@@ -1589,17 +1588,18 @@ document.pdf
 11. **Settings System** - ✨ Complete GUI configuration
 12. **Batch Renamer** - ✨ Multi-rule rename system
 13. **Open Externally** - ✨ Windows default program integration
+14. **Quick View** - ✨ macOS Quick Look-style floating preview
+15. **Collections** - ✨ Virtual folder organization system
+16. **Tags** - ✨ SQLite-based metadata with Advanced Filters
 
 ### What It Doesn't Do (Yet):
-1. ~~**Settings GUI**~~ - ✅ **COMPLETED v2.3!**
-2. ~~**Batch Operations**~~ - ✅ **COMPLETED v2.3!** (Batch Rename)
-3. ~~**Open with Default Program**~~ - ✅ **COMPLETED v2.3.1!**
-4. **Real Playblast Thumbnails** - Currently uses safe gradient icons
-5. **Preview Panel** - No large preview of selected asset
-6. **Collections** - No virtual folder system
-7. **Asset Metadata** - No scene stats display
-8. **Version Control** - No Git/Perforce integration
-9. **Theme Support** - No dark/light theme option
+1. **Real Playblast Thumbnails** - Currently uses safe gradient icons
+2. **Star/Color Rating** - No rating system yet
+3. **Smart Collections** - Only manual collections (rule-based planned)
+4. **Asset Metadata Display** - No scene stats (poly count, etc.)
+5. **Version Control** - No Git/Perforce integration
+6. **Theme Support** - Only dark theme (no light theme option)
+7. **Smart Material Generator** - Planned for v2.0
 
 ---
 
@@ -1642,7 +1642,7 @@ dialog.exec_()
 
 ## 🔮 Future Improvements
 
-### High Priority (Next Major Release - v3.0):
+### High Priority (Next Major Release - v2.0):
 
 **Phase Order Based on Complexity & Existing Code:**
 
@@ -1778,21 +1778,20 @@ dialog.exec_()
 
 ---
 
-### Medium Priority (v3.5+):
+### Medium Priority (v2.5+):
 
 6. **Real Maya Playblast Thumbnails** - Safe implementation
-7. **Preview Panel** - Large preview with metadata
-8. **Asset Metadata Display** - Scene stats (poly count, etc.)
-9. **Recent/Frequent Assets** - Quick access widget
-10. **Favorites/Bookmarks** - Enhanced bookmark system
+7. **Asset Metadata Display** - Scene stats (poly count, etc.)
+8. **Recent/Frequent Assets** - Quick access widget
+9. **Smart Collections** - Rule-based auto-updating collections
 
 ### Nice to Have (Future):
 
-11. **Theme Support** - Dark/Light themes
-12. **Version Control Integration** - Git/Perforce indicators
-13. **Network Optimization** - Better UNC paths
-14. **AI-Powered Search** - Natural language queries
-15. **Cloud Integration** - Dropbox/Google Drive sync
+10. **Theme Support** - Dark/Light themes
+11. **Version Control Integration** - Git/Perforce indicators
+12. **Network Optimization** - Better UNC paths
+13. **AI-Powered Search** - Natural language queries
+14. **Cloud Integration** - Dropbox/Google Drive sync
 
 ---
 
@@ -1819,64 +1818,94 @@ The current version uses **gradient-based icons** instead of real Maya playblast
 
 ```
 ddContentBrowser/
-├── __init__.py              - Package initialization
-├── browser.py               - Main browser window
-├── cache.py                 - Thumbnail caching system
-├── config.py                - Configuration management
-├── delegates.py             - Custom item rendering
-├── models.py                - Data models
-├── settings.py              - ✨ Settings GUI system (~800 lines)
-├── batch_rename.py          - ✨ NEW! Multi-rule batch renamer (~700 lines)
-├── utils.py                 - Utility functions
-├── widgets.py               - UI widgets (2,100+ lines)
+├── __init__.py                    - Package initialization with version
+├── browser.py                     - Main browser window (~2500 lines)
+├── cache.py                       - Thumbnail caching system with video support
+├── config.py                      - Configuration management
+├── delegates.py                   - Custom item rendering
+├── models.py                      - Data models (FileSystemModel, AssetItem)
+├── utils.py                       - Utility functions, FILE_TYPE_REGISTRY
+├── widgets.py                     - UI widgets (2,100+ lines)
 │
-├── external_libs/           - Dependencies (~150 MB)
-│   ├── cv2/                 - OpenCV (HDR support)
-│   ├── OpenEXR.pyd          - OpenEXR (EXR support)
-│   ├── numpy/               - NumPy (float processing)
-│   └── Imath.py             - OpenEXR helper
+├── aces_color.py                  - ACES color management for HDR/EXR
+├── advanced_filters_v2.py         - Advanced filtering panel with tag support
+├── asset_collections.py           - Collection backend (Manual/Smart collections)
+├── batch_rename.py                - Multi-rule batch renamer (~700 lines)
+├── collections_panel.py           - Collections UI panel
+├── delegates.py                   - Custom thumbnail delegates
+├── metadata.py                    - SQLite tag system backend (~400 lines)
+├── metadata_extractor.py          - File metadata extraction
+├── preview_panel.py               - Preview panel with HDR/EXR support
+├── quick_view.py                  - Quick Look-style floating preview (~900 lines)
+├── sequence_cache.py              - Image sequence caching
+├── settings.py                    - Settings GUI system (~800 lines)
+│
+├── launch_browser.py              - Maya launcher script
+├── standalone_launcher.py         - Standalone launcher (with PySide6)
+├── standalone_launcher_portable.py - Portable launcher with auto-install
+├── ddContentBrowser.pyw           - Windows launcher (no console)
+├── ddContentBrowser_internal.pyw  - Internal launcher
+├── launch_standalone.bat          - Windows batch launcher
+├── launch_standalone_portable.bat - Portable batch launcher
+├── launch_standalone_silent.bat   - Silent batch launcher
+│
+├── default_tags.json              - Default tag structure (75+ tags)
+├── test_exr_header.py            - EXR testing utility
+│
+├── external_libs/                 - Dependencies (~200 MB)
+│   ├── cv2/                       - OpenCV (HDR, video, TIFF support)
+│   ├── OpenImageIO/               - OpenImageIO (advanced image I/O)
+│   ├── numpy/                     - NumPy (float processing)
+│   ├── scipy/                     - SciPy (image analysis)
+│   ├── skimage/                   - scikit-image (advanced filters)
+│   ├── PIL/                       - Pillow (image processing)
+│   ├── fitz/                      - PyMuPDF (PDF rendering)
+│   ├── psd_tools/                 - PSD file support
+│   ├── imageio/                   - Image I/O library
+│   ├── attr/, attrs/              - Attribute helpers
+│   ├── packaging/                 - Package utilities
+│   └── bin/                       - Binary dependencies
+│
+├── smart_imports/                 - Smart import utilities
+│   ├── ddShaderNetworkGenerator.py   - Shader graph builder
+│   └── ddShaderNetworkGenerator.json - Shader presets
 │
 └── Documentation:
-    ├── README.md            - Main documentation
-    ├── CURRENT_STATUS.md    - This file
-    ├── DEVELOPMENT_WORKFLOW.md - Development process
-    ├── STRUCTURE.md         - Code architecture
-    ├── TROUBLESHOOTING.md   - Problem solving
-    ├── QUICK_START.md       - Quick start guide
-    ├── SETTINGS_GUIDE.md    - Settings documentation
-    └── BATCH_RENAME_GUIDE.md - ✨ NEW! Batch rename guide
+    ├── README.md                  - Main documentation
+    ├── CURRENT_STATUS.md          - This file (development status)
+    ├── DEVELOPMENT_ROADMAP_V3.md  - Future roadmap
+    ├── VERSION_INFO.md            - Version management guide
+    └── OPTIMIZATION_SUMMARY.md    - Performance optimization notes
 ```
 
 ---
 
 ## 🎉 Key Achievements
 
-1. ✅ **Multi-Rule Batch Renamer** - Professional rename system with 7 rule types
-2. ✅ **Complete Settings System** - Professional multi-tab configuration GUI
-3. ✅ **Professional HDR/EXR Support** - Industry-standard exposure control
-4. ✅ **Fast Performance** - Sub-50ms exposure adjustments
-5. ✅ **ACES Workflow** - Film-quality tone mapping
-6. ✅ **Smart Caching** - Efficient memory usage
-7. ✅ **Production Ready** - Stable, tested, daily-use ready
+1. ✅ **Video File Support** - 8 video formats with middle frame thumbnails
+2. ✅ **Collections System** - Virtual folders with drag & drop, export
+3. ✅ **Quick View** - macOS Quick Look-style floating preview with multi-file grid
+4. ✅ **Tag System** - SQLite backend with 75+ default tags, Advanced Filters
+5. ✅ **Multi-Rule Batch Renamer** - Professional rename system with 7 rule types
+6. ✅ **Complete Settings System** - Multi-tab configuration GUI
+7. ✅ **Professional HDR/EXR Support** - Industry-standard exposure control
+8. ✅ **Directory Cache** - 1785x faster on repeat visits (12.5s → 0.007s)
+9. ✅ **ACES Workflow** - Film-quality tone mapping
+10. ✅ **Smart Caching** - Efficient memory usage with LRU
+11. ✅ **Production Ready** - Stable, tested, daily-use ready
 
 ---
 
 ## 📊 Version History
 
-- **v2.3.1** (Oct 16, 2025) - Text preview resize bug fix + Open file feature
-- **v2.3** (Oct 15, 2025) - Multi-rule batch renamer + complete settings system
-- **v2.2** (Oct 14, 2025) - 16/32-bit TIFF support enhancement
-- **v2.1** (Oct 13, 2025) - HDR/EXR preview + exposure control
-- **v2.0** (Oct 11, 2025) - Production ready with filters, sorting, zoom
-- **v1.0** (Oct 2025) - Initial release with caching and thumbnails
-
-- **v1.0** (Oct 2025) - Initial release with caching and thumbnails├── PHASE2_COMPLETE.md             - Phase 2 documentation
-
-├── PHASE3_COMPLETE.md             - Phase 3 documentation
-
----├── PHASE2_SAFE.md                 - Safe mode explanation
-
-└── TEST_CHECKLIST.md              - Testing checklist
+- **v1.6.0** (Nov 8, 2025) - Video file support with thumbnails
+- **v1.5.0** (Oct 18, 2025) - Collections, Quick View, Tags, Dark Theme
+- **v1.4.0** (Oct 17, 2025) - Cache optimizations, Tag system Phase 1
+- **v1.3.1** (Oct 16, 2025) - Text preview resize fix, Open file feature
+- **v1.3.0** (Oct 16, 2025) - Navigation panel, Recent folders dropdown
+- **v1.2.0** (Oct 15-16, 2025) - Performance optimizations, Directory cache (1785x faster)
+- **v1.1.0** (Oct 15, 2025) - Batch Rename system, Settings GUI
+- **v1.0.0** (Oct 14-15, 2025) - Initial release with HDR/EXR, TIFF support
 
 ---
 
@@ -2044,19 +2073,19 @@ exec(open(r'C:/Users/Danki/Documents/maya/2026/scripts/launch_browser_simple.py'
 - Add keyboard shortcuts
 - Create ratings.json storage
 
-**Week 4-5: Tag System** 🏷️
-- Design tag UI dialog
-- Implement tag autocomplete
+**Week 4-5: Enhanced Tag System** 🏷️
 - Add tag hierarchy support
-- Create tag database
+- Implement bulk tag operations
+- Add tag import/export
+- Improve tag UI dialog
 
-**Week 6-7: Collection System** 📁
-- Design collection UI
-- Implement smart collections
-- Add manual collections
+**Week 6-7: Smart Collections** 📁
+- Implement rule-based collections
+- Add auto-update functionality
 - Test collection rules
+- Integrate with tag system
 
-### **Q1 2026 - v3.5 (Polish & Advanced Features)**
+### **Q1 2026 - v2.5 (Polish & Advanced Features)**
 
 **Week 1-2: Texture Converter** 🎨
 - Research OpenImageIO integration
@@ -2122,26 +2151,33 @@ exec(open(r'C:/Users/Danki/Documents/maya/2026/scripts/launch_browser_simple.py'
 
 ## 🎯 Summary
 
-**DD Content Browser v2.5.0-dev** is a **fully functional**, **production-ready** asset browser for Maya with:
+**DD Content Browser v1.6.0** is a **fully functional**, **production-ready** asset browser for Maya with:
 
-- ✅ **Quick View System** (v2.5.0 Phase 5.5) - macOS Quick Look style preview with multi-file grid! 👁️
-- ✅ **Collections System** (v2.5.0 Phase 1-5) - Virtual folder organization with drag & drop
-- ✅ **Tag System** (v2.5.0 Phase 1-2) - SQLite metadata with Advanced Filters integration
-- ✅ **Navigation Panel Restructure** (v2.4.1) - Recent dropdown, tab system, multi-select favorites
-- ✅ **Performance Optimizations** (v2.4.0) - os.scandir(), lazy loading, intelligent caching (1785x faster!)
-- ✅ **Multi-Rule Batch Renamer** (v2.3) - 7 rule types with live preview
-- ✅ **Complete Settings System** (v2.3) - GUI configuration with 4 categories
-- ✅ **Open File Feature** (v2.3.1) - Windows default program integration  
-- ✅ **Text Preview Bug Fix** (v2.3.1) - Smooth separator dragging
-- ✅ **16/32-bit TIFF Support** (v2.2) - High bit-depth preview
-- ✅ **HDR/EXR Support** (v2.1) - Professional exposure control
-- ✅ **Advanced Features** (v2.0) - Filters, sorting, shortcuts
-- ✅ **Professional Quality** (Clean code, comprehensive docs)
-- ✅ **Daily Use Ready** (Stable, fast, intuitive)
+- ✅ **Video File Support** (v1.6.0) - 8 video formats with middle frame thumbnails
+- ✅ **Quick View System** (v1.5.0) - macOS Quick Look style preview with multi-file grid! 👁️
+- ✅ **Collections System** (v1.5.0) - Virtual folder organization with drag & drop
+- ✅ **Tag System** (v1.5.0) - SQLite metadata with Advanced Filters integration
+- ✅ **Navigation Panel Restructure** (v1.3.0) - Recent dropdown, tab system, multi-select favorites
+- ✅ **Performance Optimizations** (v1.2.0) - os.scandir(), lazy loading, intelligent caching (1785x faster!)
+- ✅ **Multi-Rule Batch Renamer** (v1.1.0) - 7 rule types with live preview
+- ✅ **Complete Settings System** (v1.1.0) - GUI configuration with 4 categories
+- ✅ **Open File Feature** (v1.1.0) - Windows default program integration  
+- ✅ **Text Preview Bug Fix** (v1.1.0) - Smooth separator dragging
+- ✅ **16/32-bit TIFF Support** (v1.0.0) - High bit-depth preview
+- ✅ **HDR/EXR Support** (v1.0.0) - Professional exposure control
+- ✅ **Advanced Features** - Filters, sorting, shortcuts
+- ✅ **Professional Quality** - Clean code, comprehensive docs
+- ✅ **Daily Use Ready** - Stable, fast, intuitive
 
-### 🆕 **Latest Updates (v2.5.0-dev - October 18, 2025):**
+### 🆕 **Latest Updates (v1.6.0 - November 8, 2025):**
 
-**Code Quality & Bug Fixes (Phase 5.7 - COMPLETE!):**
+**Video File Format Support:**
+- 🎬 **8 video formats** - .mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv
+- 🖼️ **Video thumbnails** - Middle frame extraction with OpenCV
+- 🎨 **Custom color schemes** - Each format has unique gradient
+- ⚙️ **Config version system** - Auto-update with user preservation
+
+**Code Quality & Bug Fixes (v1.5.0 - October 18, 2025):**
 - 🔧 **FILE_TYPE_REGISTRY** - Centralized file type management in utils.py
 - 👁️ **Quick View first display fix** - Proper content fitting (showEvent + 10ms delay)
 - ⚡ **Advanced Filters optimization** - Clear button no re-analysis
@@ -2150,7 +2186,7 @@ exec(open(r'C:/Users/Danki/Documents/maya/2026/scripts/launch_browser_simple.py'
 - 🖱️ **Always on Top toggle** - Right-click context menu for Quick View
 - 🔄 **Circular import fix** - collections.py → asset_collections.py
 
-**Quick View System (Phase 5.5 - COMPLETE!):**
+**Quick View System (v1.5.0 - October 18, 2025):**
 - 👁️ **Frameless floating window** - macOS Quick Look style preview
 - 🖱️ **Canvas controls** - Mouse-centered scroll zoom, left-drag pan
 - ⌨️ **F key fit-to-view** - Reset zoom and center content
@@ -2160,13 +2196,13 @@ exec(open(r'C:/Users/Danki/Documents/maya/2026/scripts/launch_browser_simple.py'
 - 🎨 **Unrestricted pan** - Expanded scene rect (5x padding)
 - ⚡ **Instant response** - <5ms pan, 16ms zoom (60fps)
 
-**Collections System (Phase 1-5 - COMPLETE!):**
+**Collections System (v1.5.0 - October 18, 2025):**
 - 📁 **Virtual folders** - Organize files from anywhere
 - 🖱️ **Middle-drag** - Maya-style file adding
 - 📦 **Export to folder** - Conflict handling, batch copy
 - 🗑️ **Context menus** - Add/remove files, cleanup missing
 
-**Tag System (Phase 1-2 - COMPLETE!):**
+**Tag System (v1.5.0 - October 18, 2025):**
 - 🏷️ **SQLite backend** - Persistent metadata storage
 - 🔍 **Advanced Filters** - Tag filtering with file counts
 - 📋 **75+ default tags** - Production-ready categories
@@ -2179,19 +2215,15 @@ exec(open(r'C:/Users/Danki/Documents/maya/2026/scripts/launch_browser_simple.py'
 - 🎯 **Intelligent cache** - 5min TTL, mtime validation, max 20 dirs
 - 👁️ **Quick View** - <5ms pan, 16ms zoom, 50-200ms image load
 - 🔧 **Advanced Filters** - 0ms clear (no re-scan)
+- 🎬 **Video thumbnails** - 100-300ms extraction
 
-### 📅 **Coming Soon (v3.0):**
-- ⭐ **Star/Color System** - Adobe Bridge-style ratings
+### 📅 **Coming Soon (v2.0):**
+- ⭐ **Star/Color System** - Adobe Bridge-style ratings (0-5 stars, 8 colors)
 - 🧠 **Smart Import** - Auto-generate materials from textures (existing shader graph!)
-- 🎨 **Texture Converter** - Batch format conversion
+- 🎨 **Quixel Megascans Importer** - One-click optimized import with UDIM/LOD
+- 🔄 **Texture Converter** - Batch format conversion
 - 📄 **Enhanced Quick View** - PDF preview, text files, HDR exposure control
+- 🧩 **Smart Collections** - Rule-based auto-updating collections
 
-**Current Status:** v2.5.0-dev Phase 5.7 Complete - Code Quality & Bug Fixes! 🎉  
-**Next Phase:** v3.0 Star Rating & Color Labels + Smart Import! 🎯
-
----
-
-*For detailed usage instructions, see `README.md`*  
-*For batch rename guide, see `BATCH_RENAME_GUIDE.md`*  
-*For settings documentation, see `SETTINGS_GUIDE.md`*  
-*For troubleshooting, see `TROUBLESHOOTING.md`*
+**Current Status:** v1.6.0 Complete - Video File Format Support! 🎉  
+**Next Version:** v2.0 - Smart Import & Star Rating System! 🎯

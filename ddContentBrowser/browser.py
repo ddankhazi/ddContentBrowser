@@ -1109,7 +1109,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         info_bar_layout.addStretch()
         
         # Right: Controls hint
-        controls_hint = QtWidgets.QLabel("💡 LMB: Selection  |  Alt+LMB+Drag: Standard Import  |  MMB+Drag: Batch Import")
+        if MAYA_AVAILABLE:
+            controls_hint = QtWidgets.QLabel("💡 LMB: Selection, Space: Quick View, Alt+LMB+Drag: Standard Import, MMB+Drag: Batch Import")
+        else:
+            controls_hint = QtWidgets.QLabel("💡 LMB: Selection, Space: Quick View, Alt+LMB+Drag: Standard Import")
         controls_hint.setStyleSheet("color: #888; font-size: 11px; padding: 2px;")
         info_bar_layout.addWidget(controls_hint)
         
@@ -2735,7 +2738,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             return
         
         if not MAYA_AVAILABLE:
-            print("Maya not available - simulating import")
+            print("Maya not available")
             return
         
         imported_count = 0
@@ -2882,7 +2885,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             return
         
         if not MAYA_AVAILABLE:
-            print("Maya not available - simulating reference")
+            print("Maya not available")
             return
         
         for asset in assets:

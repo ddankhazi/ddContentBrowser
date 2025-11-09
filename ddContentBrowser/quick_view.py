@@ -52,7 +52,7 @@ from .widgets import load_hdr_exr_image, load_oiio_image, load_pdf_page, load_pd
 UI_FONT = "Segoe UI"
 
 # Debug mode
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 
 class QuickViewWindow(QDialog):
@@ -194,9 +194,75 @@ class QuickViewWindow(QDialog):
         
         layout.addWidget(self.graphics_view)
         
+        # Help overlay will be added as floating widget (not in layout)
+        self.help_overlay = self.create_help_overlay()
+        self.help_overlay.setParent(self)  # Parent to dialog, not preview_widget
+        self.help_overlay.raise_()  # Keep on top
+        
         # No global info label - will be per-image in scene later
         
         return preview_widget
+    
+    def create_help_overlay(self):
+        """Create minimalist help overlay with keyboard/mouse shortcuts"""
+        overlay = QLabel()
+        overlay.setObjectName("helpOverlay")
+        
+        help_text = """<span style='color: rgba(200, 200, 200, 0.5); font-size: 11px;'>
+MMB: Pan, Scroll Wheel: Zoom, F: Fit, Alt+MMB: Move Window
+</span>"""
+        
+        overlay.setText(help_text)
+        overlay.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+        overlay.setStyleSheet("""
+            QLabel#helpOverlay {
+                background-color: transparent;
+                border: none;
+                padding: 4px 6px;
+            }
+        """)
+        
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)  # Click-through
+        
+        return overlay
+    
+    def position_help_overlay(self):
+        """Position help overlay in bottom-right corner"""
+        if hasattr(self, 'help_overlay') and self.help_overlay:
+            margin = 10
+            overlay_width = self.help_overlay.sizeHint().width()
+            overlay_height = self.help_overlay.sizeHint().height()
+            
+            x = self.width() - overlay_width - margin
+            y = self.height() - overlay_height - margin
+            
+            self.help_overlay.move(x, y)
+            self.help_overlay.adjustSize()
+    
+    def show_help_overlay_briefly(self):
+        """Show help overlay permanently"""
+        if hasattr(self, 'help_overlay') and self.help_overlay:
+            self.help_overlay.adjustSize()
+            self.position_help_overlay()
+            self.help_overlay.setVisible(True)
+            self.help_overlay.show()
+            self.help_overlay.raise_()
+            self.help_overlay.activateWindow()
+            self.help_overlay.update()
+            self.help_overlay.repaint()
+            # try:
+            #     if PYSIDE_VERSION == 6:
+            #         from PySide6.QtCore import QTimer
+            #     else:
+            #         from PySide2.QtCore import QTimer
+            #     QTimer.singleShot(3000, self.help_overlay.hide)
+            #     print("[QuickView] Timer set to hide overlay after 3 seconds")
+            # except Exception as e:
+            #     print(f"[QuickView] Timer error: {e}")
+    
+    def showEvent(self, event):
+        """Handle show event"""
+        super().showEvent(event)
     
     def apply_styling(self):
         """Apply minimal dark theme"""
@@ -241,6 +307,17 @@ class QuickViewWindow(QDialog):
             # Multi-file grid (Phase 4)
             self.show_multi_file_grid(assets)
             self.preview_container.setCurrentWidget(self.single_preview)  # Use same canvas
+        
+        # Show help overlay briefly
+        # Use QTimer to delay showing overlay until UI is fully initialized
+        try:
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtCore import QTimer
+            else:
+                from PySide2.QtCore import QTimer
+            QTimer.singleShot(100, self.show_help_overlay_briefly)
+        except:
+            self.show_help_overlay_briefly()
         
         # if DEBUG_MODE:
         #     print(f"[QuickView] Finished showing preview for {len(assets)} asset(s)")
@@ -814,6 +891,12 @@ class QuickViewWindow(QDialog):
     def resizeEvent(self, event):
         """Save state when window is resized"""
         super().resizeEvent(event)
+        
+        # Reposition help overlay
+        if hasattr(self, 'help_overlay') and self.help_overlay:
+            self.position_help_overlay()
+            self.help_overlay.raise_()
+        
         # Debounce saving - only save after resize finishes
         if not hasattr(self, '_resize_timer'):
             try:

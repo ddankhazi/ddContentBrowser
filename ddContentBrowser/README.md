@@ -1,5 +1,5 @@
 
-# DD Content Browser v1.0
+# DD Content Browser v1.6.0
 
 Content Browser for Maya by Denes Dankhazi
 Modern Maya Asset Browser for Autodesk Maya 2025+ (PySide6, Python 3.11+)
@@ -8,7 +8,7 @@ Modern Maya Asset Browser for Autodesk Maya 2025+ (PySide6, Python 3.11+)
 
 ## ✨ Overview
 
-DD Content Browser is a high-performance, feature-rich asset browser for Maya, designed for large production environments. It replaces the built-in browser with a fast, intuitive, and visually advanced interface.
+DD Content Browser is a high-performance, feature-rich asset browser for Maya, designed for large production environments. It replaces the built-in browser with a fast, intuitive, and visually advanced interface with advanced features like video support, collections, tags, Quick View, and more.
 
 ---
 
@@ -41,126 +41,238 @@ Cheers, D
 ## 📚 Main Features
 
 ### Navigation & Browsing
-- Breadcrumb navigation, favorites, recent paths
-- Fast folder switching, manual path entry, browse dialog
-- Back/forward navigation
+- **Breadcrumb navigation** with clickable segments, favorites panel
+- **Recent folders dropdown** (🕒 button) - last 20 visited paths
+- **Fast folder switching** - Manual path entry, browse dialog
+- **Back/forward navigation** with history (Alt+Left/Right)
+- **Multi-select favorites** - Batch add/remove, persistent storage
+- **Include subfolders** - Recursive directory browsing
 
 ### File Operations
-- Import, reference, delete, rename (single & batch)
-- Batch import dialog (middle mouse drag)
-- Batch rename dialog (multi-select + context menu)
-- Drag & drop to Maya viewport, collections, or folders
+- **Import & Reference** - Maya file operations with drag & drop
+- **Delete, Rename** - Single & batch operations with confirmation
+- **Batch Rename Dialog** - 7 rename rule types (Find/Replace, Prefix, Suffix, Numbering, Case, Regex, New Name)
+- **Multi-rule chains** - Apply sequential rename operations
+- **Open with default program** - Windows default app integration
+- **Middle-button drag** - Batch import Maya-style
+- **Drag & drop** - To Maya viewport, collections, or folders
 
 ### Search & Filtering
-- Quick search (filename, real-time)
-- Advanced filters: type, size, date, tags, show folders/images/scripts
-- Multi-tag autocomplete, custom date picker, clear/reset all filters
+- **Quick search** - Real-time filename search with case-sensitive/regex options
+- **Advanced Filters Panel** - Type, category, size, date, dimensions, aspect ratio, color mode, bit depth
+- **Tag filtering** - OR logic within tags, AND across categories
+- **File type filters** - MA, MB, OBJ, FBX, ABC, USD, images, videos, PDFs, scripts
+- **Date range** - Today, Week, Month, Custom picker
+- **Size range** - Min/max MB sliders
+- **Show/Hide** - Folders, images, scripts toggles
+- **Recursive limits** - Configurable max file count (100-100,000)
 
 ### View Modes
-- Grid view: scalable thumbnails (64-256px), zoom (Ctrl+Scroll)
-- List view: sortable columns (name, size, date, type)
-- Quick View: floating preview (Space), multi-preview, zoom/pan
+- **Grid View** - Scalable thumbnails (64-512px), **Ctrl+Scroll** zoom
+- **List View** - Sortable columns (name, size, date, type) with click headers
+- **Thumbnail size slider** - Snap points at standard sizes
+- **Sort options** - Name, Size, Date, Type with ascending/descending toggle
+- **Visual indicators** - ▲▼ sort direction arrows
 
-### Selection & Interaction
-- Box select, multi-select, range select, Ctrl+Click, Shift+Click
-- Context menu (right-click): import, reference, add to collection, open in explorer, copy path, rename, delete, properties
+### Quick View System ✨ **NEW!**
+- **Space to open** - macOS Quick Look-style floating preview
+- **Frameless window** - Custom title bar with close button (Space/Escape)
+- **Multi-file grid** - 2-100+ images in auto-layout (wide aspect preference)
+- **Canvas controls** - Mouse-centered scroll zoom, left-drag pan
+- **F key fit-to-view** - Reset zoom and center
+- **Arrow key navigation** - Navigate browser thumbnails while preview active
+- **State persistence** - Position/size saved
+- **Always on top toggle** - Right-click context menu option
 
-### Collections System
-- Virtual folders, color coding (12 colors)
-- Drag files to collections, drag collections to import all
-- Persistent (JSON), right-click: rename, delete, import all
+### Collections System ✨ **NEW!**
+- **Manual Collections** - Drag & drop file management with SQLite backend
+- **Virtual folder view** - Display files from multiple folders
+- **Middle-button drag** - Maya-style file adding to collections
+- **Collection mode** - Blue breadcrumb indicator, exit button
+- **Context menus** - "Add to Collection >", "Remove from Collection"
+- **Export to folder** - Copy files with conflict handling (overwrite/skip/rename)
+- **File counts** - Display number of files per collection (e.g., "▸ MyAssets (23)")
+- **Cleanup missing files** - Validate file existence
+- **Persistent storage** - JSON at `~/.ddContentBrowser/collections.json`
+
+### Tag System 🏷️ ✨ **NEW!**
+- **SQLite backend** - Fast metadata storage at `~/.ddContentBrowser/tags.db`
+- **Default tags** - 75+ production-ready tags in 7 categories
+- **Tag autocomplete** - QCompleter with all available tags
+- **Preview panel integration** - Add/remove tags from files
+- **Tag chips** - Visual tag display with remove buttons
+- **Advanced Filters integration** - Filter by tags with file counts
+- **Tag categories** - Asset Type, Environment, Lighting, Source, Technical, Material, Status
+- **Persistent tags** - Tags saved across sessions
+- **Bulk operations** - Add tags to multiple files (context menu)
 
 ### Preview System
-- Preview panel: image (JPG, PNG, TIF, HDR, EXR), PDF (page navigation), metadata
-- HDR/EXR: exposure slider, auto-downscale (8K limit)
-- Background modes: dark, light, checkerboard
-- Quick View: Space to open, multi-select grid, zoom/pan, arrow navigation
+- **Preview panel** - Image (JPG, PNG, TIF, HDR, EXR, PSD), PDF (page navigation), text files
+- **HDR/EXR support** - Exposure slider (-5 to +5 stops), ACES tone mapping
+- **16/32-bit TIFF** - OpenCV integration with proper normalization
+- **Video thumbnails** - Middle frame extraction for 8 formats (.mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv)
+- **Zoom mode** - Double-click for 1:1 pixel zoom, mouse-centered scroll zoom
+- **Pan & scroll** - Drag to pan, scrollbars when zoomed
+- **Background modes** - Dark, light, checkerboard
+- **Password-protected PDFs** - User-friendly lock message
+- **Multi-file summary** - Resolution, size, date display
 
 ### Batch Operations
-- Batch import (middle mouse drag)
-- Batch rename (multi-select + context menu)
+- **Batch Import** - Middle mouse drag to Maya viewport
+- **Batch Rename** - Multi-rule system with 7 rule types:
+  - Find & Replace (case sensitive, whole name)
+  - New Name (templates with {num}, {original})
+  - Add Prefix/Suffix
+  - Numbering (start, padding, position)
+  - Case Change (UPPER, lower, Title, Sentence)
+  - Regex Pattern (full regex with capture groups)
+- **Live preview** - Real-time before/after comparison with highlighting
+- **Rule management** - Add, remove, reorder with + and − buttons
+- **Compact UI** - Space-efficient 11px font, resizable splitter
 
 ### Cache & Performance
-- Memory cache (200 items), disk cache (500MB, configurable)
-- Background thumbnail generation, lazy loading, LRU cache
-- Auto-refresh, smart invalidation
+- **Directory cache** - Complete AssetItem objects cached (5 min TTL, max 20 dirs)
+- **Lazy loading** - Asset metadata (size/date) loaded only when needed
+- **os.scandir() optimization** - 55x faster than iterdir/glob (2000 files: 12.5s → 0.007s cached)
+- **Memory cache** - 200 items LRU
+- **Disk cache** - 500MB JPEG compression, MD5 keys with mtime validation
+- **Background thumbnail generation** - Non-blocking with progress signals
+- **Smart invalidation** - Auto-refresh on directory changes (F5 force refresh)
+- **Statistics tracking** - Cache hits, misses, generated counts
 
-### Settings & Configuration
-- All settings are auto-saved to:  
-	`%USERPROFILE%/.ddContentBrowser/settings.json`
-- Configurable options include: startup directory, window size/position, UI font, confirm delete, auto-refresh, refresh interval, thumbnail size/quality/cache, preview resolution/exposure, filter options, sorting, etc.
-- To reset all settings: use the GUI reset option or delete the settings.json file above.
-- Thumbnail cache is stored in:  
-	`%USERPROFILE%/.ddContentBrowser/thumbnails`  
-	(Can be cleared from the GUI or by deleting this folder.)
-- Tag assignments can be cleared separately from the settings dialog (tag names are preserved).
+### Settings System ✨ **NEW!**
+- **Multi-tab dialog** - General, Thumbnails, Preview, Filters (600x500px)
+- **JSON persistence** - Auto-save to `~/.ddContentBrowser/settings.json`
+- **General settings** - Startup dir, window size, UI font (5 fonts), confirm delete, auto-refresh
+- **Thumbnail settings** - Discrete sizes [32-512px], quality presets (Low/Med/High), cache limit
+- **Preview settings** - HDR resolution [512-4096px], cache size (1-20 files), default exposure
+- **Filter settings** - Custom extensions, show hidden, case-sensitive search, recursive limits
+- **Cache management** - Visual cache size display, one-click clear
+- **Restore defaults** - Reset all settings button
+- **Live updates** - settings_changed signal for component refresh
+
+### File Type Registry ✨ **NEW!**
+- **Centralized definitions** - Single source in FILE_TYPE_REGISTRY (utils.py)
+- **9 categories** - maya, 3d_models, blender, houdini, substance, images, videos, pdf, scripts, text
+- **Config version system** - Automatic updates with user customization preservation
+- **Video support** - 8 formats with custom color schemes
+- **Helper functions** - get_extensions_by_category(), get_default_icon_colors()
 
 ### Supported Formats
-- Maya: `.ma`, `.mb`
-- 3D: `.obj`, `.fbx`, `.abc`, `.usd`, `.usda`, `.usdc`
-- Images: `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.tga`, `.bmp`, `.exr`, `.hdr`, `.psd`
-- Documents: `.pdf`
-- Scripts: `.py`, `.mel`
+- **Maya**: `.ma`, `.mb`
+- **3D Models**: `.obj`, `.fbx`, `.abc`, `.usd`, `.usda`, `.usdc`, `.vdb`
+- **Blender**: `.blend`
+- **Houdini**: `.hda`, `.hip`, `.hipnc`
+- **Substance**: `.sbs`, `.sbsar`
+- **Images**: `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.tga`, `.bmp`, `.exr`, `.hdr`, `.psd`
+- **Videos** ✨ **NEW!**: `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, `.m4v`, `.flv`, `.wmv`
+- **Documents**: `.pdf`
+- **Scripts**: `.py`, `.mel`
+- **Text**: `.txt`, `.md`, `.json`, `.xml`
 
 ### External Libraries
-- PySide6 (Qt for Python)
-- Pillow (Image processing)
-- OpenCV (Advanced image ops)
-- PyMuPDF (PDF rendering)
-- OpenEXR (HDR/EXR support)
-- NumPy (Maya 2025+)
+- **PySide6** - Qt for Python (UI framework)
+- **Pillow** - Image processing (thumbnails, conversions)
+- **OpenCV (cv2)** - Advanced image ops, 16/32-bit TIFF, video frames
+- **PyMuPDF** - PDF rendering
+- **OpenEXR** - HDR/EXR support with multi-channel
+- **NumPy** - Float processing (Maya 2025+)
+- **scikit-image** - Advanced image analysis
+- **psd-tools** - Photoshop PSD file support
 
 ---
 
 ## ⌨️ Keyboard Shortcuts
 
-| Shortcut      | Action                                  |
-|-------------- |-----------------------------------------|
-| Space         | Quick View (floating preview)           |
-| F5            | Refresh current folder                  |
-| Delete        | Delete selected files (confirmation)    |
-| F2            | Rename selected file                    |
-| Ctrl+F        | Focus search box                        |
-| Ctrl+C        | Copy path to clipboard                  |
-| Enter         | Import selected file                    |
-| Backspace     | Go to parent folder                     |
-| Ctrl+Scroll   | Zoom thumbnails                         |
-| Alt+Left/Right| Back/Forward navigation                 |
-| Escape        | Cancel path edit / Close Quick View     |
-| Arrow Keys    | Navigation                              |
+| Shortcut           | Action                                           |
+|--------------------|--------------------------------------------------|
+| **Space**          | Quick View (floating preview)                    |
+| **F**              | Fit to view (in Quick View)                      |
+| **F5**             | Refresh current folder (force cache bypass)      |
+| **Delete**         | Delete selected files (with confirmation)        |
+| **F2**             | Rename selected file                             |
+| **Ctrl+F**         | Focus search box                                 |
+| **Ctrl+C**         | Copy path to clipboard                           |
+| **Enter**          | Import selected file                             |
+| **Backspace**      | Go to parent folder                              |
+| **Ctrl+Scroll**    | Zoom thumbnails                                  |
+| **Alt+Left/Right** | Back/Forward navigation                          |
+| **Escape**         | Cancel path edit / Close Quick View              |
+| **Arrow Keys**     | Navigation / Quick View file browsing            |
+| **1-5**            | Star rating (future feature)                     |
+| **Ctrl+1-7**       | Color labels (future feature)                    |
 
 ---
 
 ## 🖱️ Mouse Controls
 
-| Control         | Action                                 |
-|-----------------|----------------------------------------|
-| LMB             | Selection                              |
-| LMB Drag        | Box select (rubber band)               |
-| Alt+LMB Drag    | File drag (Maya import)                |
-| MMB Drag        | Batch import / Add to collection       |
-| RMB             | Context menu                           |
-| Ctrl+Scroll     | Zoom thumbnails                        |
+| Control              | Action                                      |
+|---------------------|---------------------------------------------|
+| **LMB**             | Selection                                   |
+| **LMB Drag**        | Box select (rubber band)                    |
+| **Double-Click**    | Import file / Enter zoom mode (preview)     |
+| **Alt+LMB Drag**    | File drag (Maya import)                     |
+| **MMB Drag**        | Batch import / Add to collection            |
+| **RMB**             | Context menu                                |
+| **Ctrl+Scroll**     | Zoom thumbnails                             |
+| **Scroll (Preview)**| Zoom (mouse-centered)                       |
+| **Left-Drag (QV)**  | Pan image in Quick View                     |
 
 ---
 
 ## 🎨 Visual Features
 
-- Maya/3D/image/document/script/folder thumbnails
-- Type-specific colors, gradient icons, actual image preview
-- HDR/EXR tone-mapped preview, PDF first page thumbnail
-- Status info bar: selection count, controls hint
+- **Beautiful gradient icons** - Type-specific colors for each file format
+- **Video format colors** - 8 video formats with custom gradients (.mp4 pink, .mov purple, .avi blue, etc.)
+- **Maya/3D file thumbnails** - Blue/purple/yellow gradients for different formats
+- **Image preview** - Actual image thumbnails with format detection
+- **HDR/EXR tone-mapped** - Preview with exposure control
+- **PDF first page** - Thumbnail of first page
+- **Video middle frame** - Extracted frame for video preview
+- **Collection indicators** - Blue breadcrumb background, ▸ icon
+- **Tag chips** - Color-coded tag categories with remove buttons
+- **Status info bar** - Selection count, file count, controls hint
 
 ---
 
 ## 🚀 Performance
 
-- 100 files: <100ms
-- 1,000 files: ~500ms
-- 10,000 files: ~5s (background loading)
-- Memory: ~50MB base, +1MB/100 thumbnails
-- Disk cache: 500MB (configurable)
-- Optimizations: background thumbnail generation, lazy loading, LRU cache, deferred preview
+**Directory Loading (os.scandir optimization):**
+- 100 files: <100ms (first load), <1ms (cached)
+- 1,000 files: ~500ms (first load), ~5ms (cached)
+- 2,000 files (network): 2.5s (first load), 0.007s (cached) - **1785x faster!**
+- 10,000 files: ~5s (background loading with progress)
+
+**Cache Performance:**
+- Memory cache hit: <1ms
+- Disk cache hit: 5-10ms
+- AssetItem cache: 353x faster on repeat visits
+- Lazy loading: Only loads size/date when needed
+
+**Thumbnail Generation:**
+- Gradient icons: 100-500ms per file
+- Image thumbnails: 50-200ms (with caching)
+- Video thumbnails: 100-300ms (middle frame extraction)
+- HDR/EXR: 100-200ms (1024px, first time), 35-45ms (exposure adjust from cache)
+
+**UI Performance:**
+- Frame time: ~16ms (60fps)
+- Quick View zoom: ~16ms (60fps)
+- Quick View pan: <5ms (instant)
+- Filter update: <100ms (2000 files)
+
+**Memory Usage:**
+- Base: ~50MB
+- +1MB per 100 thumbnails
+- HDR cache: ~100-150MB (last 5 raw images)
+- Disk cache: 500MB max (configurable)
+
+**Optimizations:**
+- Background thumbnail generation (non-blocking)
+- LRU cache eviction (memory management)
+- Deferred preview loading
+- Smart cache invalidation (mtime checks)
+- Batch stat loading (only when filtering/sorting)
 
 ---
 
@@ -175,10 +287,73 @@ Commercial redistribution is not permitted without the author's permission.
 
 ## 🙏 Credits
 
-**Author:** ddankhazi
-**Version:** 1.0
-**Maya Version:** 2025+ (PySide6)
-**Python:** 3.11+
+**Author:** Denes Dankhazi (ddankhazi)  
+**Version:** 1.6.0  
+**Maya Version:** 2025+ (PySide6)  
+**Python:** 3.11+  
+**Blog & Portfolio:** [ddankhazi.com](https://ddankhazi.com)
+
+---
+
+## 🔥 Recent Updates
+
+### v1.6.0 (November 8, 2025) - Video Support
+- ✨ **Video file support** - 8 formats (.mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv)
+- ✨ **Video thumbnails** - Middle frame extraction with OpenCV
+- ✨ **Config version system** - Auto-update with user customization preservation
+- ✨ **Custom color schemes** - Each video format has unique gradient
+
+### v1.5.0 (October 18, 2025) - Collections & Quick View
+- ✨ **Collections System** - Virtual folders with drag & drop, export to folder
+- ✨ **Quick View** - macOS Quick Look-style floating preview with multi-file grid
+- ✨ **Tag System** - SQLite backend with 75+ default tags, Advanced Filters integration
+- 🔧 **Cache fixes** - Filter compatibility, recursive mode fixes
+- 🎨 **Dark theme** - Maya-style unified theme for standalone
+
+### v1.4.0 (October 16, 2025) - Performance & UX
+- 🚀 **Directory cache** - 1785x faster on repeat visits (0.007s vs 12.5s)
+- 🚀 **os.scandir()** - 55x faster than iterdir/glob
+- 🚀 **Lazy loading** - Deferred stat() calls for metadata
+- ✨ **Recent folders dropdown** - 🕒 button with 20 recent paths
+- ✨ **Multi-select favorites** - Batch add/remove
+- 🔧 **Include subfolders fix** - Proper cache bypass
+
+### v1.3.1 (October 16, 2025) - Bug Fixes
+- 🔧 **Text preview resize fix** - Removed processEvents() feedback loop
+- ✨ **Open file feature** - Windows default program integration
+
+### v1.3.0 (October 15, 2025) - Batch Rename & Settings
+- ✨ **Multi-rule Batch Renamer** - 7 rule types with live preview
+- ✨ **Complete Settings System** - Multi-tab GUI with JSON persistence
+- ✨ **Cache management** - Visual display, one-click clear
+
+### v1.2.0 (October 14, 2025) - TIFF Support
+- ✨ **16/32-bit TIFF** - OpenCV integration with proper normalization
+- 🔧 **Search filter fix** - Works with cached directories
+- 🔧 **EXR cache** - Restored OpenEXR loader
+
+### v1.1.0 (October 13, 2025) - HDR/EXR
+- ✨ **HDR/EXR preview** - Exposure control (-5 to +5 stops)
+- ✨ **ACES tone mapping** - Professional workflow
+- ✨ **Raw data caching** - Fast exposure adjustment (35-45ms)
+
+---
+
+## 🔮 Planned Features (v2.0)
+
+### High Priority:
+1. **Smart Material Generator** - Auto-generate aiStandardSurface from texture sets
+2. **Quixel Megascans Importer** - One-click optimized import with UDIM/LOD
+3. **SkyDome Auto-Linker** - Drag HDR → update aiSkyDomeLight path
+4. **Star/Color Rating** - Adobe Bridge-style organization (0-5 stars, 8 colors)
+5. **Enhanced Tag System** - Tag hierarchies, bulk operations, import/export
+
+### Medium Priority:
+6. **Texture Converter** - Batch format conversion with color space management
+7. **Real Maya Playblast** - Safe thumbnail generation (subprocess isolation)
+8. **Asset Metadata** - Scene stats (poly count, shader info)
+9. **Theme Support** - Dark/Light themes, custom colors
+10. **Version Control** - Git/Perforce integration
 
 ---
 
