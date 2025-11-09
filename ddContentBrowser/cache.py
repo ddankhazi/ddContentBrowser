@@ -1086,9 +1086,25 @@ class ThumbnailGenerator(QThread):
                         env = os.environ.copy()
                         env.pop('FFREPORT', None)  # Remove FFREPORT if it exists
                         
+                        # Windows: Hide console window for subprocess
+                        import sys
+                        startupinfo = None
+                        if sys.platform.startswith('win'):
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                            startupinfo.wShowWindow = subprocess.SW_HIDE
+                        
                         # Get video dimensions first
                         probe_cmd = [imageio_ffmpeg.get_ffmpeg_exe(), '-i', str(file_path)]
-                        probe_result = subprocess.run(probe_cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True, check=False, env=env)
+                        probe_result = subprocess.run(
+                            probe_cmd, 
+                            stderr=subprocess.PIPE, 
+                            stdout=subprocess.DEVNULL, 
+                            text=True, 
+                            check=False, 
+                            env=env,
+                            startupinfo=startupinfo
+                        )
                         
                         # Parse width and height from stderr
                         match = re.search(r'(\d{3,5})x(\d{3,5})', probe_result.stderr)
@@ -1108,7 +1124,14 @@ class ThumbnailGenerator(QThread):
                             '-'
                         ]
                         
-                        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, env=env)
+                        result = subprocess.run(
+                            cmd, 
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.DEVNULL, 
+                            check=False, 
+                            env=env,
+                            startupinfo=startupinfo
+                        )
                         
                         if result.returncode == 0 and result.stdout:
                             # Convert raw bytes to numpy array
