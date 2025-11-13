@@ -4394,9 +4394,13 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             # Request thumbnails for visible items
             QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
             
+            # CRITICAL: Refresh Advanced Filters panel to enable re-analysis
+            # This ensures the "Analyze Folder" button works with the new collection items
+            if hasattr(self, 'advanced_filters_panel'):
+                self.advanced_filters_panel.refresh()
+            
             if DEBUG_MODE:
-                if DEBUG_MODE:
-                    print(f"[Browser] Applied collection filter: {collection_name}")
+                print(f"[Browser] Applied collection filter: {collection_name}")
     
     def on_collection_cleared(self):
         """Handle collection filter clear - show all files"""
@@ -4429,9 +4433,13 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
         
+        # CRITICAL: Refresh Advanced Filters panel to enable re-analysis
+        # This ensures the "Analyze Folder" button works after returning to folder view
+        if hasattr(self, 'advanced_filters_panel'):
+            self.advanced_filters_panel.refresh()
+        
         if DEBUG_MODE:
-            if DEBUG_MODE:
-                print("[Browser] Cleared collection filter")
+            print("[Browser] Cleared collection filter")
     
     def add_collection_submenu(self, parent_menu, selected_assets):
         """Add 'Add to Collection >' submenu with list of manual collections"""
