@@ -466,6 +466,17 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Quick View window (macOS Quick Look style)
         self.quick_view_window = None
         
+        # File system watcher for automatic refresh
+        if PYSIDE_VERSION == 6:
+            from PySide6.QtCore import QFileSystemWatcher
+        else:
+            from PySide2.QtCore import QFileSystemWatcher
+        self.file_watcher = QFileSystemWatcher()
+        self.file_watcher.directoryChanged.connect(self.on_directory_changed)
+        
+        # Debounce timer flag (simpler approach without QTimer object)
+        self._watcher_pending_refresh = False
+        
         # Start thumbnail generator thread
         self.thumbnail_generator.start()
         
@@ -1587,6 +1598,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Update UI to reflect cleared filters
         self.update_filter_visual_feedback()
+        
+        # Update file watcher to monitor new directory
+        self._update_file_watcher(path)
         
         # Add to history if not navigating through history
         if not self.is_navigating_history:
@@ -3013,6 +3027,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 asset = model.data(index, Qt.UserRole)
                 
                 if asset and asset.should_generate_thumbnail:
+                    # AUTOMATIC REFRESH: Refresh file modification time to detect changes
+                    old_mtime = asset.modified_time
+                    asset.refresh_modified_time()
+                    new_mtime = asset.modified_time
+                    
+                    if old_mtime != new_mtime:
+                        print(f"[AutoRefresh] File modified: {asset.name}")
+                        print(f"  Old mtime: {old_mtime}, New mtime: {new_mtime}")
+                    
                     file_path_str = str(asset.file_path)
                     
                     # For sequences, check cache using pattern as key
@@ -3020,20 +3043,32 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     if asset.is_sequence and asset.sequence:
                         cache_key = str(asset.sequence.pattern)
                     
-                    # CHECK MEMORY CACHE FIRST (fast check, no disk I/O)
-                    if self.memory_cache.get(cache_key) is None:
-                        # CHECK DISK CACHE (faster than regenerating)
-                        cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
-                        if cached_from_disk is None:
-                            # Not in memory or disk cache - need to generate
-                            visible_items.append((file_path_str, asset.modified_time, asset))
-                        else:
-                            # Found in disk cache - load to memory and update display
-                            self.memory_cache.set(cache_key, cached_from_disk)
-                            # Update display immediately with cached thumbnail
-                            model.setData(index, cached_from_disk, Qt.DecorationRole)
-                            # Force immediate repaint using dataChanged signal
-                            model.dataChanged.emit(index, index, [Qt.DecorationRole])
+                    # CHECK DISK CACHE: Determine if file was modified (needs refresh)
+                    # IMPORTANT: Check disk cache FIRST to detect file modifications
+                    # (even if memory cache exists, it might be outdated)
+                    needs_refresh = self.disk_cache.needs_refresh(file_path_str, asset.modified_time)
+                    
+                    if needs_refresh:
+                        print(f"[AutoRefresh] Thumbnail refresh needed for: {asset.name}")
+                        print(f"  Extension: {asset.extension}")
+                        print(f"  File path: {file_path_str}")
+                        print(f"  Modified time: {asset.modified_time}")
+                        # File was modified or thumbnail doesn't exist
+                        # Remove outdated thumbnail from memory cache
+                        self.memory_cache.remove(cache_key)
+                        # Add to regeneration queue
+                        visible_items.append((file_path_str, asset.modified_time, asset))
+                    else:
+                        # Disk cache is valid - check memory cache
+                        if self.memory_cache.get(cache_key) is None:
+                            # Not in memory cache - load from disk
+                            cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
+                            if cached_from_disk:
+                                self.memory_cache.set(cache_key, cached_from_disk)
+                                # Update display immediately with cached thumbnail
+                                model.setData(index, cached_from_disk, Qt.DecorationRole)
+                                # Force immediate repaint using dataChanged signal
+                                model.dataChanged.emit(index, index, [Qt.DecorationRole])
         
         # Force viewport update after loading from disk cache
         # This ensures all cached thumbnails are visible immediately
@@ -4385,6 +4420,11 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             # Update breadcrumb to show collection name (not path)
             self.breadcrumb.set_collection_mode(collection_name)
             
+            # Stop watching directory in collection mode
+            watched_dirs = self.file_watcher.directories()
+            if watched_dirs:
+                self.file_watcher.removePaths(watched_dirs)
+            
             # Update status
             self.safe_show_status(f"📁 Collection: {collection_name} ({len(collection_files)} items)")
             
@@ -4423,6 +4463,10 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         
         # Hide exit collection view button
         self.collections_panel.clear_btn.setVisible(False)
+        
+        # Resume watching current directory
+        if self.breadcrumb.current_path:
+            self._update_file_watcher(Path(self.breadcrumb.current_path))
         
         # Update navigation buttons (may disable back button if no history)
         self.update_navigation_buttons()
@@ -4540,3 +4584,58 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
         
         if DEBUG_MODE:
             print(f"[Browser] Removed {item_count} {item_word} from collection '{self.current_collection_name}'")
+    
+    # ========== File System Watcher Methods ==========
+    
+    def _update_file_watcher(self, path):
+        """Update file system watcher to monitor new directory"""
+        # Remove all previously watched directories
+        watched_dirs = self.file_watcher.directories()
+        if watched_dirs:
+            self.file_watcher.removePaths(watched_dirs)
+        
+        # Add new directory to watch (only in normal browse mode)
+        if path and not self.file_model.collection_mode:
+            path_str = str(path)
+            self.file_watcher.addPath(path_str)
+    
+    def on_directory_changed(self, path):
+        """Handle directory change event from file system watcher"""
+        try:
+            # Ignore if in collection mode or search mode
+            if self.file_model.collection_mode:
+                return
+            if hasattr(self, 'include_subfolders_checkbox') and self.include_subfolders_checkbox.isChecked():
+                return
+            if hasattr(self, 'search_input') and self.search_input.text().strip():
+                return
+            
+            # Debounce: only schedule refresh if not already pending
+            if not self._watcher_pending_refresh:
+                self._watcher_pending_refresh = True
+                QTimer.singleShot(300, self._refresh_from_watcher)
+            
+        except Exception as e:
+            import traceback
+            print(f"[FileWatcher] ERROR: {e}")
+            traceback.print_exc()
+    
+    def _refresh_from_watcher(self):
+        """Refresh directory view after file system change detected"""
+        # Reset pending flag
+        self._watcher_pending_refresh = False
+        
+        # Clear thumbnail generator queue
+        if hasattr(self, 'thumbnail_generator'):
+            self.thumbnail_generator.clear_queue()
+        
+        # Refresh file model with proper reset signals (force=True to bypass cache)
+        self.file_model.beginResetModel()
+        self.file_model.refresh(force=True)
+        self.file_model.endResetModel()
+        
+        # Update status
+        self.safe_show_status("📂 Directory updated automatically")
+        
+        # Request thumbnails for visible items
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)

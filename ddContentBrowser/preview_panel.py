@@ -4164,8 +4164,62 @@ class PreviewPanel(QWidget):
                                     self.add_to_cache(file_path_str, pixmap, resolution_str)
                                     self.fit_pixmap_to_label()
                                 else:
-                                    self.graphics_scene.clear()
-                                    self.current_text_item = None
+                                    # QImageReader also failed - try tifffile for special formats
+                                    try:
+                                        import tifffile
+                                        import numpy as np
+                                        
+                                        # Read TIFF with tifffile (handles Affinity/compressed TIFFs)
+                                        img_array = tifffile.imread(file_path_str)
+                                        
+                                        # Get resolution
+                                        if len(img_array.shape) == 3:
+                                            height, width, channels = img_array.shape
+                                        else:
+                                            height, width = img_array.shape
+                                            channels = 1
+                                        resolution_str = f"{width} x {height}"
+                                        
+                                        # Normalize to 8-bit
+                                        if img_array.dtype == np.uint32:
+                                            # Affinity uses uint32 with limited range - normalize to actual min/max
+                                            img_min = img_array.min()
+                                            img_max = img_array.max()
+                                            if img_max > img_min:
+                                                img_array = ((img_array.astype(np.float64) - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                                            else:
+                                                img_array = np.zeros_like(img_array, dtype=np.uint8)
+                                        elif img_array.dtype == np.uint16:
+                                            img_array = (img_array / 256).astype(np.uint8)
+                                        elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                                            img_array = (img_array * 255).astype(np.uint8)
+                                        
+                                        # Convert to RGB if needed
+                                        if len(img_array.shape) == 2:
+                                            img_array = np.stack([img_array, img_array, img_array], axis=2)
+                                        elif len(img_array.shape) == 3 and img_array.shape[2] > 3:
+                                            img_array = img_array[:, :, :3]
+                                        
+                                        # Resize if too large
+                                        from PIL import Image
+                                        pil_image = Image.fromarray(img_array)
+                                        if pil_image.width > 1024 or pil_image.height > 1024:
+                                            pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                                        
+                                        # Convert to QPixmap
+                                        img_array = np.array(pil_image)
+                                        height, width = img_array.shape[:2]
+                                        bytes_per_line = width * 3
+                                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                        pixmap = QPixmap.fromImage(q_image.copy())
+                                        
+                                        self.current_pixmap = pixmap
+                                        self.add_to_cache(file_path_str, pixmap, resolution_str)
+                                        self.fit_pixmap_to_label()
+                                    except Exception as tiff_error:
+                                        print(f"tifffile also failed: {tiff_error}")
+                                        self.graphics_scene.clear()
+                                        self.current_text_item = None
                         elif file_ext.endswith(('.tga', '.psd')):
                             # TGA/PSD files - use PIL (Qt has allocation issues)
                             try:
@@ -4294,6 +4348,10 @@ class PreviewPanel(QWidget):
         # Add metadata - Adobe Bridge style layout
         # 1. Basic file information
         self.add_metadata_row("📄", "Name", asset.name)
+        
+        # File size
+        if not asset.is_folder:
+            self.add_metadata_row("💾", "Size", self.format_file_size(asset.size))
         
         # File type with special handling for PDF and folders
         if asset.is_folder:

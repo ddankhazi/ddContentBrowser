@@ -257,7 +257,24 @@ class AssetItem:
         if not self._stat_loaded:
             self._load_stat()
         return self._modified
-        
+    
+    def refresh_modified_time(self):
+        """
+        Refresh file modification time by re-reading stat info.
+        Used for automatic thumbnail refresh detection.
+        """
+        try:
+            if self.file_path.exists():
+                stat_info = self.file_path.stat()
+                self._modified_time = stat_info.st_mtime
+                self._modified = datetime.fromtimestamp(stat_info.st_mtime)
+            else:
+                self._modified_time = 0
+                self._modified = datetime.fromtimestamp(0)
+        except Exception as e:
+            # Hálózati hiba esetén ne módosítsd az értékeket
+            pass
+    
     def get_display_name(self):
         """Get display name"""
         if self.is_sequence and self.sequence:

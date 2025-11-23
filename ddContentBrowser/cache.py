@@ -316,6 +316,62 @@ class ThumbnailDiskCache:
         except Exception as e:
             print(f"Error clearing cache: {e}")
     
+    def needs_refresh(self, file_path, file_mtime):
+        """
+        Check if cached thumbnail needs to be refreshed.
+        Returns True if:
+        - File doesn't have a cached thumbnail
+        - File was modified after the thumbnail was generated (newer mtime than cached version)
+        
+        Args:
+            file_path: Path to the source file
+            file_mtime: Current file modification timestamp
+            
+        Returns:
+            bool: True if refresh is needed, False if cache is valid
+        """
+        try:
+            file_path = Path(file_path)
+            
+            # Check if thumbnail with CURRENT mtime exists
+            current_thumb_path = self.get_thumbnail_path(file_path, file_mtime)
+            
+            if current_thumb_path.exists():
+                # Cache is up-to-date
+                return False
+            
+            # Cache doesn't exist with current mtime - refresh needed
+            # Also clean up any old cached versions (optional optimization)
+            self._cleanup_old_thumbnails_for_file(file_path, file_mtime)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error checking if refresh needed for {file_path}: {e}")
+            return True  # On error, refresh to be safe
+    
+    def _cleanup_old_thumbnails_for_file(self, file_path, current_mtime):
+        """
+        Clean up old cached thumbnails for a file (with outdated mtime).
+        This prevents cache bloat when files are frequently modified.
+        
+        Args:
+            file_path: Path to the source file
+            current_mtime: Current file modification timestamp
+        """
+        try:
+            # We need to find old cache entries for this file
+            # Since cache key = MD5(filepath + "_" + mtime), we can't directly search by filepath
+            # Instead, we'll use a metadata file approach or just skip cleanup
+            # (cleanup will happen naturally through LRU policy in _cleanup_old_cache)
+            
+            # For now, skip explicit cleanup - let LRU handle it
+            # Future optimization: maintain a filepath -> cache_keys mapping
+            pass
+            
+        except Exception as e:
+            print(f"Error cleaning up old thumbnails for {file_path}: {e}")
+    
     def clear_thumbnail(self, file_path):
         """
         Clear cached thumbnail for a specific file
@@ -1285,8 +1341,14 @@ class ThumbnailGenerator(QThread):
             
             # Special handling for HDR/TIFF/TGA/PSD files - use OpenCV or PIL for better format support
             elif extension in ['.hdr', '.tif', '.tiff', '.tga', '.psd']:
+                file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
                 if DEBUG_MODE:
-                    print(f"[THUMB] Loading {extension} file: {Path(file_path).name}")
+                    print(f"[THUMB DEBUG] Loading {extension} file: {file_path_obj.name}")
+                try:
+                    print(f"  File size: {file_path_obj.stat().st_size / (1024*1024):.2f} MB")
+                    print(f"  Modified time: {file_path_obj.stat().st_mtime}")
+                except Exception as e:
+                    print(f"  Could not get file stats: {e}")
                 
                 # OPTIMIZED: Use dedicated fast thumbnail generator for HDR files
                 if extension == '.hdr':
@@ -1306,15 +1368,20 @@ class ThumbnailGenerator(QThread):
                     import cv2
                     import numpy as np
                     
+                    if DEBUG_MODE:
+                        print(f"[THUMB DEBUG] Attempting OpenCV load...")
+                    
                     # Suppress OpenCV/FFmpeg verbose output
                     cv2.setLogLevel(0)  # 0 = Silent
                     
                     # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
                     imread_flags = self._get_opencv_imread_flags()
+                    print(f"  OpenCV flags: {imread_flags}")
                     
                     # OpenCV can't handle Unicode paths, check for non-ASCII first
                     file_path_str = str(file_path)
                     has_non_ascii = any(ord(c) > 127 for c in file_path_str)
+                    print(f"  Non-ASCII path: {has_non_ascii}")
                     
                     img = None
                     if has_non_ascii:
@@ -1340,31 +1407,16 @@ class ThumbnailGenerator(QThread):
                     
                     if img is None:
                         if DEBUG_MODE:
-                            print(f"[THUMB] First attempt failed, trying IMREAD_COLOR...")
-                        # Try alternative loading method
-                        if has_non_ascii:
-                            try:
-                                with open(file_path_str, 'rb') as f:
-                                    file_bytes = np.frombuffer(f.read(), np.uint8)
-                                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                            except Exception as e:
-                                if DEBUG_MODE:
-                                    print(f"[THUMB] Buffer COLOR decode failed: {e}")
-                        else:
-                            try:
-                                img = cv2.imread(file_path_str, cv2.IMREAD_COLOR)
-                            except Exception as e:
-                                if DEBUG_MODE:
-                                    print(f"[THUMB] OpenCV COLOR imread failed: {e}")
-                    
-                    if img is None:
+                            print(f"[THUMB DEBUG] ❌ OpenCV failed to load image")
                         raise Exception("OpenCV could not load the image")
+                    
+                    if DEBUG_MODE:
+                        print(f"[THUMB DEBUG] ✓ OpenCV loaded successfully")
                     
                     # Check channel count
                     if len(img.shape) == 3:
                         channels = img.shape[2]
-                        if DEBUG_MODE:
-                            print(f"[THUMB] Image loaded: {img.shape[1]}×{img.shape[0]}, {channels} channels, dtype={img.dtype}")
+                        print(f"  Image: {img.shape[1]}×{img.shape[0]}, {channels} channels, dtype={img.dtype}")
                         
                         # Handle unsupported channel counts (e.g., 5-channel TIFF)
                         if channels > 4:
@@ -1448,30 +1500,47 @@ class ThumbnailGenerator(QThread):
                     # For multi-channel images, always try PIL/Pillow as fallback
                     # (OpenCV prints errors to stderr, not in exception message)
                     if DEBUG_MODE:
-                        print(f"[THUMB] Trying PIL/Pillow fallback for special format...")
+                        print(f"[THUMB DEBUG] 🔄 Trying PIL/Pillow fallback...")
                     try:
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
+                        
+                        if DEBUG_MODE:
+                            print(f"[THUMB DEBUG] Opening file with PIL.Image.open()...")
+                        
                         pil_image = Image.open(str(file_path))
                         
                         if DEBUG_MODE:
-                            print(f"[THUMB] PIL loaded: {pil_image.size}, mode={pil_image.mode}")
+                            print(f"[THUMB DEBUG] ✓ PIL loaded successfully!")
+                            print(f"  Image size: {pil_image.size}")
+                            print(f"  Mode: {pil_image.mode}")
+                            print(f"  Format: {pil_image.format}")
+                            # Check for layers/pages
+                            try:
+                                n_frames = getattr(pil_image, 'n_frames', 1)
+                                print(f"  Frames/Layers: {n_frames}")
+                            except:
+                                pass
                         
                         # Convert to RGB (discard extra channels)
                         if pil_image.mode not in ('RGB', 'L'):
                             if DEBUG_MODE:
-                                print(f"[THUMB] Converting {pil_image.mode} to RGB...")
+                                print(f"[THUMB DEBUG] Converting {pil_image.mode} → RGB...")
                             pil_image = pil_image.convert('RGB')
                         elif pil_image.mode == 'L':
                             if DEBUG_MODE:
-                                print(f"[THUMB] Converting grayscale to RGB...")
+                                print(f"[THUMB DEBUG] Converting grayscale → RGB...")
                             pil_image = pil_image.convert('RGB')
                         
                         # Resize
+                        if DEBUG_MODE:
+                            print(f"[THUMB DEBUG] Resizing to {self.thumbnail_size}x{self.thumbnail_size}...")
                         pil_image.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
                         
                         # Convert to QPixmap
+                        if DEBUG_MODE:
+                            print(f"[THUMB DEBUG] Converting PIL → QPixmap via numpy...")
                         import numpy as np
                         img_array = np.array(pil_image)
                         height, width = img_array.shape[:2]
@@ -1496,6 +1565,114 @@ class ThumbnailGenerator(QThread):
                     except Exception as pil_error:
                         if DEBUG_MODE:
                             print(f"[THUMB] PIL fallback also failed: {pil_error}")
+                        
+                        # Try tifffile for special TIFF formats (Affinity, compressed, multi-layer)
+                        if extension in ['.tif', '.tiff']:
+                            if DEBUG_MODE:
+                                print(f"[THUMB DEBUG] 🔄 Trying tifffile library for special TIFF...")
+                            try:
+                                import tifffile
+                                import numpy as np
+                                
+                                if DEBUG_MODE:
+                                    print(f"[THUMB DEBUG] Reading TIFF with tifffile.imread()...")
+                                
+                                # Read the TIFF - this handles Deflate/LZW compression, BigTIFF, etc.
+                                img_array = tifffile.imread(str(file_path))
+                                
+                                if DEBUG_MODE:
+                                    print(f"[THUMB DEBUG] ✓ tifffile loaded successfully!")
+                                    print(f"  Array shape: {img_array.shape}")
+                                    print(f"  Data type: {img_array.dtype}")
+                                
+                                # Handle different array shapes
+                                if len(img_array.shape) == 3:
+                                    # Multi-channel image (RGB, RGBA, etc.)
+                                    height, width, channels = img_array.shape
+                                    
+                                    # Normalize to 8-bit if needed
+                                    if img_array.dtype == np.uint32:
+                                        if DEBUG_MODE:
+                                            print(f"[THUMB DEBUG] Converting 32-bit → 8-bit...")
+                                            print(f"  Value range: {img_array.min()} - {img_array.max()}")
+                                        # Affinity Photo uses uint32 but only a subset of the range
+                                        # Normalize based on actual min/max values
+                                        img_min = img_array.min()
+                                        img_max = img_array.max()
+                                        if img_max > img_min:
+                                            # Normalize to 0-255 range based on actual min/max
+                                            img_array = ((img_array.astype(np.float64) - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                                        else:
+                                            img_array = np.zeros_like(img_array, dtype=np.uint8)
+                                        if DEBUG_MODE:
+                                            print(f"  Normalized + gamma corrected to: {img_array.min()} - {img_array.max()}")
+                                    elif img_array.dtype == np.uint16:
+                                        if DEBUG_MODE:
+                                            print(f"[THUMB DEBUG] Converting 16-bit → 8-bit...")
+                                        img_array = (img_array / 256).astype(np.uint8)
+                                    elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                                        if DEBUG_MODE:
+                                            print(f"[THUMB DEBUG] Converting float → 8-bit...")
+                                        img_array = (img_array * 255).astype(np.uint8)
+                                    
+                                    # Keep only RGB channels if RGBA
+                                    if channels > 3:
+                                        if DEBUG_MODE:
+                                            print(f"[THUMB DEBUG] Dropping alpha channel ({channels} → 3)...")
+                                        img_array = img_array[:, :, :3]
+                                        channels = 3
+                                    
+                                elif len(img_array.shape) == 2:
+                                    # Grayscale
+                                    if DEBUG_MODE:
+                                        print(f"[THUMB DEBUG] Converting grayscale → RGB...")
+                                    height, width = img_array.shape
+                                    
+                                    # Normalize to 8-bit
+                                    if img_array.dtype == np.uint32:
+                                        img_min = img_array.min()
+                                        img_max = img_array.max()
+                                        if img_max > img_min:
+                                            img_array = ((img_array.astype(np.float64) - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                                        else:
+                                            img_array = np.zeros_like(img_array, dtype=np.uint8)
+                                    elif img_array.dtype == np.uint16:
+                                        img_array = (img_array / 256).astype(np.uint8)
+                                    elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                                        img_array = (img_array * 255).astype(np.uint8)
+                                    
+                                    # Convert to RGB
+                                    img_array = np.stack([img_array, img_array, img_array], axis=2)
+                                    channels = 3
+                                
+                                # Resize using PIL
+                                if DEBUG_MODE:
+                                    print(f"[THUMB DEBUG] Resizing {width}×{height} → {self.thumbnail_size}...")
+                                from PIL import Image
+                                pil_image = Image.fromarray(img_array)
+                                pil_image.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                                
+                                # Convert to QPixmap
+                                img_array = np.array(pil_image)
+                                height, width = img_array.shape[:2]
+                                
+                                if PYSIDE_VERSION == 6:
+                                    from PySide6.QtGui import QImage
+                                else:
+                                    from PySide2.QtGui import QImage
+                                
+                                bytes_per_line = width * 3
+                                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                pixmap = QPixmap.fromImage(q_image.copy())
+                                
+                                if DEBUG_MODE:
+                                    print(f"[THUMB DEBUG] ✓ tifffile fallback successful: {width}×{height}")
+                                
+                                return pixmap
+                                
+                            except Exception as tifffile_error:
+                                if DEBUG_MODE:
+                                    print(f"[THUMB] tifffile also failed: {tifffile_error}")
                         
                         # Special handling for PSD files: try psd-tools first, then embedded thumbnail
                         if extension == '.psd':
