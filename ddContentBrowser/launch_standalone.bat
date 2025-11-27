@@ -2,12 +2,19 @@
 REM DD Content Browser - Standalone Launcher BAT
 REM Uses company Python 3.11 installation
 
-echo ============================================================
-echo DD Content Browser v1.4.1 (Standalone)
-echo ============================================================
-
 REM Set Python 3.11 path
 set PYTHON_PATH=C:\Python311\python.exe
+
+REM Get script directory
+set SCRIPT_DIR=%~dp0
+
+REM Get version from __init__.py by parsing the file
+for /f "tokens=2 delims='" %%i in ('findstr /C:"__version__ = " "%SCRIPT_DIR%__init__.py"') do set VERSION=%%i
+if not defined VERSION set VERSION=Unknown
+
+echo ============================================================
+echo DD Content Browser v%VERSION% (Standalone)
+echo ============================================================
 
 REM Check if Python exists
 if not exist "%PYTHON_PATH%" (
@@ -20,9 +27,6 @@ if not exist "%PYTHON_PATH%" (
 
 echo Using Python: %PYTHON_PATH%
 echo.
-
-REM Get script directory
-set SCRIPT_DIR=%~dp0
 
 REM Run the launcher
 "%PYTHON_PATH%" "%SCRIPT_DIR%standalone_launcher.py"

@@ -1083,9 +1083,10 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.file_list.setDropIndicatorShown(True)
         self.file_list.setDefaultDropAction(Qt.CopyAction)
         
-        # Scrolling mode - use ScrollPerPixel for smooth control
-        self.file_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
-        self.file_list.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        # Scrolling mode - use ScrollPerItem for better performance with many files
+        # ScrollPerPixel is smoother but MUCH slower with large lists (repaints every pixel)
+        self.file_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerItem)
+        self.file_list.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerItem)
         
         # Enable context menu
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1802,8 +1803,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.config.config["view_mode"] = "grid" if icon_mode else "list"
         self.config.save_config()
         
-        # Force refresh
-        self.file_list.viewport().update()
+        # Schedule deferred update instead of immediate refresh (faster)
+        self.file_list.scheduleDelayedItemsLayout()
         self.safe_show_status(f"View mode: {'Grid' if icon_mode else 'List'}")
         
         # Request thumbnails for newly visible items after view mode change
@@ -1882,8 +1883,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Save config
         self.config.save_config()
         
-        # Force refresh
-        self.file_list.viewport().update()
+        # Schedule deferred update instead of immediate refresh (faster)
+        self.file_list.scheduleDelayedItemsLayout()
         
         # Restore scroll position after layout update - use center positioning for smooth experience
         if anchor_index and anchor_index.isValid():
@@ -1919,8 +1920,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if hasattr(self, 'thumbnail_generator'):
                 self.thumbnail_generator.clear_queue()
         
-        # Force repaint to show/hide thumbnails
-        self.file_list.viewport().update()
+        # Schedule deferred update (Qt will refresh automatically)
+        self.file_list.scheduleDelayedItemsLayout()
     
     def browse_for_folder(self):
         """Browse for folder dialog"""
@@ -3012,96 +3013,86 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if not model:
             return
         
-        # Get viewport rectangle
+        # OPTIMIZATION: Get viewport rectangle once
         viewport_rect = self.file_list.viewport().rect()
+        
+        # OPTIMIZATION: Early exit if no rows
+        row_count = model.rowCount()
+        if row_count == 0:
+            return
         
         # Collect visible items that need thumbnails
         visible_items = []
         
-        for row in range(model.rowCount()):
-            index = model.index(row, 0)
-            
-            # Check if item is visible in viewport
-            item_rect = self.file_list.visualRect(index)
-            if viewport_rect.intersects(item_rect):
-                asset = model.data(index, Qt.UserRole)
-                
-                if asset and asset.should_generate_thumbnail:
-                    # AUTOMATIC REFRESH: Refresh file modification time to detect changes
-                    old_mtime = asset.modified_time
-                    asset.refresh_modified_time()
-                    new_mtime = asset.modified_time
-                    
-                    if old_mtime != new_mtime:
-                        print(f"[AutoRefresh] File modified: {asset.name}")
-                        print(f"  Old mtime: {old_mtime}, New mtime: {new_mtime}")
-                    
-                    file_path_str = str(asset.file_path)
-                    
-                    # For sequences, check cache using pattern as key
-                    cache_key = file_path_str
-                    if asset.is_sequence and asset.sequence:
-                        cache_key = str(asset.sequence.pattern)
-                    
-                    # CHECK DISK CACHE: Determine if file was modified (needs refresh)
-                    # IMPORTANT: Check disk cache FIRST to detect file modifications
-                    # (even if memory cache exists, it might be outdated)
-                    needs_refresh = self.disk_cache.needs_refresh(file_path_str, asset.modified_time)
-                    
-                    if needs_refresh:
-                        print(f"[AutoRefresh] Thumbnail refresh needed for: {asset.name}")
-                        print(f"  Extension: {asset.extension}")
-                        print(f"  File path: {file_path_str}")
-                        print(f"  Modified time: {asset.modified_time}")
-                        # File was modified or thumbnail doesn't exist
-                        # Remove outdated thumbnail from memory cache
-                        self.memory_cache.remove(cache_key)
-                        # Add to regeneration queue
-                        visible_items.append((file_path_str, asset.modified_time, asset))
-                    else:
-                        # Disk cache is valid - check memory cache
-                        if self.memory_cache.get(cache_key) is None:
-                            # Not in memory cache - load from disk
-                            cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
-                            if cached_from_disk:
-                                self.memory_cache.set(cache_key, cached_from_disk)
-                                # Update display immediately with cached thumbnail
-                                model.setData(index, cached_from_disk, Qt.DecorationRole)
-                                # Force immediate repaint using dataChanged signal
-                                model.dataChanged.emit(index, index, [Qt.DecorationRole])
+        # OPTIMIZATION: Use indexAt() to find first and last visible rows instead of checking all rows
+        # This is MUCH faster for large lists (1000+ items)
+        top_item = self.file_list.indexAt(viewport_rect.topLeft())
+        bottom_item = self.file_list.indexAt(viewport_rect.bottomLeft())
         
-        # Force viewport update after loading from disk cache
-        # This ensures all cached thumbnails are visible immediately
-        self.file_list.viewport().update()
+        # Also check bottom-right corner for partially visible items (important for grid mode!)
+        bottom_right_item = self.file_list.indexAt(viewport_rect.bottomRight())
+        
+        if not top_item.isValid():
+            return
+        
+        # Determine row range to check (with buffer for smooth scrolling)
+        start_row = max(0, top_item.row() - 5)
+        
+        # Use the MAXIMUM of bottom-left and bottom-right to catch all visible items
+        if bottom_item.isValid() and bottom_right_item.isValid():
+            end_row_candidate = max(bottom_item.row(), bottom_right_item.row())
+        elif bottom_item.isValid():
+            end_row_candidate = bottom_item.row()
+        elif bottom_right_item.isValid():
+            end_row_candidate = bottom_right_item.row()
+        else:
+            # Neither valid - use last row
+            end_row_candidate = row_count - 1
+        
+        # Add buffer and clamp to valid range
+        end_row = min(row_count - 1, end_row_candidate + 10)
+        
+        # Only loop through visible rows (huge performance gain!)
+        for row in range(start_row, end_row + 1):
+            index = model.index(row, 0)
+            asset = model.data(index, Qt.UserRole)
+            
+            if asset and asset.should_generate_thumbnail:
+                file_path_str = str(asset.file_path)
+                
+                # For sequences, check cache using pattern as key
+                cache_key = file_path_str
+                if asset.is_sequence and asset.sequence:
+                    cache_key = str(asset.sequence.pattern)
+                
+                # OPTIMIZATION: Skip disk refresh check during scroll (too slow!)
+                # Only check memory cache - disk cache check happens on folder navigation
+                if self.memory_cache.get(cache_key) is None:
+                    # Not in memory cache - try to load from disk first
+                    cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
+                    if cached_from_disk:
+                        self.memory_cache.set(cache_key, cached_from_disk)
+                        # Update display immediately with cached thumbnail
+                        model.setData(index, cached_from_disk, Qt.DecorationRole)
+                        # Signal change (batch emit is more efficient)
+                        model.dataChanged.emit(index, index, [Qt.DecorationRole])
+                    else:
+                        # Not in disk cache either - need to generate
+                        visible_items.append((file_path_str, asset.modified_time, asset))
         
         # CLEAR the queue and add ONLY visible items with PRIORITY
         # This ensures we prioritize what user is currently viewing
         if visible_items:
             # Clear old queue (non-visible items) and reset counters
-            self.thumbnail_generator.clear_queue()  # This resets counters properly
+            self.thumbnail_generator.clear_queue()
             
             # Add visible items to queue in REVERSE order so they process top-to-bottom
             # (since we pop() from the end, last added = first processed)
             for file_path, modified_time, asset in reversed(visible_items):
                 self.thumbnail_generator.add_to_queue(file_path, modified_time, priority=True, asset=asset)
         
-        # Optionally: add non-visible items with lower priority (background loading)
-        # This can be enabled with a config option
-        if self.config.config.get("preload_all_thumbnails", False):
-            for row in range(model.rowCount()):
-                index = model.index(row, 0)
-                item_rect = self.file_list.visualRect(index)
-                
-                # Skip already queued visible items
-                if not viewport_rect.intersects(item_rect):
-                    asset = model.data(index, Qt.UserRole)
-                    
-                    if asset and asset.should_generate_thumbnail:
-                        self.thumbnail_generator.add_to_queue(
-                            str(asset.file_path),
-                            asset.modified_time,
-                            asset=asset
-                        )
+        # Background loading DISABLED during scroll for performance
+        # (preload_all_thumbnails feature removed from scroll event)
     
     def on_splitter_moved(self, pos, index):
         """Handle splitter movement - optimized for fast updates"""
@@ -3143,6 +3134,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         move_count = self._splitter_move_count
         self._viewport_paint_times = []
         self._splitter_move_count = 0
+        
+        # Request thumbnails for newly visible items after resize
+        QTimer.singleShot(50, self.request_thumbnails_for_visible_items)
         
         if DEBUG_MODE and move_count > 0:
             import time
@@ -3191,9 +3185,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def _finish_column_resize(self):
         """Complete column resize after debounce timer"""
-        # Force repaint of all visible items in list view
+        # Schedule deferred layout update (more efficient than viewport().update())
         if hasattr(self, 'file_list'):
-            self.file_list.viewport().update()
+            self.file_list.scheduleDelayedItemsLayout()
         
         # Request thumbnails for newly visible items
         if hasattr(self, '_column_thumb_timer'):
@@ -3452,6 +3446,19 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def eventFilter(self, obj, event):
         """Event filter for handling Ctrl+Scroll zoom, Space key for Quick View, MMB drag for Favorites reordering, AND viewport paint measurement"""
+        
+        # === FILE LIST VIEWPORT RESIZE - Request thumbnails for newly visible items ===
+        if hasattr(self, 'file_list') and obj == self.file_list.viewport():
+            if event.type() == QtCore.QEvent.Resize:
+                # Use timer to debounce rapid resize events (during splitter drag)
+                if hasattr(self, '_viewport_resize_timer'):
+                    self._viewport_resize_timer.stop()
+                
+                self._viewport_resize_timer = QTimer()
+                self._viewport_resize_timer.setSingleShot(True)
+                self._viewport_resize_timer.timeout.connect(self.request_thumbnails_for_visible_items)
+                self._viewport_resize_timer.start(100)  # Wait 100ms after resize stops
+                return False
         
         # === FAVORITES LIST RESIZE - Update elided text ===
         if hasattr(self, 'favorites_list') and obj == self.favorites_list.viewport():
@@ -4104,14 +4111,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Clear in-memory cache too (including sequence pattern keys)
             self.memory_cache.clear()
             
-            # Force repaint of the entire view
-            self.file_list.viewport().update()
-            
             # Request thumbnail regeneration for visible items
             # Use a longer delay to ensure caches are fully cleared
             QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
             
-            # Also force delegate redraw by emitting dataChanged
+            # Force delegate redraw by emitting dataChanged (no viewport().update() needed)
             model = self.file_list.model()
             if model and model.rowCount() > 0:
                 top_left = model.index(0, 0)

@@ -32,6 +32,9 @@ class ThumbnailDelegate(QStyledItemDelegate):
         self.thumbnail_size = thumbnail_size
         self.icon_mode = False  # False = List mode, True = Grid mode
         self.browser = None  # Reference to browser for column widths
+        # Scaled pixmap cache (cache already-scaled thumbnails to avoid re-scaling on every paint)
+        self._scaled_cache = {}  # {(cache_key, size): scaled_pixmap}
+        self._scaled_cache_max_size = 500  # Keep max 500 scaled thumbnails in memory
         
     def set_browser(self, browser):
         """Set browser reference for accessing column widths"""
@@ -44,6 +47,8 @@ class ThumbnailDelegate(QStyledItemDelegate):
     def set_thumbnail_size(self, size):
         """Set thumbnail size"""
         self.thumbnail_size = size
+        # Clear scaled cache when size changes
+        self._scaled_cache.clear()
     
     def draw_gradient_placeholder(self, painter, rect, extension):
         """Draw attractive gradient placeholder for file type"""
@@ -156,10 +161,23 @@ class ThumbnailDelegate(QStyledItemDelegate):
             thumbnail = self.memory_cache.get(file_path_key) if thumbnails_enabled else None
             
             if thumbnail and not thumbnail.isNull():
-                # Draw thumbnail
-                scaled = thumbnail.scaled(thumb_size, thumb_size, 
-                                         Qt.KeepAspectRatio, 
-                                         Qt.SmoothTransformation)
+                # Check scaled cache first (MUCH faster than re-scaling every paint!)
+                scaled_cache_key = (file_path_key, thumb_size)
+                if scaled_cache_key in self._scaled_cache:
+                    scaled = self._scaled_cache[scaled_cache_key]
+                else:
+                    # Not in cache - scale and store
+                    scaled = thumbnail.scaled(thumb_size, thumb_size, 
+                                             Qt.KeepAspectRatio, 
+                                             Qt.SmoothTransformation)
+                    # Add to scaled cache (with size limit)
+                    if len(self._scaled_cache) >= self._scaled_cache_max_size:
+                        # Clear oldest entries (simple FIFO)
+                        keys_to_remove = list(self._scaled_cache.keys())[:100]
+                        for k in keys_to_remove:
+                            del self._scaled_cache[k]
+                    self._scaled_cache[scaled_cache_key] = scaled
+                
                 # Center the scaled image
                 offset_x = (thumb_size - scaled.width()) // 2
                 offset_y = (thumb_size - scaled.height()) // 2
@@ -262,7 +280,21 @@ class ThumbnailDelegate(QStyledItemDelegate):
             
             thumbnail = self.memory_cache.get(cache_key) if thumbnails_enabled else None
             if thumbnail and not thumbnail.isNull():
-                scaled = thumbnail.scaled(thumb_size, thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                # Check scaled cache first (MUCH faster than re-scaling every paint!)
+                scaled_cache_key = (cache_key, thumb_size)
+                if scaled_cache_key in self._scaled_cache:
+                    scaled = self._scaled_cache[scaled_cache_key]
+                else:
+                    # Not in cache - scale and store
+                    scaled = thumbnail.scaled(thumb_size, thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # Add to scaled cache (with size limit)
+                    if len(self._scaled_cache) >= self._scaled_cache_max_size:
+                        # Clear oldest entries (simple FIFO)
+                        keys_to_remove = list(self._scaled_cache.keys())[:100]
+                        for k in keys_to_remove:
+                            del self._scaled_cache[k]
+                    self._scaled_cache[scaled_cache_key] = scaled
+                
                 # Center the scaled image within thumb_rect (both horizontally and vertically)
                 offset_x = (thumb_size - scaled.width()) // 2
                 offset_y = (thumb_size - scaled.height()) // 2
