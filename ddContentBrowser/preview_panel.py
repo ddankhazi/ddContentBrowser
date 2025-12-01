@@ -2723,13 +2723,143 @@ class PreviewPanel(QWidget):
         if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget:
             # Handle events from fullscreen widget or video widget when in fullscreen
             if obj == self._fullscreen_widget or (obj == self.video_widget and self._fullscreen_widget.isVisible()):
+                
+                # LOG ALL EVENTS for debugging
+                event_name = {
+                    QEvent.MouseButtonPress: "MouseButtonPress",
+                    QEvent.MouseButtonRelease: "MouseButtonRelease",
+                    QEvent.MouseMove: "MouseMove",
+                    QEvent.KeyPress: "KeyPress",
+                }.get(event.type(), f"Event({event.type()})")
+                
+                if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove):
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    if obj == self._fullscreen_widget:
+                        mouse_y = mouse_pos.y()
+                        obj_source = "fullscreen_widget"
+                    else:
+                        global_pos = self.video_widget.mapToGlobal(mouse_pos.toPoint())
+                        local_pos = self._fullscreen_widget.mapFromGlobal(global_pos)
+                        mouse_y = local_pos.y()
+                        obj_source = "video_widget"
+                    
                 if event.type() == QEvent.KeyPress:
                     if event.key() == Qt.Key_Escape or event.key() == Qt.Key_F:
                         self.toggle_video_fullscreen()
                         return True
+                
+                elif event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    # Check if click is over controls
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    if obj == self._fullscreen_widget:
+                        mouse_y = mouse_pos.y()
+                    else:  # video_widget
+                        global_pos = self.video_widget.mapToGlobal(mouse_pos.toPoint())
+                        local_pos = self._fullscreen_widget.mapFromGlobal(global_pos)
+                        mouse_y = local_pos.y()
+                    
+                    fullscreen_height = self._fullscreen_widget.height()
+                    controls_height = self.video_playback.height()
+                    controls_start_y = fullscreen_height - controls_height
+                    mouse_over_controls = mouse_y >= controls_start_y
+                    
+                    if not mouse_over_controls:
+                        # Start video scrubbing
+                        self.video_dragging = True
+                        self.video_drag_start_x = mouse_pos.x()
+                        self.video_drag_start_position = self.media_player.position()
+                        return True
+                    return False
+                
                 elif event.type() == QEvent.MouseMove:
-                    # Show controls on mouse movement
-                    self._show_fullscreen_controls()
+                    # DON'T trust event coordinates - get REAL cursor position from system
+                    real_global_pos = QCursor.pos()
+                    real_local_pos = self._fullscreen_widget.mapFromGlobal(real_global_pos)
+                    mouse_x = real_local_pos.x()
+                    mouse_y = real_local_pos.y()
+                    
+                    # Also get event coordinates for comparison
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    if obj == self._fullscreen_widget:
+                        event_x = mouse_pos.x()
+                        event_y = mouse_pos.y()
+                        obj_source = "fullscreen_widget"
+                    else:
+                        global_pos = self.video_widget.mapToGlobal(mouse_pos.toPoint())
+                        local_pos = self._fullscreen_widget.mapFromGlobal(global_pos)
+                        event_x = local_pos.x()
+                        event_y = local_pos.y()
+                        obj_source = "video_widget"
+                    
+                    fullscreen_height = self._fullscreen_widget.height()
+                    controls_height = self.video_playback.height() if hasattr(self, 'video_playback') else 0
+                    controls_start_y = fullscreen_height - controls_height
+                    is_over_controls = mouse_y > controls_start_y
+                    
+                    # Handle video scrubbing if dragging
+                    if self.video_dragging:
+                        delta_x = mouse_pos.x() - self.video_drag_start_x
+                        duration = self.media_player.duration()
+                        
+                        if duration > 0:
+                            # 1 pixel = 100ms movement
+                            delta_ms = int(delta_x * 100)
+                            new_position = max(0, min(duration, self.video_drag_start_position + delta_ms))
+                            
+                            # Seek to new position
+                            self.media_player.setPosition(new_position)
+                            
+                            # Update slider manually
+                            if hasattr(self, 'video_slider'):
+                                self.video_slider_updating = True
+                                slider_value = int((new_position / duration) * 1000)
+                                self.video_slider.setValue(slider_value)
+                                self.video_slider_updating = False
+                        # Don't check controls during scrubbing
+                        return True
+                    
+                    # Check if mouse is over video playback controls
+                    if hasattr(self, 'video_playback') and self.video_playback and self.video_playback.isVisible():
+                        # Already calculated above
+                        mouse_over_controls = is_over_controls
+                        
+                        # Check if state changed (enter/leave controls area)
+                        was_over_controls = getattr(self, '_cursor_was_over_controls', False)
+                        
+                        if mouse_over_controls != was_over_controls:
+                            # State changed - ENTER or LEAVE
+                            if mouse_over_controls:
+                                # Stop hide timer
+                                if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                                    self._fullscreen_hide_timer.stop()
+                                # Show controls
+                                if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
+                                    self._fullscreen_opacity_effect.setOpacity(1.0)
+                                    if hasattr(self, 'video_playback') and self.video_playback:
+                                        self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                            else:
+                                # Start hide timer
+                                if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                                    self._fullscreen_hide_timer.stop()
+                                    self._fullscreen_hide_timer.start()
+                            
+                            # Update state
+                            self._cursor_was_over_controls = mouse_over_controls
+                        else:
+                            # No state change but restart timer if cursor moves AWAY from controls
+                            if not mouse_over_controls:
+                                if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                                    self._fullscreen_hide_timer.stop()
+                                    self._fullscreen_hide_timer.start()
+                    
+                    return False
+                
+                elif event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    # End video scrubbing
+                    if self.video_dragging:
+                        self.video_dragging = False
+                        print(f"[SCRUB] Stopped dragging")
+                        return True
                     return False
         
         # === Volume Button Right-Click ===
@@ -2739,16 +2869,30 @@ class PreviewPanel(QWidget):
                 return True
         
         # === Video Widget Drag Scrubbing ===
+        # Works both in normal and fullscreen mode
         if (hasattr(self, 'video_widget') and hasattr(self, 'media_player') and 
             obj == self.video_widget and self.media_player):
             event_type = event.type()
             
             if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                # Start drag scrubbing
-                self.video_dragging = True
-                self.video_drag_start_x = event.position().x()
-                self.video_drag_start_position = self.media_player.position()
-                return True
+                # Check if mouse is over video playback controls in fullscreen mode
+                mouse_over_controls = False
+                if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget and self._fullscreen_widget.isVisible():
+                    if hasattr(self, 'video_playback') and self.video_playback:
+                        mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                        # Convert to global, then to video_playback coordinates
+                        global_pos = self.video_widget.mapToGlobal(mouse_pos.toPoint())
+                        controls_pos = self.video_playback.mapFromGlobal(global_pos)
+                        mouse_over_controls = self.video_playback.rect().contains(controls_pos)
+                
+                # Only start scrubbing if NOT clicking on controls
+                if not mouse_over_controls:
+                    # Start drag scrubbing
+                    self.video_dragging = True
+                    self.video_drag_start_x = event.position().x()
+                    self.video_drag_start_position = self.media_player.position()
+                    return True
+                return False
             
             elif event_type == QEvent.MouseMove and self.video_dragging:
                 # Drag scrubbing - move through video
@@ -7925,6 +8069,15 @@ class PreviewPanel(QWidget):
             self._fullscreen_hide_timer.timeout.connect(self._hide_fullscreen_controls)
             self._fullscreen_hide_timer.start()
             
+            # Create continuous cursor tracking timer for auto-hide control
+            self._cursor_tracking_timer = QtCore.QTimer()
+            self._cursor_tracking_timer.setInterval(100)  # Every 100ms
+            self._cursor_tracking_timer.timeout.connect(self._track_cursor_position)
+            self._cursor_tracking_timer.start()
+            
+            # Track whether cursor was over controls (to detect enter/leave)
+            self._cursor_was_over_controls = False
+            
             # Create opacity effect for controls
             self._fullscreen_opacity_effect = QGraphicsOpacityEffect(self.video_playback)
             self.video_playback.setGraphicsEffect(self._fullscreen_opacity_effect)
@@ -7943,24 +8096,77 @@ class PreviewPanel(QWidget):
     
     def _hide_fullscreen_controls(self):
         """Hide controls in fullscreen mode by setting opacity to 0"""
-        if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
-            self._fullscreen_opacity_effect.setOpacity(0.0)
-            # Disable mouse events when invisible so they pass through to video widget
-            if hasattr(self, 'video_playback') and self.video_playback:
-                self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        try:
+            # IMPORTANT: Check if mouse is currently over controls before hiding
+            if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget and hasattr(self, 'video_playback'):
+                # Get current mouse position
+                from PySide6.QtGui import QCursor
+                cursor_pos = QCursor.pos()
+                local_pos = self._fullscreen_widget.mapFromGlobal(cursor_pos)
+                mouse_y = local_pos.y()
+                
+                fullscreen_height = self._fullscreen_widget.height()
+                controls_height = self.video_playback.height()
+                controls_start_y = fullscreen_height - controls_height
+                mouse_over_controls = mouse_y >= controls_start_y
+                
+                if mouse_over_controls:
+                    # Don't hide! Mouse is over controls
+                    return
+            if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
+                self._fullscreen_opacity_effect.setOpacity(0.0)
+                # Disable mouse events when invisible so they pass through to video widget
+                if hasattr(self, 'video_playback') and self.video_playback:
+                    self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                
+                # IMPORTANT: Reset state - cursor is definitely NOT over controls now (they're hidden!)
+                self._cursor_was_over_controls = False
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
     
-    def _show_fullscreen_controls(self):
-        """Show controls in fullscreen mode and restart hide timer"""
+    def _track_cursor_position(self):
+        """Continuously track cursor position for debugging"""
+        if hasattr(self, '_fullscreen_widget') and self._fullscreen_widget:
+            from PySide6.QtGui import QCursor
+            cursor_pos = QCursor.pos()
+            local_pos = self._fullscreen_widget.mapFromGlobal(cursor_pos)
+            
+            fullscreen_height = self._fullscreen_widget.height()
+            controls_height = self.video_playback.height() if hasattr(self, 'video_playback') else 0
+            controls_start_y = fullscreen_height - controls_height
+            is_over = local_pos.y() > controls_start_y
+            
+            # Check if state changed and restart timer if needed
+            was_over = getattr(self, '_cursor_was_over_controls', False)
+            if is_over != was_over:
+                if is_over:
+                    # ENTERED controls area - stop timer, show controls
+                    if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                        self._fullscreen_hide_timer.stop()
+                    if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
+                        self._fullscreen_opacity_effect.setOpacity(1.0)
+                        if hasattr(self, 'video_playback') and self.video_playback:
+                            self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                else:
+                    # LEFT controls area - start timer
+                    if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
+                        self._fullscreen_hide_timer.stop()
+                        self._fullscreen_hide_timer.start()
+                
+                self._cursor_was_over_controls = is_over
+    
+    def _show_fullscreen_controls(self, mouse_over_controls=False):
+        """Show controls in fullscreen mode (called when controls become visible again)
+        
+        Args:
+            mouse_over_controls: Not used anymore - kept for compatibility
+        """
+        # Just show controls - timer management is now done in MouseMove enter/leave logic
         if hasattr(self, '_fullscreen_opacity_effect') and self._fullscreen_opacity_effect:
             self._fullscreen_opacity_effect.setOpacity(1.0)
-            # Re-enable mouse events when visible
             if hasattr(self, 'video_playback') and self.video_playback:
                 self.video_playback.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        
-        # Restart hide timer
-        if hasattr(self, '_fullscreen_hide_timer') and self._fullscreen_hide_timer:
-            self._fullscreen_hide_timer.stop()
-            self._fullscreen_hide_timer.start()
 
     
     def cleanup(self):

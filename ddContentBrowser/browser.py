@@ -9,6 +9,7 @@ License: MIT
 
 import os
 import sys
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -3765,7 +3766,7 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             self.safe_show_status(f"Copied {len(assets)} filenames to clipboard")
     
     def delete_selected_files(self):
-        """Delete selected files (Delete key)"""
+        """Delete selected files and folders (Delete key)"""
         assets = self.get_selected_assets()
         if not assets:
             self.safe_show_status("No file selected")
@@ -3776,26 +3777,70 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if len(assets) > 3:
             file_names += f" and {len(assets) - 3} more"
         
+        # Count files vs folders for better message
+        file_count = sum(1 for a in assets if not a.is_folder)
+        folder_count = sum(1 for a in assets if a.is_folder)
+        
+        if folder_count > 0 and file_count > 0:
+            msg = f"Are you sure you want to delete:\n{file_names}?\n\n({file_count} file(s) and {folder_count} folder(s))"
+        elif folder_count > 0:
+            msg = f"Are you sure you want to delete:\n{file_names}?\n\n({folder_count} folder(s) and their contents)"
+        else:
+            msg = f"Are you sure you want to delete:\n{file_names}?"
+        
         reply = QtWidgets.QMessageBox.question(
             self,
             "Delete Files",
-            f"Are you sure you want to delete:\n{file_names}?",
+            msg,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No
         )
         
         if reply == QtWidgets.QMessageBox.Yes:
-            deleted_count = 0
-            for asset in assets:
+            # Clear preview panel to release any file handles (important for videos!)
+            if hasattr(self, 'preview_panel') and self.preview_panel:
                 try:
-                    os.remove(str(asset.file_path))
+                    self.preview_panel.show_empty_state()
+                    # Force process events to ensure cleanup is complete
+                    QtWidgets.QApplication.processEvents()
+                except Exception as e:
+                    print(f"[DELETE] Warning: Error clearing preview panel: {e}")
+            
+            deleted_count = 0
+            failed_files = []
+            
+            for asset in assets:
+                file_path = str(asset.file_path)
+                
+                try:
+                    if asset.is_folder:
+                        # Delete folder (with all contents if not empty)
+                        shutil.rmtree(file_path)
+                    else:
+                        # Delete file
+                        os.remove(file_path)
                     deleted_count += 1
                 except Exception as e:
-                    self.safe_show_status(f"Error deleting {asset.name}: {e}")
+                    failed_files.append((asset.name, str(e)))
             
+            # Show results
             if deleted_count > 0:
-                self.safe_show_status(f"Deleted {deleted_count} file(s)")
+                self.safe_show_status(f"Deleted {deleted_count} item(s)")
                 self.refresh_current_folder()
+            
+            # Show detailed error if some files failed
+            if failed_files:
+                error_msg = f"Failed to delete {len(failed_files)} item(s):\n\n"
+                for name, error in failed_files[:5]:  # Show first 5 errors
+                    error_msg += f"• {name}: {error}\n"
+                if len(failed_files) > 5:
+                    error_msg += f"\n...and {len(failed_files) - 5} more"
+                
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Delete Errors",
+                    error_msg
+                )
     
     def rename_selected_file(self):
         """Rename selected file (F2)"""
