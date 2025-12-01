@@ -2858,7 +2858,6 @@ class PreviewPanel(QWidget):
                     # End video scrubbing
                     if self.video_dragging:
                         self.video_dragging = False
-                        print(f"[SCRUB] Stopped dragging")
                         return True
                     return False
         

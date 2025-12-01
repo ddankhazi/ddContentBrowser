@@ -3025,33 +3025,29 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Collect visible items that need thumbnails
         visible_items = []
         
-        # OPTIMIZATION: Use indexAt() to find first and last visible rows instead of checking all rows
-        # This is MUCH faster for large lists (1000+ items)
-        top_item = self.file_list.indexAt(viewport_rect.topLeft())
-        bottom_item = self.file_list.indexAt(viewport_rect.bottomLeft())
+        # Find visible items by checking which items intersect with viewport
+        # More reliable than indexAt() which doesn't work well in all cases
+        start_row = None
+        end_row = None
         
-        # Also check bottom-right corner for partially visible items (important for grid mode!)
-        bottom_right_item = self.file_list.indexAt(viewport_rect.bottomRight())
+        for row in range(row_count):
+            index = model.index(row, 0)
+            rect = self.file_list.visualRect(index)
+            
+            # Check if this item is visible
+            if rect.isValid() and viewport_rect.intersects(rect):
+                if start_row is None:
+                    start_row = row
+                end_row = row
         
-        if not top_item.isValid():
-            return
-        
-        # Determine row range to check (with buffer for smooth scrolling)
-        start_row = max(0, top_item.row() - 5)
-        
-        # Use the MAXIMUM of bottom-left and bottom-right to catch all visible items
-        if bottom_item.isValid() and bottom_right_item.isValid():
-            end_row_candidate = max(bottom_item.row(), bottom_right_item.row())
-        elif bottom_item.isValid():
-            end_row_candidate = bottom_item.row()
-        elif bottom_right_item.isValid():
-            end_row_candidate = bottom_right_item.row()
+        # If we found visible items, add buffer
+        if start_row is not None and end_row is not None:
+            start_row = max(0, start_row - 5)
+            end_row = min(row_count - 1, end_row + 10)
         else:
-            # Neither valid - use last row
-            end_row_candidate = row_count - 1
-        
-        # Add buffer and clamp to valid range
-        end_row = min(row_count - 1, end_row_candidate + 10)
+            # No visible items found - load first batch as fallback
+            start_row = 0
+            end_row = min(row_count - 1, 50)
         
         # Only loop through visible rows (huge performance gain!)
         for row in range(start_row, end_row + 1):
