@@ -2962,18 +2962,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_thumbnail_ready(self, file_path, pixmap):
         """Handle thumbnail ready from generator"""
-        # Find the item in the model and update it
+        # Use fast O(1) lookup instead of looping through all rows
         model = self.file_list.model()
         if model:
-            for row in range(model.rowCount()):
+            row = model.get_row_for_path(file_path)
+            if row is not None:
                 index = model.index(row, 0)
-                asset = model.data(index, Qt.UserRole)
-                if asset and str(asset.file_path) == file_path:
-                    # Update the model data with the new thumbnail
-                    model.setData(index, pixmap, Qt.DecorationRole)
-                    # Force the view to repaint this specific item
-                    self.file_list.update(index)
-                    break
+                # Update the model data with the new thumbnail
+                model.setData(index, pixmap, Qt.DecorationRole)
+                # Force the view to repaint this specific item
+                self.file_list.update(index)
         
         # Also update viewport for good measure
         self.file_list.viewport().update()

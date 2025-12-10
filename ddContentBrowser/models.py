@@ -328,6 +328,7 @@ class FileSystemModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.assets = []
+        self._file_path_to_row = {}  # Fast lookup: file_path_str -> row_index
         self.current_path = None
         self.filter_text = ""
         
@@ -392,6 +393,28 @@ class FileSystemModel(QAbstractListModel):
         self._cache_max_size = 20  # Maximum number of cached directories
         self._cache_ttl = 300  # Cache time-to-live in seconds (5 minutes)
         self._cache_enabled = True
+    
+    def _rebuild_path_index(self):
+        """Rebuild the file path to row index mapping (O(n) operation)"""
+        self._file_path_to_row = {}
+        for row, asset in enumerate(self.assets):
+            self._file_path_to_row[str(asset.file_path)] = row
+    
+    def get_row_for_path(self, file_path):
+        """Get row index for a file path (O(1) lookup)
+        
+        Args:
+            file_path: File path as string
+            
+        Returns:
+            Row index (int) or None if not found
+        """
+        return self._file_path_to_row.get(str(file_path))
+    
+    def endResetModel(self):
+        """Override to rebuild path index after model reset"""
+        super().endResetModel()
+        self._rebuild_path_index()
     
     def set_custom_extensions(self, extensions):
         """Set custom file extensions to support

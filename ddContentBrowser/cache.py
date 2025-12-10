@@ -346,8 +346,12 @@ class ThumbnailDiskCache:
             # Ensure parent directory exists
             thumb_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Convert QPixmap to QImage for thread-safe saving
+            # QPixmap.save() is NOT thread-safe, but QImage.save() IS
+            image = pixmap.toImage()
+            
             # Save as JPEG for smaller file size
-            success = pixmap.save(str(thumb_path), "JPEG", quality)
+            success = image.save(str(thumb_path), "JPEG", quality)
             
             if success:
                 self.stats['generated'] += 1
@@ -781,23 +785,28 @@ class ThumbnailGenerator(QThread):
                             print(f"[CACHE-THREAD] → Converting to QPixmap ({data_status})")
                         
                         if img_data is not None:
-                            # TEMP DEBUG: Pass file_path for EXR debugging
-                            if str(file_path).lower().endswith('.exr'):
-                                img_data['_debug_file_path'] = file_path
-                            
                             pixmap = self._numpy_to_pixmap(img_data)
                             
                             if pixmap and not pixmap.isNull():
                                 if DEBUG_MODE:
                                     print(f"[CACHE-THREAD] ✓ QPixmap created: {pixmap.width()}×{pixmap.height()}")
                                 
-                                # Save to caches
-                                if not is_sequence:
-                                    self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
+                                # Save to memory cache immediately (fast)
                                 self.memory_cache.set(cache_key, pixmap)
                                 
-                                # Emit signal
+                                # Emit signal FIRST (UI updates immediately)
                                 self.thumbnail_ready.emit(file_path, pixmap)
+                                
+                                # Save to disk cache ASYNC in worker pool (don't block UI)
+                                # QImage.save() is thread-safe, so we can do this in background
+                                if not is_sequence:
+                                    self.executor.submit(
+                                        self.disk_cache.set,
+                                        file_path,
+                                        file_mtime,
+                                        pixmap,
+                                        self.jpeg_quality
+                                    )
                                 
                                 if DEBUG_MODE:
                                     print(f"[CACHE-THREAD] ✓ Thumbnail ready signal emitted: {Path(file_path).name}")
@@ -1009,12 +1018,6 @@ class ThumbnailGenerator(QThread):
             # Qt's Format_RGB888 expects RGB format
             # OpenCV outputs BGR, so we need to convert BGR→RGB
             # TurboJPEG/EXR/PIL output RGB, so no conversion needed
-            
-            # TEMP DEBUG for BGR/RGB issue
-            debug_file_path = img_data.get('_debug_file_path')
-            if debug_file_path:
-                from pathlib import Path
-                print(f"[PIXMAP-EXR] {Path(debug_file_path).name}: {width}×{height}, {channels} ch, is_rgb={is_rgb}")
             
             if channels == 3:
                 if is_rgb:
