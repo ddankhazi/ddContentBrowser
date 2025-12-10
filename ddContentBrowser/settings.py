@@ -61,7 +61,8 @@ class SettingsManager:
                 "memory_cache_size": 2000,  # Number of thumbnails in RAM
                 "cache_size_mb": 500,  # Disk cache size in MB
                 "quality": "medium",  # low, medium, high
-                "generate_for_3d": True
+                "generate_for_3d": True,
+                "worker_threads": 0  # 0 = Auto-detect based on CPU cores (max 12), 1-12 = manual override
             },
             # Preview settings
             "preview": {
@@ -472,6 +473,39 @@ class ThumbnailSettingsTab(QWidget):
         quality_group.setLayout(quality_layout)
         layout.addWidget(quality_group)
         
+        # Performance group
+        performance_group = QGroupBox("Performance (Multithreading)")
+        performance_layout = QVBoxLayout()
+        
+        # Worker threads setting
+        worker_threads_layout = QHBoxLayout()
+        worker_threads_layout.addWidget(QLabel("Parallel Worker Threads:"))
+        self.worker_threads_spin = QSpinBox()
+        self.worker_threads_spin.setRange(0, 12)  # 0 = auto-detect, 1-12 = manual
+        self.worker_threads_spin.setValue(self.settings.get("thumbnails", "worker_threads", 0))
+        self.worker_threads_spin.setToolTip(
+            "Number of parallel threads for thumbnail generation.\n"
+            "Higher = faster on multi-core CPUs, but more memory/CPU usage.\n\n"
+            "  • 0 = Auto-detect (recommended) - uses CPU core count, max 12\n"
+            "  • 1-12 = Manual override\n\n"
+            "Requires browser restart to take effect."
+        )
+        worker_threads_layout.addWidget(self.worker_threads_spin)
+        worker_threads_layout.addStretch()
+        performance_layout.addLayout(worker_threads_layout)
+        
+        # Info label
+        perf_info = QLabel(
+            "⚡ Multithreading speeds up thumbnail generation for large files (TIFF, EXR, HDR).\n"
+            "Setting value to 1 disables multithreading (single-threaded mode)."
+        )
+        perf_info.setWordWrap(True)
+        perf_info.setStyleSheet("QLabel { color: #888; font-size: 10px; padding: 5px; }")
+        performance_layout.addWidget(perf_info)
+        
+        performance_group.setLayout(performance_layout)
+        layout.addWidget(performance_group)
+        
         # Cache group
         cache_group = QGroupBox("Cache")
         cache_layout = QVBoxLayout()
@@ -564,6 +598,7 @@ class ThumbnailSettingsTab(QWidget):
         self.settings.set("thumbnails", "memory_cache_size", self.memory_cache_spin.value())
         self.settings.set("thumbnails", "cache_size_mb", self.cache_size_spin.value())
         self.settings.set("thumbnails", "generate_for_3d", self.generate_3d_cb.isChecked())
+        self.settings.set("thumbnails", "worker_threads", self.worker_threads_spin.value())
 
 
 class PreviewSettingsTab(QWidget):

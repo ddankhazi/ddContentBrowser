@@ -2397,6 +2397,102 @@ class DragDropCollectionListWidget(QListWidget):
             event.ignore()
 
 
+def load_oiio_image_array(file_path, max_size=2048, mip_level=0):
+    """
+    Load image using OpenImageIO and return as numpy array (worker thread safe).
+    Simpler version of load_oiio_image that returns raw array instead of QPixmap.
+    
+    Args:
+        file_path: Path to image file
+        max_size: Maximum width/height for thumbnail
+        mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.)
+        
+    Returns:
+        numpy array (RGB, uint8) or None on failure
+    """
+    try:
+        import sys
+        import os
+        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        if external_libs not in sys.path:
+            sys.path.insert(0, external_libs)
+        
+        from OpenImageIO import ImageInput
+        import numpy as np
+        
+        file_path_str = str(file_path)
+        
+        # Open image
+        inp = ImageInput.open(file_path_str)
+        if not inp:
+            return None
+        
+        # Get image spec
+        spec = inp.spec()
+        width = spec.width
+        height = spec.height
+        
+        # If mipmap requested and available
+        if mip_level > 0 and spec.get_int_attribute('miplevels', 1) > mip_level:
+            inp.seek_subimage(0, mip_level)
+            spec = inp.spec()
+            width = spec.width
+            height = spec.height
+        
+        # Check valid dimensions
+        if width <= 0 or height <= 0:
+            return None
+        
+        # Read pixels
+        pixels = inp.read_image()
+        inp.close()
+        
+        if pixels is None:
+            return None
+        
+        # Convert to numpy array
+        img = np.array(pixels, dtype=np.float32)
+        
+        if img.size == 0:
+            return None
+        
+        # Handle different channel counts
+        if img.ndim == 2:
+            # Grayscale -> RGB
+            img = np.stack([img, img, img], axis=2)
+        elif img.ndim == 3:
+            actual_channels = img.shape[2]
+            if actual_channels == 1:
+                img = np.concatenate([img, img, img], axis=2)
+            elif actual_channels == 2:
+                img = np.concatenate([img[:,:,0:1], img[:,:,0:1], img[:,:,0:1]], axis=2)
+            elif actual_channels == 4:
+                # RGBA -> RGB
+                img = img[:, :, :3]
+            elif actual_channels > 4:
+                # Take first 3 channels
+                img = img[:, :, :3]
+        
+        # Resize if needed
+        if width > max_size or height > max_size:
+            scale = min(max_size / width, max_size / height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            if new_width < 1 or new_height < 1:
+                return None
+            
+            import cv2
+            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        
+        # Return as float32 [0-inf] - caller will handle tone mapping
+        # This allows HDR/ACEScg color management in the worker thread
+        return img
+        
+    except Exception as e:
+        return None
+
+
 def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadata_manager=None):
     """
     Load image using OpenImageIO (supports .tx, .exr, .hdr, and many other formats)

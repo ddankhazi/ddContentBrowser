@@ -29,6 +29,9 @@ import sys
 import time
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, Future
+from queue import Queue
+import threading
 
 # IMPORTANT: Disable ffmpeg report file generation BEFORE any imageio_ffmpeg import
 # This prevents the creation of ffmpeg-*.log files in the working directory
@@ -41,6 +44,58 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "loglevel;quiet"
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "0"
 os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
+
+# TurboJPEG support (optional, faster JPEG decoding)
+TURBOJPEG_AVAILABLE = False
+TURBOJPEG_INSTANCE = None
+try:
+    # Add external_libs to path
+    script_dir = Path(__file__).parent
+    external_libs_path = script_dir / "external_libs"
+    if str(external_libs_path) not in sys.path:
+        sys.path.insert(0, str(external_libs_path))
+    
+    from turbojpeg import TurboJPEG
+    
+    # Try to load DLL from multiple locations (portable-first)
+    dll_paths = [
+        # 1. Tool directory (portable)
+        os.path.join(os.path.dirname(__file__), 'external_libs', 'bin', 'turbojpeg.dll'),
+        # 2. System installation
+        r'C:\libjpeg-turbo64\bin\turbojpeg.dll',
+    ]
+    
+    TURBOJPEG_INSTANCE = None
+    for dll_path in dll_paths:
+        if os.path.exists(dll_path):
+            try:
+                TURBOJPEG_INSTANCE = TurboJPEG(dll_path)
+                TURBOJPEG_AVAILABLE = True
+                if DEBUG_MODE:
+                    print(f"[TURBOJPEG] ✓ Initialized: {dll_path}")
+                break
+            except Exception as e:
+                if DEBUG_MODE:
+                    print(f"[TURBOJPEG] ✗ Failed to load {dll_path}: {e}")
+                continue
+    
+    if TURBOJPEG_INSTANCE is None:
+        # Last resort: try auto-detect
+        try:
+            TURBOJPEG_INSTANCE = TurboJPEG()
+            TURBOJPEG_AVAILABLE = True
+            if DEBUG_MODE:
+                print(f"[TURBOJPEG] ✓ Initialized (auto-detected)")
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[TURBOJPEG] ✗ Not available: {e}")
+            TURBOJPEG_AVAILABLE = False
+            TURBOJPEG_INSTANCE = None
+except Exception as e:
+    if DEBUG_MODE:
+        print(f"[TURBOJPEG] ✗ Import failed: {e}")
+    TURBOJPEG_AVAILABLE = False
+    TURBOJPEG_INSTANCE = None
 
 try:
     from PySide6.QtCore import QThread, Signal, Qt
@@ -187,12 +242,17 @@ class ThumbnailDiskCache:
         Initialize disk cache.
         
         Args:
-            cache_dir: Directory to store thumbnails (default: ~/.ddContentBrowser/thumbnails)
+            cache_dir: Directory to store thumbnails (default: %LOCALAPPDATA%/ddContentBrowser/thumbnails)
             max_size_mb: Maximum cache size in megabytes (default: 500 MB)
         """
         if cache_dir is None:
-            # Unified config directory - all DD Content Browser data in one place
-            cache_dir = Path.home() / ".ddContentBrowser" / "thumbnails"
+            # Use AppData/Local on Windows, ~/.local/share on Linux/Mac
+            import os
+            if os.name == 'nt':  # Windows
+                cache_root = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+            else:  # Linux/Mac
+                cache_root = Path.home() / '.local' / 'share'
+            cache_dir = cache_root / "ddContentBrowser" / "thumbnails"
         
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -473,7 +533,17 @@ class ThumbnailDiskCache:
 
 
 class ThumbnailGenerator(QThread):
-    """Background thread for generating thumbnails from Maya files"""
+    """
+    Hybrid multithreaded thumbnail generator
+    
+    Architecture:
+    - ThreadPoolExecutor (2-4 workers): CPU-intensive work (decode, resize, color conversion)
+    - Main QThread: QPixmap conversion and signal emission (thread-safe)
+    - Thread-safe queue for worker results
+    
+    This ensures Qt objects are only created in the main thread while parallelizing
+    the heavy computational work across multiple CPU cores.
+    """
     
     # Signals
     thumbnail_ready = Signal(str, object)  # (file_path, pixmap)
@@ -481,7 +551,7 @@ class ThumbnailGenerator(QThread):
     generation_failed = Signal(str, str)    # (file_path, error_message)
     cache_status = Signal(str)             # Status message: "cache" or "generating"
     
-    def __init__(self, memory_cache, disk_cache, thumbnail_size=128, jpeg_quality=85, metadata_manager=None):
+    def __init__(self, memory_cache, disk_cache, thumbnail_size=128, jpeg_quality=85, metadata_manager=None, max_workers=None):
         super().__init__()
         self.memory_cache = memory_cache
         self.disk_cache = disk_cache
@@ -493,6 +563,27 @@ class ThumbnailGenerator(QThread):
         self.current_file = None
         self.processed_count = 0  # Track how many we've processed
         self.total_count = 0      # Track total in current batch
+        
+        # Performance tracking
+        self._last_stats_time = 0
+        self._stats_interval = 5.0  # Print stats every 5 seconds (in debug mode)
+        
+        # ThreadPoolExecutor for parallel thumbnail generation
+        # Auto-detect optimal worker count based on CPU cores (if not specified)
+        if max_workers is None:
+            import os
+            cpu_count = os.cpu_count() or 4
+            # Use CPU count but cap at 12 to avoid excessive threads
+            max_workers = min(cpu_count, 12)
+        self.max_workers = max_workers
+        self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ThumbWorker")
+        
+        # Thread-safe result queue for worker threads
+        self.result_queue = Queue()
+        
+        # Track active futures to avoid processing duplicate files
+        self.active_futures = {}  # file_path -> Future
+        self.futures_lock = threading.Lock()
         
         # Clean up any ffmpeg log files generated by imageio_ffmpeg imports
         self._cleanup_ffmpeg_logs()
@@ -507,6 +598,14 @@ class ThumbnailGenerator(QThread):
             QImageReader.setAllocationLimit(1024)  # 1024 MB = 1 GB
         except Exception as e:
             print(f"[Cache] Could not set image allocation limit: {e}")
+        
+        # Always print initialization info (even if DEBUG_MODE is off)
+        print(f"[ThumbnailGenerator] ✨ Initialized with {max_workers} worker threads")
+        print(f"[ThumbnailGenerator]    Thumbnail size: {thumbnail_size}px")
+        print(f"[ThumbnailGenerator]    JPEG quality: {jpeg_quality}")
+        print(f"[ThumbnailGenerator]    Max in-flight jobs: {max_workers + 2}")
+        if DEBUG_MODE:
+            print(f"[ThumbnailGenerator]    Debug mode: ENABLED")
         
     def _cleanup_ffmpeg_logs(self):
         """Remove ffmpeg log files created by imageio_ffmpeg initialization"""
@@ -550,94 +649,1091 @@ class ThumbnailGenerator(QThread):
         self.total_count = 0
     
     def stop(self):
-        """Stop the generator thread gracefully"""
+        """Stop the generator thread and worker pool gracefully"""
         self.is_running = False
         self.queue.clear()
         self.current_file = None  # Clear current processing file
+        
+        # Shutdown thread pool (wait for active tasks to complete)
+        if hasattr(self, 'executor'):
+            if DEBUG_MODE:
+                print("[ThumbnailGenerator] Shutting down worker pool...")
+            self.executor.shutdown(wait=True, cancel_futures=True)
+            if DEBUG_MODE:
+                print("[ThumbnailGenerator] Worker pool shut down")
     
     def run(self):
-        """Main thread loop - process queue"""
+        """
+        Main thread loop - dispatch work to thread pool and process results
+        
+        Balanced two-stage pipeline:
+        1. Submit jobs to ThreadPoolExecutor (controlled rate)
+        2. Process completed results (QPixmap conversion in main thread)
+        """
+        if DEBUG_MODE:
+            print("[CACHE-THREAD] 🚀 Main loop started")
+        
         while self.is_running:
-            if not self.queue:
-                self.msleep(50)  # Wait 50ms if queue is empty
-                continue
+            # Stage 1: Submit MULTIPLE new jobs if capacity available (fill the pool!)
+            # Submit up to max_workers jobs per iteration to saturate CPU
+            jobs_submitted = 0
+            while self.queue and self.is_running and jobs_submitted < self.max_workers:
+                # Check if we have capacity (don't overwhelm the pool)
+                with self.futures_lock:
+                    active_count = len(self.active_futures)
+                
+                # Limit in-flight jobs to avoid memory buildup
+                # Max in-flight = max_workers + 2 (tight control)
+                if active_count < self.max_workers + 2:
+                    # Get next item from queue (pop from END for correct order)
+                    queue_item = self.queue.pop()  # pop() = pop(-1) = last item
+                    
+                    # Extract components (backwards compatible with old tuple format)
+                    if len(queue_item) == 3:
+                        file_path, file_mtime, asset = queue_item
+                    else:
+                        file_path, file_mtime = queue_item
+                        asset = None
+                    
+                    # Check if already processing this file
+                    already_processing = False
+                    with self.futures_lock:
+                        if file_path in self.active_futures:
+                            already_processing = True
+                    
+                    if not already_processing:
+                        # For sequences, use pattern as cache key instead of file path
+                        cache_key = file_path
+                        is_sequence = asset and asset.is_sequence and asset.sequence
+                        if is_sequence:
+                            cache_key = str(asset.sequence.pattern)
+                        
+                        if DEBUG_MODE:
+                            print(f"[CACHE-THREAD] Processing: {Path(file_path).name}")
+                        
+                        # Check memory cache first
+                        cached = self.memory_cache.get(cache_key)
+                        if cached:
+                            if DEBUG_MODE:
+                                print(f"[CACHE-THREAD] → Found in memory cache")
+                            self.cache_status.emit("cache")
+                            self.thumbnail_ready.emit(file_path, cached)
+                            self.processed_count += 1
+                            if self.total_count > 0:
+                                self.progress_update.emit(self.processed_count, self.total_count)
+                            # DON'T continue here - fall through to Stage 2
+                        # Check disk cache (skip for sequences)
+                        elif not is_sequence:
+                            cached = self.disk_cache.get(file_path, file_mtime)
+                            if cached and not cached.isNull():
+                                if DEBUG_MODE:
+                                    print(f"[CACHE-THREAD] → Found in disk cache")
+                                self.cache_status.emit("cache")
+                                self.memory_cache.set(file_path, cached)
+                                self.thumbnail_ready.emit(file_path, cached)
+                                self.processed_count += 1
+                                if self.total_count > 0:
+                                    self.progress_update.emit(self.processed_count, self.total_count)
+                                # DON'T continue here - fall through to Stage 2
+                            else:
+                                # Need to generate - submit to worker pool
+                                self._submit_worker_job(file_path, file_mtime, asset, cache_key, is_sequence)
+                        else:
+                            # Sequence - submit to worker pool
+                            self._submit_worker_job(file_path, file_mtime, asset, cache_key, is_sequence)
+                        
+                        jobs_submitted += 1
+                else:
+                    # Pool is full, stop submitting
+                    break
             
-            # Get next item from queue (pop from END for correct order)
-            queue_item = self.queue.pop()  # pop() = pop(-1) = last item
+            # Stage 2: Process completed results from worker threads
+            # Convert numpy arrays to QPixmap and emit signals
+            # Process MULTIPLE results per iteration to keep up with workers
+            results_processed = 0
+            max_results_per_iteration = 5  # Process up to 5 results per loop
             
-            # Extract components (backwards compatible with old tuple format)
-            if len(queue_item) == 3:
-                file_path, file_mtime, asset = queue_item
+            while results_processed < max_results_per_iteration:
+                try:
+                    # Non-blocking check for results (timeout=0.01 seconds)
+                    result = self.result_queue.get(timeout=0.01)
+                    
+                    if DEBUG_MODE:
+                        print(f"[CACHE-THREAD] ← Received result from queue")
+                    
+                    file_path = result['file_path']
+                    success = result['success']
+                    
+                    # Increment progress
+                    self.processed_count += 1
+                    if self.total_count > 0:
+                        self.progress_update.emit(self.processed_count, self.total_count)
+                    
+                    if success:
+                        # Convert numpy array to QPixmap (MUST be done in main thread)
+                        img_data = result['data']
+                        file_mtime = result['file_mtime']
+                        cache_key = result['cache_key']
+                        is_sequence = result['is_sequence']
+                        
+                        if DEBUG_MODE:
+                            data_status = "DATA" if img_data is not None else "NULL"
+                            print(f"[CACHE-THREAD] → Converting to QPixmap ({data_status})")
+                        
+                        if img_data is not None:
+                            # TEMP DEBUG: Pass file_path for EXR debugging
+                            if str(file_path).lower().endswith('.exr'):
+                                img_data['_debug_file_path'] = file_path
+                            
+                            pixmap = self._numpy_to_pixmap(img_data)
+                            
+                            if pixmap and not pixmap.isNull():
+                                if DEBUG_MODE:
+                                    print(f"[CACHE-THREAD] ✓ QPixmap created: {pixmap.width()}×{pixmap.height()}")
+                                
+                                # Save to caches
+                                if not is_sequence:
+                                    self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
+                                self.memory_cache.set(cache_key, pixmap)
+                                
+                                # Emit signal
+                                self.thumbnail_ready.emit(file_path, pixmap)
+                                
+                                if DEBUG_MODE:
+                                    print(f"[CACHE-THREAD] ✓ Thumbnail ready signal emitted: {Path(file_path).name}")
+                            else:
+                                if DEBUG_MODE:
+                                    print(f"[CACHE-THREAD] Failed to convert to QPixmap: {Path(file_path).name}")
+                                # Emit fail signal so delegate stops retrying
+                                self.generation_failed.emit(file_path, "Failed to convert image data to QPixmap")
+                        else:
+                            # Worker returned NULL data (unsupported format or error)
+                            if DEBUG_MODE:
+                                print(f"[CACHE-THREAD] ⚠️ NULL data from worker: {Path(file_path).name}")
+                            # Emit fail signal so delegate stops retrying
+                            self.generation_failed.emit(file_path, "Unsupported format or generation failed")
+                    else:
+                        # Error occurred in worker
+                        error_msg = result.get('error', 'Unknown error')
+                        self.generation_failed.emit(file_path, error_msg)
+                    
+                    results_processed += 1
+                        
+                except:
+                    # Queue empty or timeout - break inner loop
+                    break
+            
+            # Small sleep if nothing to do
+            if not self.queue and self.result_queue.empty():
+                self.msleep(10)  # Shorter sleep for better responsiveness
             else:
-                file_path, file_mtime = queue_item
-                asset = None
+                # Yield to other threads briefly
+                self.msleep(1)
             
-            self.current_file = file_path
+            # Debug stats (periodic)
+            if DEBUG_MODE:
+                import time
+                current_time = time.time()
+                if current_time - self._last_stats_time > self._stats_interval:
+                    self._last_stats_time = current_time
+                    with self.futures_lock:
+                        active_count = len(self.active_futures)
+                    queue_size = len(self.queue)
+                    result_queue_size = self.result_queue.qsize()
+                    print(f"[STATS] Queue: {queue_size} | Active: {active_count} | Results: {result_queue_size} | Progress: {self.processed_count}/{self.total_count}")
+    
+    def _submit_worker_job(self, file_path, file_mtime, asset, cache_key, is_sequence):
+        """Submit a job to the worker pool (extracted helper method)."""
+        if DEBUG_MODE:
+            print(f"[CACHE-THREAD] → Submitting to worker pool...")
+            print(f"[CACHE-THREAD] → Executor state: {self.executor}")
+        
+        # Auto-tag color space BEFORE submitting to worker
+        # This ensures tags are available when worker reads them
+        if self.metadata_manager:
+            try:
+                # Auto-tag EXR and TX files for color space detection
+                file_ext = str(file_path).lower()
+                if file_ext.endswith('.exr') or file_ext.endswith('.tx'):
+                    from .aces_color import auto_tag_file_colorspace
+                    auto_tag_file_colorspace(file_path, self.metadata_manager)
+                    if DEBUG_MODE:
+                        print(f"[CACHE-THREAD] ✓ Auto-tagged: {Path(file_path).name}")
+            except Exception as tag_error:
+                if DEBUG_MODE:
+                    print(f"[CACHE-THREAD] ⚠ Auto-tag failed: {tag_error}")
+        
+        self.cache_status.emit("generating")
+        
+        # Submit worker job (CPU-intensive work happens here in parallel)
+        future = self.executor.submit(
+            self._generate_thumbnail_data,
+            file_path,
+            asset
+        )
+        
+        if DEBUG_MODE:
+            print(f"[CACHE-THREAD] → Future created: {future}")
+        
+        # IMPORTANT: Store metadata FIRST, then add callback
+        # This prevents race condition where callback fires before metadata exists
+        with self.futures_lock:
+            self.active_futures[file_path] = {
+                'future': future,
+                'file_path': file_path,
+                'file_mtime': file_mtime,
+                'asset': asset,
+                'cache_key': cache_key,
+                'is_sequence': is_sequence
+            }
+        
+        # Add callback AFTER metadata is stored
+        future.add_done_callback(
+            lambda f, fp=file_path: self._worker_done_callback(f, fp)
+        )
+        
+        if DEBUG_MODE:
+            print(f"[CACHE-THREAD] → Callback registered")
+            with self.futures_lock:
+                active_count = len(self.active_futures)
+            print(f"[CACHE-THREAD] ⚡ Worker job submitted (active jobs: {active_count})")
+
+    def _worker_done_callback(self, future, file_path):
+        """
+        Callback when worker thread completes a job.
+        Puts result in queue for main thread to process.
+        Thread-safe - called by worker threads.
+        """
+        if DEBUG_MODE:
+            import threading
+            thread_name = threading.current_thread().name
+            print(f"[{thread_name}] 📥 Callback triggered for: {Path(file_path).name}")
+        
+        import time
+        
+        # Try to get job info (with retry in case metadata not yet stored)
+        job_info = None
+        for retry in range(100):  # Try up to 100 times (100ms total)
+            with self.futures_lock:
+                job_info = self.active_futures.pop(file_path, None)
             
-            # Increment processed count and emit progress
-            self.processed_count += 1
-            if self.total_count > 0:
-                self.progress_update.emit(self.processed_count, self.total_count)
+            if job_info:
+                if DEBUG_MODE:
+                    import threading
+                    thread_name = threading.current_thread().name
+                    print(f"[{thread_name}] ✓ Job info found (retry: {retry})")
+                break
+            
+            # Metadata not yet stored, wait briefly and retry
+            if DEBUG_MODE and retry == 0:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] ⏳ Waiting for metadata to be stored...")
+            time.sleep(0.001)  # 1ms wait
+        
+        if not job_info:
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] ✗ No job info found after retries: {Path(file_path).name}")
+            return
+        
+        try:
+            # Get result from future
+            result_data = future.result()
+            
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                result_type = "SUCCESS" if result_data is not None else "NULL"
+                print(f"[{thread_name}] ✓ Worker completed: {Path(file_path).name} ({result_type})")
+            
+            # Put in result queue for main thread
+            self.result_queue.put({
+                'file_path': file_path,
+                'file_mtime': job_info['file_mtime'],
+                'cache_key': job_info['cache_key'],
+                'is_sequence': job_info['is_sequence'],
+                'success': True,
+                'data': result_data
+            })
+            
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] → Result queued for main thread")
+            
+        except Exception as e:
+            # Worker encountered an error
+            if DEBUG_MODE:
+                print(f"[WORKER] Error generating thumbnail for {Path(file_path).name}: {e}")
+            
+            self.result_queue.put({
+                'file_path': file_path,
+                'file_mtime': job_info['file_mtime'],
+                'cache_key': job_info['cache_key'],
+                'is_sequence': job_info['is_sequence'],
+                'success': False,
+                'error': str(e)
+            })
+    
+    def _numpy_to_pixmap(self, img_data):
+        """
+        Convert numpy array to QPixmap.
+        MUST be called from main QThread (not worker threads).
+        
+        Args:
+            img_data: dict with 'array', 'width', 'height', 'channels'
+                      'is_rgb': True if already in RGB format (TurboJPEG), False if BGR (OpenCV)
+        
+        Returns:
+            QPixmap or None
+        """
+        if img_data is None:
+            return None
+        
+        try:
+            import numpy as np
+            import cv2
+            
+            img_array = img_data['array']
+            width = img_data['width']
+            height = img_data['height']
+            channels = img_data['channels']
+            is_rgb = img_data.get('is_rgb', False)  # Default: BGR (OpenCV)
+            
+            # Ensure uint8
+            if img_array.dtype != np.uint8:
+                img_array = img_array.astype(np.uint8)
+            
+            # Qt's Format_RGB888 expects RGB format
+            # OpenCV outputs BGR, so we need to convert BGR→RGB
+            # TurboJPEG/EXR/PIL output RGB, so no conversion needed
+            
+            # TEMP DEBUG for BGR/RGB issue
+            debug_file_path = img_data.get('_debug_file_path')
+            if debug_file_path:
+                from pathlib import Path
+                print(f"[PIXMAP-EXR] {Path(debug_file_path).name}: {width}×{height}, {channels} ch, is_rgb={is_rgb}")
+            
+            if channels == 3:
+                if is_rgb:
+                    # Already RGB (from TurboJPEG) - no conversion
+                    if DEBUG_MODE:
+                        print(f"[PIXMAP] → RGB format (no conversion)")
+                else:
+                    # BGR from OpenCV - convert to RGB
+                    if DEBUG_MODE:
+                        print(f"[PIXMAP] → BGR format (converting to RGB)")
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+            elif channels == 4:
+                if is_rgb:
+                    # RGBA - no conversion
+                    pass
+                else:
+                    # BGRA from OpenCV - convert to RGBA
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2RGBA)
+            
+            if PYSIDE_VERSION == 6:
+                from PySide6.QtGui import QImage
+            else:
+                from PySide2.QtGui import QImage
+            
+            bytes_per_line = width * channels
+            
+            if channels == 3:
+                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+            elif channels == 4:
+                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGBA8888)
+            elif channels == 1:
+                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_Grayscale8)
+            else:
+                if DEBUG_MODE:
+                    print(f"[PIXMAP] Unsupported channel count: {channels}")
+                return None
+            
+            pixmap = QPixmap.fromImage(q_image.copy())
+            return pixmap
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[PIXMAP] Error converting to QPixmap: {e}")
+            return None
+    
+    def _generate_thumbnail_data(self, file_path, asset=None):
+        """
+        Generate thumbnail data (numpy array) - runs in worker thread.
+        This is the CPU-intensive part that can be parallelized.
+        
+        IMPORTANT: Does NOT create QPixmap (not thread-safe).
+        Returns numpy array that will be converted to QPixmap in main thread.
+        
+        Args:
+            file_path: Path to file
+            asset: Optional AssetItem object
+        
+        Returns:
+            dict with 'array', 'width', 'height', 'channels' or None
+        """
+        try:
+            # Reuse existing _generate_thumbnail logic but return numpy array
+            # instead of QPixmap
+            from .utils import get_thumbnail_method
+            
+            # Check if this is a sequence - use middle frame for thumbnail
+            if asset and asset.is_sequence and asset.sequence:
+                middle_frame_path = asset.sequence.get_middle_frame()
+                if middle_frame_path:
+                    file_path = middle_frame_path
+            
+            extension = os.path.splitext(str(file_path))[1].lower()
+            
+            # Get thumbnail method from config
+            thumbnail_method = get_thumbnail_method(extension)
+            
+            if thumbnail_method != 'none':
+                # Generate actual thumbnail from file - returns numpy array data
+                return self._generate_image_thumbnail_data(file_path)
+            
+            # 3D files and other types - return None (delegate will draw placeholder)
+            return None
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[WORKER] Error in _generate_thumbnail_data: {e}")
+            raise
+    
+    def _generate_image_thumbnail_data(self, file_path):
+        """
+        Worker-thread-safe version of _generate_image_thumbnail.
+        Returns numpy array instead of QPixmap (for thread safety).
+        
+        This method does all CPU-intensive work (decode, resize, color conversion)
+        and returns raw image data that will be converted to QPixmap in main thread.
+        
+        Args:
+            file_path: Path to image file
+            
+        Returns:
+            dict with 'array', 'width', 'height', 'channels' or None
+        """
+        try:
+            import numpy as np
+            extension = os.path.splitext(str(file_path))[1].lower()
+            
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] 🔧 Processing: {Path(file_path).name} ({extension})")
+            
+            # Special handling for video files - extract first frame
+            if extension in ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv']:
+                try:
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] → Using OpenCV video capture for {extension}")
+                    
+                    return self._generate_video_thumbnail_data(file_path)
+                except Exception as video_error:
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] ✗ Video thumbnail failed: {video_error}")
+                    return None
+            
+            # For formats that need special handling, process them here
+            # Most CPU-intensive formats (TIFF, HDR, EXR, PSD, TGA, etc.)
+            
+            if extension in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tiff', '.tif', '.tga', '.hdr']:
+                # TurboJPEG for JPEG files (2-3x faster than OpenCV)
+                if extension in ['.jpg', '.jpeg'] and TURBOJPEG_AVAILABLE:
+                    try:
+                        if DEBUG_MODE:
+                            import threading
+                            thread_name = threading.current_thread().name
+                            print(f"[{thread_name}] → Using TurboJPEG for {extension}")
+                        
+                        # Read file into memory
+                        with open(str(file_path), 'rb') as f:
+                            jpeg_data = f.read()
+                        
+                        # Decode with TurboJPEG (fast!)
+                        # scaling_factor: (1, 1)=full, (1, 2)=1/2, (1, 4)=1/4, (1, 8)=1/8
+                        # For 256px thumbnails, use 1/8 scale for maximum speed
+                        # IMPORTANT: Specify TJPF_RGB pixel format (default is BGR!)
+                        from turbojpeg import TJPF_RGB
+                        img = TURBOJPEG_INSTANCE.decode(jpeg_data, pixel_format=TJPF_RGB, scaling_factor=(1, 8))
+                        
+                        if DEBUG_MODE:
+                            print(f"[{thread_name}] ✓ TurboJPEG loaded: {img.shape}")
+                        
+                        # TurboJPEG returns RGB format (not BGR like OpenCV!)
+                        height, width = img.shape[:2]
+                        channels = img.shape[2] if len(img.shape) == 3 else 1
+                        
+                        # Resize if still too large
+                        if width > self.thumbnail_size or height > self.thumbnail_size:
+                            import cv2
+                            scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                            new_width = int(width * scale)
+                            new_height = int(height * scale)
+                            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                            height, width = new_height, new_width
+                        
+                        if DEBUG_MODE:
+                            print(f"[{thread_name}] → Returning: {width}×{height}, {channels} channels")
+                        
+                        return {
+                            'array': img,
+                            'width': width,
+                            'height': height,
+                            'channels': channels,
+                            'is_rgb': True  # TurboJPEG outputs RGB
+                        }
+                    except Exception as turbo_error:
+                        if DEBUG_MODE:
+                            print(f"[{thread_name}] ✗ TurboJPEG failed: {turbo_error}, falling back to OpenCV")
+                        # Fall through to OpenCV
+                
+                # Use OpenCV for fast decoding and resizing (thread-safe)
+                import cv2
+                cv2.setLogLevel(0)  # Silent
+                
+                if DEBUG_MODE:
+                    import threading
+                    thread_name = threading.current_thread().name
+                    print(f"[{thread_name}] → Using OpenCV for {extension}")
+                
+                # Get optimized imread flags
+                imread_flags = self._get_opencv_imread_flags()
+                
+                # Handle non-ASCII paths
+                file_path_str = str(file_path)
+                has_non_ascii = any(ord(c) > 127 for c in file_path_str)
+                
+                if DEBUG_MODE:
+                    print(f"[{thread_name}] → Non-ASCII path: {has_non_ascii}")
+                
+                img = None
+                if has_non_ascii:
+                    # Buffer method for non-ASCII paths
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] → Loading via buffer...")
+                    with open(file_path_str, 'rb') as f:
+                        file_bytes = np.frombuffer(f.read(), np.uint8)
+                    img = cv2.imdecode(file_bytes, imread_flags)
+                else:
+                    # Direct imread
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] → Loading via cv2.imread...")
+                    img = cv2.imread(file_path_str, imread_flags)
+                
+                if img is None:
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] ✗ OpenCV failed to load image, trying PIL...")
+                    # Fall through to PIL fallback below
+                else:
+                    if DEBUG_MODE:
+                        print(f"[{thread_name}] ✓ OpenCV loaded: {img.shape}")
+                    
+                    # Keep in BGR format (will be converted to RGB in _numpy_to_pixmap)
+                    if len(img.shape) == 3:
+                        channels = img.shape[2]
+                    else:
+                        # Grayscale - convert to BGR for consistency
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                        channels = 3
+                    
+                    # Normalize bit depth
+                    if img.dtype == np.uint16:
+                        img = (img / 257).astype(np.uint8)
+                    elif img.dtype in [np.float32, np.float64]:
+                        img = np.clip(img, 0, 1)
+                        img = (img * 255).astype(np.uint8)
+                    
+                    # Resize
+                    height, width = img.shape[:2]
+                    if width > self.thumbnail_size or height > self.thumbnail_size:
+                        scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                        new_width = int(width * scale)
+                        new_height = int(height * scale)
+                        img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                        height, width = new_height, new_width
+                    
+                    if DEBUG_MODE:
+                        import threading
+                        thread_name = threading.current_thread().name
+                        print(f"[{thread_name}] → Returning: {width}×{height}, {channels} channels")
+                    
+                    return {
+                        'array': img,
+                        'width': width,
+                        'height': height,
+                        'channels': channels,
+                        'is_rgb': False  # OpenCV outputs BGR
+                    }
+            
+            elif extension == '.tx':
+                # TX: Use OpenImageIO loader
+                return self._generate_tx_thumbnail_data(file_path)
+            
+            elif extension == '.pdf':
+                # PDF: Use PyMuPDF loader
+                return self._generate_pdf_thumbnail_data(file_path)
+            
+            elif extension == '.exr':
+                # EXR: Use optimized loader but return numpy array
+                return self._generate_exr_thumbnail_data(file_path)
+            
+            elif extension == '.psd':
+                # PSD: Use PIL/psd-tools
+                return self._generate_psd_thumbnail_data(file_path)
+            
+            # For other formats or if OpenCV fails, fall back to QPixmap method
+            # NOTE: This is less optimal as it requires QPixmap creation in worker thread
+            # But we'll do a workaround by using PIL/imageio for thread-safe loading
+            
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] → Trying PIL fallback...")
             
             try:
-                # For sequences, use pattern as cache key instead of file path
-                cache_key = file_path
-                is_sequence = asset and asset.is_sequence and asset.sequence
-                if is_sequence:
-                    # Use sequence pattern as cache key (e.g. "render_####.jpg")
-                    cache_key = str(asset.sequence.pattern)
+                from PIL import Image
+                Image.MAX_IMAGE_PIXELS = None
+                
+                pil_img = Image.open(str(file_path))
+                pil_img = pil_img.convert('RGB')
+                pil_img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                
+                img_array = np.array(pil_img)
+                height, width = img_array.shape[:2]
+                channels = 3
                 
                 if DEBUG_MODE:
-                    print(f"[CACHE-THREAD] Processing: {Path(file_path).name}")
-                    import sys
-                    sys.stdout.flush()  # Force immediate print
+                    print(f"[{thread_name}] ✓ PIL loaded: {width}×{height}")
                 
-                # Check memory cache first
-                cached = self.memory_cache.get(cache_key)
-                if cached:
-                    if DEBUG_MODE:
-                        print(f"[CACHE-THREAD] → Found in memory cache")
-                    self.cache_status.emit("cache")
-                    self.thumbnail_ready.emit(file_path, cached)
-                    continue
-                
-                # Check disk cache (skip for sequences for now - always regenerate)
-                if not is_sequence:
-                    cached = self.disk_cache.get(file_path, file_mtime)
-                    if cached and not cached.isNull():
-                        # Valid cached pixmap
-                        if DEBUG_MODE:
-                            print(f"[CACHE-THREAD] → Found in disk cache")
-                        self.cache_status.emit("cache")
-                        self.memory_cache.set(file_path, cached)
-                        self.thumbnail_ready.emit(file_path, cached)
-                        continue
-                    elif DEBUG_MODE:
-                        print(f"[CACHE-THREAD] → NOT in disk cache, generating...")
-                
-                # Generate new thumbnail
+                return {
+                    'array': img_array,
+                    'width': width,
+                    'height': height,
+                    'channels': channels,
+                    'is_rgb': True  # PIL outputs RGB
+                }
+            except Exception as pil_error:
                 if DEBUG_MODE:
-                    print(f"[CACHE-THREAD] → Generating new thumbnail...")
-                self.cache_status.emit("generating")
-                pixmap = self._generate_thumbnail(file_path, asset)
-                
-                if pixmap and not pixmap.isNull():
-                    # Save to caches with configured JPEG quality
-                    if not is_sequence:
-                        self.disk_cache.set(file_path, file_mtime, pixmap, quality=self.jpeg_quality)
-                    self.memory_cache.set(cache_key, pixmap)
-                    
-                    # Emit signal
-                    self.thumbnail_ready.emit(file_path, pixmap)
-                # If None returned: no thumbnail generated (normal for 3D files)
-                # Delegate will draw placeholder directly - no error needed
-                    
-            except Exception as e:
-                # Only emit error for actual exceptions (image loading failures, etc.)
-                self.generation_failed.emit(file_path, str(e))
+                    print(f"[{thread_name}] ✗ PIL fallback failed: {pil_error}")
+                return None
             
-            finally:
-                self.current_file = None
+        except Exception as e:
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] ✗ EXCEPTION in _generate_image_thumbnail_data: {e}")
+                import traceback
+                traceback.print_exc()
+            raise
+    
+    def _generate_exr_thumbnail_data(self, file_path):
+        """
+        Generate EXR thumbnail as numpy array (worker thread safe).
+        Returns dict with array data instead of QPixmap.
+        
+        Includes ACES color management if file is tagged appropriately.
+        Supports all channel naming conventions (same as optimized loader).
+        """
+        try:
+            import numpy as np
+            import OpenEXR
+            import Imath
+            
+            # Open EXR file
+            exr_file = OpenEXR.InputFile(str(file_path))
+            header = exr_file.header()
+            
+            dw = header['dataWindow']
+            width = dw.max.x - dw.min.x + 1
+            height = dw.max.y - dw.min.y + 1
+            
+            # Get channels
+            channels_dict = header['channels']
+            channel_names = list(channels_dict.keys())
+            
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] EXR channels: {', '.join(channel_names)}")
+            
+            FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
+            
+            # Try to find RGB channels (supports multiple naming conventions)
+            rgb = None
+            
+            # 1. Try standard separate R, G, B channels
+            if all(c in channels_dict for c in ['R', 'G', 'B']):
+                if DEBUG_MODE:
+                    import threading
+                    thread_name = threading.current_thread().name
+                    print(f"[{thread_name}] → Using R/G/B channels")
+                r_str = exr_file.channel('R', FLOAT)
+                g_str = exr_file.channel('G', FLOAT)
+                b_str = exr_file.channel('B', FLOAT)
+                
+                r = np.frombuffer(r_str, dtype=np.float32).reshape(height, width)
+                g = np.frombuffer(g_str, dtype=np.float32).reshape(height, width)
+                b = np.frombuffer(b_str, dtype=np.float32).reshape(height, width)
+                
+                rgb = np.stack([r, g, b], axis=2)
+            
+            # 2. Try Beauty pass (common in render layers)
+            elif all(c in channels_dict for c in ['Beauty.R', 'Beauty.G', 'Beauty.B']):
+                if DEBUG_MODE:
+                    import threading
+                    thread_name = threading.current_thread().name
+                    print(f"[{thread_name}] → Using Beauty.R/G/B channels")
+                r_str = exr_file.channel('Beauty.R', FLOAT)
+                g_str = exr_file.channel('Beauty.G', FLOAT)
+                b_str = exr_file.channel('Beauty.B', FLOAT)
+                
+                r = np.frombuffer(r_str, dtype=np.float32).reshape(height, width)
+                g = np.frombuffer(g_str, dtype=np.float32).reshape(height, width)
+                b = np.frombuffer(b_str, dtype=np.float32).reshape(height, width)
+                
+                rgb = np.stack([r, g, b], axis=2)
+            
+            # 3. Try first layer with .R .G .B (generic multi-layer)
+            if rgb is None:
+                layer_prefixes = set()
+                for name in channel_names:
+                    if '.' in name:
+                        prefix = name.rsplit('.', 1)[0]
+                        layer_prefixes.add(prefix)
+                
+                # Try each layer prefix
+                for prefix in sorted(layer_prefixes):
+                    r_name = f"{prefix}.R"
+                    g_name = f"{prefix}.G"
+                    b_name = f"{prefix}.B"
+                    if all(c in channels_dict for c in [r_name, g_name, b_name]):
+                        if DEBUG_MODE:
+                            import threading
+                            thread_name = threading.current_thread().name
+                            print(f"[{thread_name}] → Using layer: {prefix}")
+                        r_str = exr_file.channel(r_name, FLOAT)
+                        g_str = exr_file.channel(g_name, FLOAT)
+                        b_str = exr_file.channel(b_name, FLOAT)
+                        
+                        r = np.frombuffer(r_str, dtype=np.float32).reshape(height, width)
+                        g = np.frombuffer(g_str, dtype=np.float32).reshape(height, width)
+                        b = np.frombuffer(b_str, dtype=np.float32).reshape(height, width)
+                        
+                        rgb = np.stack([r, g, b], axis=2)
+                        break
+            
+            # 4. Try single channel (grayscale) - Y, Z, depth, A, alpha, luminance
+            if rgb is None:
+                single_channels = ["Y", "Z", "depth", "A", "alpha", "luminance"]
+                for ch_name in single_channels:
+                    if ch_name in channels_dict:
+                        if DEBUG_MODE:
+                            import threading
+                            thread_name = threading.current_thread().name
+                            print(f"[{thread_name}] → Using single channel: {ch_name}")
+                        gray_str = exr_file.channel(ch_name, FLOAT)
+                        gray = np.frombuffer(gray_str, dtype=np.float32).reshape(height, width)
+                        # Convert to RGB by repeating channel
+                        rgb = np.stack([gray, gray, gray], axis=2)
+                        break
+            
+            # 5. Last resort: use ANY available channel as grayscale
+            if rgb is None and len(channels_dict) > 0:
+                first_channel_name = channel_names[0]
+                if DEBUG_MODE:
+                    import threading
+                    thread_name = threading.current_thread().name
+                    print(f"[{thread_name}] → Using first available: {first_channel_name}")
+                gray_str = exr_file.channel(first_channel_name, FLOAT)
+                gray = np.frombuffer(gray_str, dtype=np.float32).reshape(height, width)
+                # Convert to RGB by repeating channel
+                rgb = np.stack([gray, gray, gray], axis=2)
+            
+            if rgb is None:
+                if DEBUG_MODE:
+                    print(f"[EXR-DATA] No usable channels found")
+                return None
+            
+            # Check if we should use ACES color management
+            use_aces = False
+            if self.metadata_manager:
+                try:
+                    file_metadata = self.metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                    
+                    # Check for ACEScg tag (case-insensitive)
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                        if DEBUG_MODE:
+                            import threading
+                            thread_name = threading.current_thread().name
+                            print(f"[{thread_name}] → EXR: Using ACES view transform")
+                except Exception as tag_error:
+                    if DEBUG_MODE:
+                        print(f"[EXR-DATA] Tag check failed: {tag_error}")
+            
+            # Apply tone mapping (ACES or standard)
+            if use_aces:
+                try:
+                    from .aces_color import apply_aces_view_transform
+                    # Apply ACES with -1 stop compensation
+                    rgb_tonemapped = apply_aces_view_transform(rgb, exposure=-1.0)
+                    if DEBUG_MODE:
+                        import threading
+                        thread_name = threading.current_thread().name
+                        print(f"[{thread_name}] → EXR: Applied ACES RRT+ODT (exposure: -1.0)")
+                except Exception as aces_error:
+                    if DEBUG_MODE:
+                        print(f"[EXR-DATA] ACES failed, using Reinhard: {aces_error}")
+                    # Fallback to Reinhard
+                    rgb = np.clip(rgb, 0, None)  # Clamp negatives FIRST
+                    rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                    gamma = 1.0 / 2.2
+                    rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            else:
+                # Standard Reinhard tone mapping for Linear sRGB
+                rgb = np.clip(rgb, 0, None)  # Clamp negatives FIRST
+                rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                
+                # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
+                rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            
+            # Convert to 8-bit
+            rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+            
+            # Resize if needed
+            if width > self.thumbnail_size or height > self.thumbnail_size:
+                import cv2
+                scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                rgb_8bit = cv2.resize(rgb_8bit, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                height, width = new_height, new_width
+            
+            return {
+                'array': rgb_8bit,
+                'width': width,
+                'height': height,
+                'channels': 3,
+                'is_rgb': True  # EXR outputs RGB (not BGR)
+            }
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[EXR-DATA] Error: {e}")
+            raise
+    
+    def _generate_tx_thumbnail_data(self, file_path):
+        """
+        Generate TX (RenderMan texture) thumbnail as numpy array (worker thread safe).
+        Returns dict with array data instead of QPixmap.
+        
+        Uses OpenImageIO to load .tx files with mip level support.
+        Includes ACES color management if file is tagged appropriately.
+        """
+        try:
+            import numpy as np
+            
+            # Load using OpenImageIO (returns float32 HDR data)
+            from .widgets import load_oiio_image_array
+            
+            # Load mip level 1 for fast thumbnail (half resolution)
+            rgb = load_oiio_image_array(file_path, max_size=self.thumbnail_size, mip_level=1)
+            
+            if rgb is None:
+                return None
+            
+            height, width = rgb.shape[:2]
+            channels = rgb.shape[2] if len(rgb.shape) == 3 else 1
+            
+            # Check if we should use ACES color management (same logic as EXR)
+            use_aces = False
+            if self.metadata_manager:
+                try:
+                    file_metadata = self.metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names_lower = [tag['name'].lower() for tag in file_tags]
+                    
+                    # Check for ACEScg tag (case-insensitive)
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                        if DEBUG_MODE:
+                            import threading
+                            thread_name = threading.current_thread().name
+                            print(f"[{thread_name}] → TX: Using ACES view transform")
+                except Exception as tag_error:
+                    if DEBUG_MODE:
+                        print(f"[TX-DATA] Tag check failed: {tag_error}")
+            
+            # Apply tone mapping (ACES or standard)
+            if use_aces:
+                try:
+                    from .aces_color import apply_aces_view_transform
+                    # Apply ACES with -1 stop compensation
+                    rgb_tonemapped = apply_aces_view_transform(rgb, exposure=-1.0)
+                    if DEBUG_MODE:
+                        import threading
+                        thread_name = threading.current_thread().name
+                        print(f"[{thread_name}] → TX: Applied ACES RRT+ODT (exposure: -1.0)")
+                except Exception as aces_error:
+                    if DEBUG_MODE:
+                        print(f"[TX-DATA] ACES failed, using Reinhard: {aces_error}")
+                    # Fallback to Reinhard
+                    rgb = np.clip(rgb, 0, None)  # Clamp negatives FIRST
+                    rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                    gamma = 1.0 / 2.2
+                    rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            else:
+                # Standard Reinhard tone mapping for Linear sRGB
+                rgb = np.clip(rgb, 0, None)  # Clamp negatives FIRST
+                rgb_tonemapped = rgb / (1.0 + rgb)  # Reinhard
+                
+                # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
+                rgb_tonemapped = np.power(rgb_tonemapped, gamma)
+            
+            # Convert to 8-bit
+            rgb_8bit = (rgb_tonemapped * 255).astype(np.uint8)
+            
+            return {
+                'array': rgb_8bit,
+                'width': width,
+                'height': height,
+                'channels': channels,
+                'is_rgb': True  # OIIO outputs RGB
+            }
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[TX-DATA] Error: {e}")
+            raise
+    
+    def _generate_psd_thumbnail_data(self, file_path):
+        """
+        Generate PSD thumbnail as numpy array (worker thread safe).
+        Returns dict with array data instead of QPixmap.
+        """
+        try:
+            import numpy as np
+            from PIL import Image
+            
+            # Try to load PSD composite first
+            try:
+                from psd_tools import PSDImage
+                psd = PSDImage.open(str(file_path))
+                pil_img = psd.composite()
+                
+                if pil_img:
+                    pil_img = pil_img.convert('RGB')
+                    pil_img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                    
+                    img_array = np.array(pil_img)
+                    height, width = img_array.shape[:2]
+                    
+                    return {
+                        'array': img_array,
+                        'width': width,
+                        'height': height,
+                        'channels': 3,
+                        'is_rgb': True  # PIL/psd-tools output RGB
+                    }
+            except Exception as psd_error:
+                if DEBUG_MODE:
+                    print(f"[PSD-DATA] psd-tools failed: {psd_error}")
+            
+            # Fallback to PIL
+            Image.MAX_IMAGE_PIXELS = None
+            pil_img = Image.open(str(file_path))
+            pil_img = pil_img.convert('RGB')
+            pil_img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+            
+            img_array = np.array(pil_img)
+            height, width = img_array.shape[:2]
+            
+            return {
+                'array': img_array,
+                'width': width,
+                'height': height,
+                'channels': 3,
+                'is_rgb': True  # PIL outputs RGB
+            }
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[PSD-DATA] Error: {e}")
+            raise
+    
+    def _generate_pdf_thumbnail_data(self, file_path):
+        """
+        Generate PDF thumbnail as numpy array (worker thread safe).
+        Returns dict with array data instead of QPixmap.
+        
+        Renders first page using PyMuPDF (fitz).
+        """
+        try:
+            import numpy as np
+            
+            # Check if PyMuPDF is available
+            try:
+                import fitz  # PyMuPDF
+            except ImportError:
+                if DEBUG_MODE:
+                    print(f"[PDF-DATA] PyMuPDF not available")
+                return None
+            
+            # Open PDF document
+            doc = fitz.open(str(file_path))
+            
+            # Check if encrypted
+            if doc.is_encrypted:
+                doc.close()
+                return None
+            
+            page_count = len(doc)
+            if page_count == 0:
+                doc.close()
+                return None
+            
+            # Get first page
+            page = doc[0]
+            
+            # Get page dimensions
+            rect = page.rect
+            width = int(rect.width)
+            height = int(rect.height)
+            
+            # Calculate zoom to fit thumbnail size
+            zoom = min(self.thumbnail_size / width, self.thumbnail_size / height, 2.0)
+            mat = fitz.Matrix(zoom, zoom)
+            
+            # Render page to pixmap
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            
+            # Convert to numpy array (RGB format)
+            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            
+            # Close document
+            doc.close()
+            
+            return {
+                'array': img_array,
+                'width': pix.width,
+                'height': pix.height,
+                'channels': pix.n,
+                'is_rgb': True  # PyMuPDF outputs RGB
+            }
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[PDF-DATA] Error: {e}")
+            return None
     
     def _get_opencv_imread_flags(self):
         """
@@ -1095,6 +2191,77 @@ class ThumbnailGenerator(QThread):
         
         return result
     
+    def _generate_video_thumbnail_data(self, file_path):
+        """
+        Worker-thread-safe video thumbnail generation.
+        Returns numpy array instead of QPixmap.
+        
+        Args:
+            file_path: Path to video file
+            
+        Returns:
+            dict with 'array', 'width', 'height', 'channels' or None
+        """
+        try:
+            import cv2
+            import numpy as np
+            import threading
+            
+            thread_name = threading.current_thread().name if DEBUG_MODE else None
+            
+            # Suppress OpenCV/FFmpeg verbose output
+            cv2.setLogLevel(0)
+            
+            # Open video file
+            cap = cv2.VideoCapture(str(file_path))
+            
+            if not cap.isOpened():
+                if DEBUG_MODE:
+                    print(f"[{thread_name}] ✗ Failed to open video file")
+                return None
+            
+            # Read first frame (faster than seeking to middle)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                if DEBUG_MODE:
+                    print(f"[{thread_name}] ✗ Failed to read video frame")
+                return None
+            
+            if DEBUG_MODE:
+                print(f"[{thread_name}] ✓ Video frame captured: {frame.shape}")
+            
+            # Keep in BGR format (will be converted to RGB in _numpy_to_pixmap)
+            height, width = frame.shape[:2]
+            channels = 3
+            
+            # Resize if needed
+            if width > self.thumbnail_size or height > self.thumbnail_size:
+                scale = min(self.thumbnail_size / width, self.thumbnail_size / height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                height, width = new_height, new_width
+            
+            if DEBUG_MODE:
+                print(f"[{thread_name}] → Returning: {width}×{height}, {channels} channels")
+            
+            return {
+                'array': frame,
+                'width': width,
+                'height': height,
+                'channels': channels,
+                'is_rgb': False  # OpenCV BGR format
+            }
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                import threading
+                thread_name = threading.current_thread().name
+                print(f"[{thread_name}] ✗ Video thumbnail exception: {e}")
+            return None
+
     def _generate_video_thumbnail(self, file_path):
         """
         Generate thumbnail from video file by extracting middle frame

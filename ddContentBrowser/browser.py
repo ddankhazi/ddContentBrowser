@@ -433,12 +433,20 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         quality_map = {"low": 60, "medium": 85, "high": 95}
         jpeg_quality = quality_map.get(quality_str, 85)
         
+        # Get worker thread count from settings (default: None = auto-detect based on CPU cores)
+        # Higher values = faster thumbnail generation but more CPU/memory usage
+        # If set to 0, auto-detect optimal count (recommended)
+        max_workers = self.settings_manager.get("thumbnails", "worker_threads", 0)
+        if max_workers == 0:
+            max_workers = None  # Auto-detect based on CPU cores
+        
         self.thumbnail_generator = ThumbnailGenerator(
             self.memory_cache,
             self.disk_cache,
             thumbnail_generation_size,
             jpeg_quality,
-            self.metadata_manager  # Pass metadata_manager for auto-tagging
+            self.metadata_manager,  # Pass metadata_manager for auto-tagging
+            max_workers  # Number of parallel worker threads (None = auto-detect)
         )
         
         # Connect thumbnail generator signals
