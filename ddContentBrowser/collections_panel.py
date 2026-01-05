@@ -297,21 +297,23 @@ class CollectionsPanel(QWidget):
         if action is None:
             return
         
+        # Handle actions
         if action == rename_action:
             self.rename_collection(collection_name)
         elif action == delete_action:
             self.delete_collection(collection_name)
         elif action == clear_color_action:
             self.clear_collection_bg_color(collection_name)
-        elif color_menu:
-            for act, hexcode in color_actions:
-                if action == act:
-                    self.set_collection_bg_color(collection_name, item, hexcode)
-                    break
         elif export_action and action == export_action:
             self.export_collection_to_folder(collection_name)
         elif cleanup_action and action == cleanup_action:
             self.cleanup_collection(collection_name)
+        elif color_menu:
+            # Check if it's a color action
+            for act, hexcode in color_actions:
+                if action == act:
+                    self.set_collection_bg_color(collection_name, item, hexcode)
+                    break
 
     def set_collection_bg_color(self, collection_name, item, hexcode):
         from PySide6.QtGui import QColor

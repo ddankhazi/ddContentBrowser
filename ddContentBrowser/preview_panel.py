@@ -3268,8 +3268,45 @@ class PreviewPanel(QWidget):
             
             # === Standard images (JPG, PNG, etc.) ===
             else:
-                # For large TGA/PSD files, use PIL directly (Qt has allocation limit issues)
-                if file_path_str.lower().endswith(('.tga', '.psd')):
+                # For PSD files, use psd-tools (NOT PIL - color issues)
+                # For TGA files, use PIL
+                if file_path_str.lower().endswith('.psd'):
+                    # Check if we already have the PSD loaded in cache (from preview)
+                    # If yes, just use it (don't reload!)
+                    if file_path_str in self.preview_cache:
+                        print(f"[Preview-ZOOM] Using cached PSD (no reload needed)")
+                        cached_data = self.preview_cache[file_path_str]
+                        # Cache stores tuple: (pixmap, resolution_str)
+                        self.full_res_pixmap = cached_data[0]
+                        # Parse resolution from cached string
+                        resolution_parts = cached_data[1].split(' x ')
+                        if len(resolution_parts) == 2:
+                            self.original_image_size = (int(resolution_parts[0]), int(resolution_parts[1]))
+                        self.is_image_scaled = False
+                        self.scaled_image_size = None
+                    else:
+                        # Not in cache, load it now
+                        try:
+                            print(f"[Preview-ZOOM] Loading PSD with psd-tools composite (max 8K)...")
+                            from .cache import ThumbnailGenerator
+                            
+                            # Load full composite up to 8K resolution
+                            composite_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=8192)
+                            
+                            if composite_pixmap and not composite_pixmap.isNull():
+                                print(f"[Preview-ZOOM] ✓ PSD composite: {composite_pixmap.width()}x{composite_pixmap.height()}")
+                                self.full_res_pixmap = composite_pixmap
+                                self.original_image_size = (composite_pixmap.width(), composite_pixmap.height())
+                                self.is_image_scaled = False
+                                self.scaled_image_size = None
+                            else:
+                                print(f"[Preview-ZOOM] ✗ PSD composite loading failed")
+                                self.full_res_pixmap = None
+                        except Exception as e:
+                            print(f"[Preview-ZOOM] PSD loading exception: {e}")
+                            self.full_res_pixmap = None
+                elif file_path_str.lower().endswith('.tga'):
+                    # TGA files - use PIL
                     try:
                         import sys
                         import os
@@ -3280,7 +3317,9 @@ class PreviewPanel(QWidget):
                         from PIL import Image
                         # Disable decompression bomb warning for large images
                         Image.MAX_IMAGE_PIXELS = None
+                        print(f"[Preview-ZOOM] Loading TGA with PIL: {file_path_str}")
                         pil_image = Image.open(file_path_str)
+                        print(f"[Preview-ZOOM] PIL opened: mode={pil_image.mode}, size={pil_image.size}")
                         
                         # Convert to RGB
                         if pil_image.mode not in ('RGB', 'L'):
@@ -3311,35 +3350,22 @@ class PreviewPanel(QWidget):
                         img_array = np.array(pil_image)
                         height, width = img_array.shape[:2]
                         
-                        bytes_per_line = width * 3
-                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                        self.full_res_pixmap = QPixmap.fromImage(q_image.copy())
-                    except Exception as pil_error:
-                        
-                        # Special handling for PSD files: try psd-tools first, then embedded thumbnail
-                        if file_path_str.lower().endswith('.psd'):
-                            try:
-                                from .cache import ThumbnailGenerator
-                                thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=2048)
-                                
-                                if thumbnail_pixmap and not thumbnail_pixmap.isNull():
-                                    self.full_res_pixmap = thumbnail_pixmap
-                                    self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
-                                    self.is_image_scaled = False
-                                    self.scaled_image_size = None
-                                else:
-                                    thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=2048)
-                                    if thumbnail_pixmap and not thumbnail_pixmap.isNull():
-                                        self.full_res_pixmap = thumbnail_pixmap
-                                        self.original_image_size = (thumbnail_pixmap.width(), thumbnail_pixmap.height())
-                                        self.is_image_scaled = False
-                                        self.scaled_image_size = None
-                                    else:
-                                        self.full_res_pixmap = None
-                            except Exception as thumb_error:
-                                self.full_res_pixmap = None
+                        # PIL RGB → Qt needs BGR byte order for Format_RGB888
+                        # OR use BGRA → Format_ARGB32 (more reliable on Windows)
+                        if img_array.shape[2] == 3:
+                            # Add alpha channel for consistent BGRA handling
+                            img_bgra = np.dstack([img_array[:, :, 2], img_array[:, :, 1], img_array[:, :, 0], np.full((height, width), 255, dtype=np.uint8)])
+                            bytes_per_line = width * 4
+                            q_image = QImage(img_bgra.tobytes(), width, height, bytes_per_line, QImage.Format_ARGB32)
                         else:
-                            self.full_res_pixmap = None
+                            bytes_per_line = width * 3
+                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                        
+                        self.full_res_pixmap = QPixmap.fromImage(q_image.copy())
+                        print(f"[Preview-ZOOM] ✓ TGA loaded: {width}x{height}")
+                    except Exception as pil_error:
+                        print(f"[Preview-ZOOM] TGA loading failed: {pil_error}")
+                        self.full_res_pixmap = None
                 else:
                     # Non-TGA files: Use QImageReader for consistency with normal preview (handles EXIF orientation automatically)
                     try:
@@ -3608,7 +3634,26 @@ class PreviewPanel(QWidget):
     def fit_preview_to_view(self):
         """Fit the entire preview image in view"""
         if self.pixmap_item:
-            self.graphics_view.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
+            # Reset transform before scaling
+            self.graphics_view.resetTransform()
+            
+            # Calculate scale to fit BOTH dimensions (use the smaller scale!)
+            # Add small margin (10px each side)
+            viewport_rect = self.graphics_view.viewport().rect()
+            scene_rect = self.graphics_scene.sceneRect()
+            margin = 10
+            available_width = viewport_rect.width() - 2 * margin
+            available_height = viewport_rect.height() - 2 * margin
+            
+            scale_x = available_width / scene_rect.width()
+            scale_y = available_height / scene_rect.height()
+            scale = min(scale_x, scale_y)  # Use SMALLER scale to fit both dimensions
+            
+            # Apply the scale
+            self.graphics_view.scale(scale, scale)
+            
+            # Center the image
+            self.graphics_view.centerOn(self.pixmap_item)
     
     def update_zoom_display(self):
         """Update display with current zoom level"""
@@ -4365,69 +4410,149 @@ class PreviewPanel(QWidget):
                                         self.current_text_item = None
                         elif file_ext.endswith(('.tga', '.psd')):
                             # TGA/PSD files - use PIL (Qt has allocation issues)
-                            try:
-                                import sys
-                                import os
-                                external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
-                                if external_libs not in sys.path:
-                                    sys.path.insert(0, external_libs)
-                                
-                                from PIL import Image
-                                Image.MAX_IMAGE_PIXELS = None
-                                pil_image = Image.open(file_path_str)
-                                
-                                # Get original size for resolution
-                                resolution_str = f"{pil_image.width} x {pil_image.height}"
-                                
-                                # Convert to RGB
-                                if pil_image.mode not in ('RGB', 'L'):
-                                    pil_image = pil_image.convert('RGB')
-                                elif pil_image.mode == 'L':
-                                    pil_image = pil_image.convert('RGB')
-                                
-                                # Resize for preview if needed (1024px max)
-                                if pil_image.width > 1024 or pil_image.height > 1024:
-                                    pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-                                
-                                # Convert to QPixmap
-                                import numpy as np
-                                img_array = np.array(pil_image)
-                                height, width = img_array.shape[:2]
-                                
-                                bytes_per_line = width * 3
-                                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                                pixmap = QPixmap.fromImage(q_image.copy())
-                                
-                                self.current_pixmap = pixmap
-                                self.add_to_cache(file_path_str, pixmap, resolution_str)
-                                self.fit_pixmap_to_label()
-                            except Exception as e:
-                                
-                                # Special handling for PSD files: try psd-tools first, then embedded thumbnail
-                                if file_ext.endswith('.psd'):
-                                    try:
-                                        from .cache import ThumbnailGenerator
-                                        thumbnail_pixmap = ThumbnailGenerator._load_psd_composite(Path(file_path_str), max_size=1024)
-                                        
-                                        if thumbnail_pixmap and not thumbnail_pixmap.isNull():
-                                            resolution_str = f"{thumbnail_pixmap.width()} x {thumbnail_pixmap.height()}"
-                                            self.current_pixmap = thumbnail_pixmap
-                                            self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
-                                            self.fit_pixmap_to_label()
+                            
+                            # For PSD files, use psd-tools directly instead of PIL
+                            # PIL may have color channel issues with Photoshop files
+                            if file_ext.endswith('.psd'):
+                                try:
+                                    import time
+                                    import sys
+                                    import os
+                                    external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+                                    if external_libs not in sys.path:
+                                        sys.path.insert(0, external_libs)
+                                    
+                                    from PIL import Image
+                                    Image.MAX_IMAGE_PIXELS = None
+                                    
+                                    start_time = time.time()
+                                    
+                                    # Get original dimensions first
+                                    with Image.open(file_path_str) as psd:
+                                        original_width = psd.width
+                                        original_height = psd.height
+                                        resolution_str = f"{original_width} x {original_height}"
+                                    
+                                    # Load PSD with PIL (fast path)
+                                    pil_image = Image.open(file_path_str)
+                                    
+                                    # Convert to RGB (handle all color modes)
+                                    if pil_image.mode not in ('RGB', 'RGBA'):
+                                        pil_image = pil_image.convert('RGB')
+                                    
+                                    # Scale to 2048 for preview display
+                                    max_preview = 2048
+                                    if pil_image.width > max_preview or pil_image.height > max_preview:
+                                        pil_image.thumbnail((max_preview, max_preview), Image.Resampling.LANCZOS)
+                                    
+                                    # Convert PIL to QPixmap
+                                    import numpy as np
+                                    img_array = np.array(pil_image)
+                                    height, width = img_array.shape[:2]
+                                    
+                                    # Handle RGB/RGBA
+                                    if len(img_array.shape) == 3:
+                                        channels = img_array.shape[2]
+                                        if channels == 4:
+                                            # RGBA
+                                            bytes_per_line = width * 4
+                                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGBA8888)
                                         else:
-                                            thumbnail_pixmap = ThumbnailGenerator._extract_psd_thumbnail(Path(file_path_str), thumbnail_size=1024)
-                                            if thumbnail_pixmap and not thumbnail_pixmap.isNull():
-                                                resolution_str = f"{thumbnail_pixmap.width()} x {thumbnail_pixmap.height()} (thumbnail)"
-                                                self.current_pixmap = thumbnail_pixmap
-                                                self.add_to_cache(file_path_str, thumbnail_pixmap, resolution_str)
-                                                self.fit_pixmap_to_label()
-                                            else:
-                                                self.graphics_scene.clear()
-                                                self.current_text_item = None
-                                    except Exception as thumb_error:
+                                            # RGB
+                                            bytes_per_line = width * 3
+                                            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                    else:
+                                        # Grayscale
+                                        bytes_per_line = width
+                                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_Grayscale8)
+                                    
+                                    composite_pixmap = QPixmap.fromImage(q_image.copy())
+                                    pil_image.close()
+                                    
+                                    if composite_pixmap and not composite_pixmap.isNull():
+                                        # Store in cache (for zoom mode)
+                                        self.add_to_cache(file_path_str, composite_pixmap, resolution_str)
+                                        
+                                        # Scale down for preview display (like other formats: TGA, TIFF use 1024)
+                                        # Use 2048 for PSD to maintain quality
+                                        max_preview = 2048
+                                        if composite_pixmap.width() > max_preview or composite_pixmap.height() > max_preview:
+                                            scale = min(max_preview / composite_pixmap.width(), max_preview / composite_pixmap.height())
+                                            new_width = int(composite_pixmap.width() * scale)
+                                            new_height = int(composite_pixmap.height() * scale)
+                                            display_pixmap = composite_pixmap.scaled(new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                                            print(f"[PREVIEW-DEBUG] Scaled to {new_width}x{new_height} for display")
+                                        else:
+                                            display_pixmap = composite_pixmap
+                                        
+                                        # Set display pixmap (will be used for preview)
+                                        self.current_pixmap = display_pixmap
+                                        
+                                        # Fit to view
+                                        self.fit_pixmap_to_label()
+                                        print(f"{'='*60}\n")
+                                    else:
+                                        print(f"[PREVIEW-DEBUG] ✗ PSD composite loading failed")
                                         self.graphics_scene.clear()
                                         self.current_text_item = None
-                                else:
+                                except Exception as e:
+                                    print(f"[PREVIEW-DEBUG] PSD loading exception: {e}")
+                                    self.graphics_scene.clear()
+                                    self.current_text_item = None
+                            else:
+                                # TGA files - use PIL
+                                try:
+                                    import sys
+                                    import os
+                                    external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+                                    if external_libs not in sys.path:
+                                        sys.path.insert(0, external_libs)
+                                    
+                                    from PIL import Image
+                                    Image.MAX_IMAGE_PIXELS = None
+                                    print(f"[PREVIEW-DEBUG] Opening TGA with PIL...")
+                                    pil_image = Image.open(file_path_str)
+                                    print(f"[PREVIEW-DEBUG] PIL opened: mode={pil_image.mode}, size={pil_image.size}")
+                                    
+                                    # Get original size for resolution
+                                    resolution_str = f"{pil_image.width} x {pil_image.height}"
+                                    
+                                    # Convert to RGB
+                                    if pil_image.mode not in ('RGB', 'L'):
+                                        print(f"[PREVIEW-DEBUG] Converting {pil_image.mode} -> RGB")
+                                        pil_image = pil_image.convert('RGB')
+                                    elif pil_image.mode == 'L':
+                                        print(f"[PREVIEW-DEBUG] Converting L -> RGB")
+                                        pil_image = pil_image.convert('RGB')
+                                    else:
+                                        print(f"[PREVIEW-DEBUG] Already RGB, no conversion needed")
+                                    
+                                    # Resize for preview if needed (1024px max)
+                                    if pil_image.width > 1024 or pil_image.height > 1024:
+                                        print(f"[PREVIEW-DEBUG] Resizing from {pil_image.width}x{pil_image.height} to fit 1024px")
+                                        pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                                        print(f"[PREVIEW-DEBUG] Resized to {pil_image.width}x{pil_image.height}")
+                                    
+                                    # Convert to QPixmap
+                                    import numpy as np
+                                    img_array = np.array(pil_image)
+                                    height, width = img_array.shape[:2]
+                                    
+                                    print(f"[PREVIEW-DEBUG] NumPy array shape: {img_array.shape}, dtype: {img_array.dtype}")
+                                    print(f"[PREVIEW-DEBUG] Converting to QImage with Format_RGB888...")
+                                    
+                                    bytes_per_line = width * 3
+                                    q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                    pixmap = QPixmap.fromImage(q_image.copy())
+                                    
+                                    print(f"[PREVIEW-DEBUG] ✓ QPixmap created: {pixmap.width()}x{pixmap.height()}")
+                                    print(f"{'='*60}\n")
+                                    
+                                    self.current_pixmap = pixmap
+                                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                                    self.fit_pixmap_to_label()
+                                except Exception as e:
+                                    print(f"[PREVIEW-DEBUG] TGA loading failed: {e}")
                                     self.graphics_scene.clear()
                                     self.current_text_item = None
                         else:
