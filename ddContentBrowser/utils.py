@@ -928,3 +928,67 @@ def format_sequence_pattern(base_name: str, padding: int, separator: str, extens
     else:
         return f"{base_name}{separator}{'#' * padding}{extension}"
 
+
+def apply_icc_to_srgb_pil(pil_image):
+    """
+    Convert a PIL image from its embedded ICC profile to sRGB.
+
+    Used by thumbnail generator, quick view, and preview panel to ensure
+    correct display on sRGB monitors for images tagged with Adobe RGB,
+    Display P3, ProPhoto RGB, etc.
+
+    Args:
+        pil_image: PIL Image object (may have an embedded ICC profile)
+
+    Returns:
+        tuple: (converted_image, color_space_name)
+               converted_image is sRGB after conversion (or original if already sRGB / no profile)
+               color_space_name is the detected source color space string (e.g. 'Adobe RGB (1998)')
+    """
+    color_space_name = 'sRGB'
+
+    icc_data = pil_image.info.get('icc_profile')
+    if not icc_data:
+        return pil_image, color_space_name
+
+    try:
+        import io
+        from PIL import ImageCms
+
+        src_profile = ImageCms.getOpenProfile(io.BytesIO(icc_data))
+        profile_name = ImageCms.getProfileName(src_profile).strip()
+        profile_desc = ImageCms.getProfileDescription(src_profile).strip()
+        combined = (profile_name + ' ' + profile_desc).lower()
+
+        if 'adobe rgb' in combined:
+            color_space_name = 'Adobe RGB (1998)'
+        elif 'display p3' in combined or 'p3-d65' in combined or 'p3 d65' in combined:
+            color_space_name = 'Display P3'
+        elif 'prophoto' in combined or 'romm rgb' in combined:
+            color_space_name = 'ProPhoto RGB'
+        elif 'rec. 2020' in combined or 'rec2020' in combined:
+            color_space_name = 'Rec. 2020'
+        elif 'srgb' in combined:
+            color_space_name = 'sRGB'
+        else:
+            cs_name = profile_desc if profile_desc else profile_name
+            color_space_name = cs_name[:50] if cs_name else 'Unknown Profile'
+
+        # No conversion needed if already sRGB
+        if color_space_name == 'sRGB':
+            return pil_image, color_space_name
+
+        # Convert to sRGB using PIL ImageCms (perceptual rendering intent)
+        srgb_profile = ImageCms.createProfile('sRGB')
+        if pil_image.mode not in ('RGB', 'RGBA'):
+            pil_image = pil_image.convert('RGB')
+        converted = ImageCms.profileToProfile(
+            pil_image, src_profile, srgb_profile,
+            renderingIntent=ImageCms.Intent.PERCEPTUAL,
+            outputMode='RGB'
+        )
+        return converted, color_space_name
+
+    except Exception:
+        return pil_image, color_space_name
+

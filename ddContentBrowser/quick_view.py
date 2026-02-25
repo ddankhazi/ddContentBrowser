@@ -1294,139 +1294,74 @@ MMB: Pan, Scroll Wheel: Zoom, F: Fit, Alt+MMB: Move Window
                         else:
                             pixmap = None
                 else:
-                    # Non-TGA files: Try QImageReader first for size limiting (better memory handling for 16K+ images)
+                    # Standard image formats (JPG, PNG, etc.)
+                    # Use PIL with ICC color space conversion → sRGB for correct display
                     try:
-                        from PySide6.QtGui import QImageReader
-                        from PySide6.QtCore import QSize
-                    
-                        image_reader = QImageReader(str(file_path))
-                        image_reader.setAllocationLimit(2048)  # 2 GB limit for large TGA files
-                        image_reader.setAutoTransform(True)  # Auto-apply EXIF orientation
-                        
-                        # Check image size before loading - limit to 8K (8192x8192) for performance
-                        image_size = image_reader.size()
+                        import sys as _sys, os as _os, warnings as _qv_warn
+                        _ext_libs = _os.path.join(_os.path.dirname(__file__), 'external_libs')
+                        if _ext_libs not in _sys.path:
+                            _sys.path.insert(0, _ext_libs)
+                        from PIL import Image as _QVPIL, ImageOps as _QVOps
+                        from .utils import apply_icc_to_srgb_pil
+                        import numpy as _qv_np
+                        _QVPIL.MAX_IMAGE_PIXELS = 200000000
+                        _qv_warn.filterwarnings('ignore', category=_QVPIL.DecompressionBombWarning)
+
+                        _qv_pil = _QVPIL.open(str(file_path))
+
+                        # Apply ICC → sRGB conversion for correct color display
+                        _qv_pil, _ = apply_icc_to_srgb_pil(_qv_pil)
+
+                        # Apply EXIF orientation
+                        try:
+                            _qv_pil = _QVOps.exif_transpose(_qv_pil)
+                        except Exception:
+                            pass
+
+                        if _qv_pil.mode != 'RGB':
+                            _qv_pil = _qv_pil.convert('RGB')
+
+                        # Scale down (8K limit)
                         max_dimension = 8192
-                        
-                        if image_size.width() > max_dimension or image_size.height() > max_dimension:
-                            # Scale down large images
-                            scale_factor = max_dimension / max(image_size.width(), image_size.height())
-                            new_width = int(image_size.width() * scale_factor)
-                            new_height = int(image_size.height() * scale_factor)
-                            image_reader.setScaledSize(QSize(new_width, new_height))
-                            print(f"[QuickView] Scaling down {image_size.width()}x{image_size.height()} to {new_width}x{new_height}")
-                        
-                        # Read image (or scaled version)
-                        image = image_reader.read()
-                        
-                        if not image.isNull():
-                            pixmap = QPixmap.fromImage(image)
-                        else:
-                            # QImageReader failed - raise exception to trigger fallback
-                            print(f"[QuickView] QImageReader returned null image")
-                            raise Exception("QImageReader could not read the image")
-                            
-                    except Exception as e:
-                        # Fallback to standard QPixmap loading
-                        print(f"[QuickView] QImageReader failed: {e}, trying PIL fallback...")
-                        
-                        # Try PIL for TGA/PSD/special formats
-                        if str(file_path).lower().endswith(('.tga', '.tiff', '.tif', '.psd')):
-                            try:
-                                import sys
-                                import os
-                                external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
-                                if external_libs not in sys.path:
-                                    sys.path.insert(0, external_libs)
-                                
-                                from PIL import Image
-                                pil_image = Image.open(str(file_path))
-                                
-                                # Convert to RGB
-                                if pil_image.mode not in ('RGB', 'L'):
-                                    pil_image = pil_image.convert('RGB')
-                                elif pil_image.mode == 'L':
-                                    pil_image = pil_image.convert('RGB')
-                                
-                                # Scale down if too large for Quick View (8K limit)
-                                max_dimension = 8192
-                                if pil_image.width > max_dimension or pil_image.height > max_dimension:
-                                    scale_factor = max_dimension / max(pil_image.width, pil_image.height)
-                                    new_width = int(pil_image.width * scale_factor)
-                                    new_height = int(pil_image.height * scale_factor)
-                                    pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                    print(f"[QuickView] PIL scaled down to {new_width}x{new_height}")
-                                
-                                # Convert PIL to QPixmap
-                                import numpy as np
-                                img_array = np.array(pil_image)
-                                height, width = img_array.shape[:2]
-                                channels = img_array.shape[2] if len(img_array.shape) == 3 else 1
-                            
-                                from PySide6.QtGui import QImage
-                                if channels == 3:
-                                    bytes_per_line = width * 3
-                                    q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                                    pixmap = QPixmap.fromImage(q_image.copy())
-                                    print(f"[QuickView] ✓ PIL fallback successful")
-                            except Exception as pil_error:
-                                print(f"[QuickView] PIL fallback failed: {pil_error}")
-                                
-                                # Try tifffile for special TIFF formats (Affinity, compressed)
-                                if str(file_path).lower().endswith(('.tif', '.tiff')):
-                                    try:
-                                        import tifffile
-                                        import numpy as np
-                                        
-                                        # Read TIFF with tifffile
-                                        img_array = tifffile.imread(str(file_path))
-                                        
-                                        # Normalize to 8-bit
-                                        if img_array.dtype == np.uint32:
-                                            # Affinity uses uint32 with limited range - normalize to actual min/max
-                                            img_min = img_array.min()
-                                            img_max = img_array.max()
-                                            if img_max > img_min:
-                                                img_array = ((img_array.astype(np.float64) - img_min) / (img_max - img_min) * 255).astype(np.uint8)
-                                            else:
-                                                img_array = np.zeros_like(img_array, dtype=np.uint8)
-                                        elif img_array.dtype == np.uint16:
-                                            img_array = (img_array / 256).astype(np.uint8)
-                                        elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-                                            img_array = (img_array * 255).astype(np.uint8)
-                                        
-                                        # Convert to RGB if needed
-                                        if len(img_array.shape) == 2:
-                                            img_array = np.stack([img_array, img_array, img_array], axis=2)
-                                        elif len(img_array.shape) == 3 and img_array.shape[2] > 3:
-                                            img_array = img_array[:, :, :3]
-                                        
-                                        # Scale if too large (8K limit)
-                                        height, width = img_array.shape[:2]
-                                        max_dimension = 8192
-                                        if width > max_dimension or height > max_dimension:
-                                            from PIL import Image
-                                            pil_image = Image.fromarray(img_array)
-                                            scale_factor = max_dimension / max(width, height)
-                                            new_width = int(width * scale_factor)
-                                            new_height = int(height * scale_factor)
-                                            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                            img_array = np.array(pil_image)
-                                            height, width = img_array.shape[:2]
-                                            print(f"[QuickView] tifffile scaled down to {width}x{height}")
-                                        
-                                        # Convert to QPixmap
-                                        from PySide6.QtGui import QImage
-                                        bytes_per_line = width * 3
-                                        q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                                        pixmap = QPixmap.fromImage(q_image.copy())
-                                        print(f"[QuickView] ✓ tifffile fallback successful")
-                                    except Exception as tiff_error:
-                                        print(f"[QuickView] tifffile failed: {tiff_error}")
-                                        pixmap = QPixmap(str(file_path))
-                                else:
-                                    pixmap = QPixmap(str(file_path))
-                        else:
-                            pixmap = QPixmap(str(file_path))
+                        if _qv_pil.width > max_dimension or _qv_pil.height > max_dimension:
+                            _qv_sf = max_dimension / max(_qv_pil.width, _qv_pil.height)
+                            _qv_pil = _qv_pil.resize(
+                                (int(_qv_pil.width * _qv_sf), int(_qv_pil.height * _qv_sf)),
+                                _QVPIL.Resampling.LANCZOS
+                            )
+
+                        _qv_arr = _qv_np.array(_qv_pil)
+                        _qv_h, _qv_w = _qv_arr.shape[:2]
+                        from PySide6.QtGui import QImage
+                        _qv_qimg = QImage(_qv_arr.tobytes(), _qv_w, _qv_h, _qv_w * 3, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(_qv_qimg.copy())
+
+                        if pixmap.isNull():
+                            raise Exception("QPixmap creation failed")
+
+                    except Exception as _qv_err:
+                        # Fallback: QImageReader (no ICC conversion)
+                        try:
+                            from PySide6.QtGui import QImageReader
+                            from PySide6.QtCore import QSize
+                            image_reader = QImageReader(str(file_path))
+                            image_reader.setAllocationLimit(2048)
+                            image_reader.setAutoTransform(True)
+                            image_size = image_reader.size()
+                            max_dimension = 8192
+                            if image_size.width() > max_dimension or image_size.height() > max_dimension:
+                                scale_factor = max_dimension / max(image_size.width(), image_size.height())
+                                image_reader.setScaledSize(QSize(
+                                    int(image_size.width() * scale_factor),
+                                    int(image_size.height() * scale_factor)
+                                ))
+                            image = image_reader.read()
+                            if not image.isNull():
+                                pixmap = QPixmap.fromImage(image)
+                            else:
+                                raise Exception("QImageReader returned null")
+                        except Exception:
+                            pixmap = None
             
             if pixmap is None or pixmap.isNull():
                 # if DEBUG_MODE:
@@ -2071,75 +2006,72 @@ MMB: Pan, Scroll Wheel: Zoom, F: Fit, Alt+MMB: Move Window
                         pixmap = None
                     canvas_size = None  # Not a PDF
                 else:
-                    # Try OpenCV first for large images, then fallback to QPixmap/PIL/tifffile
+                    # Standard image formats (JPG, PNG, TIFF, etc.)
+                    # Use PIL + ICC color space conversion → sRGB for correct display
                     try:
-                        import os
-                        file_size_mb = os.path.getsize(str(file_path)) / (1024 * 1024)
-                        
-                        if file_size_mb > 50 or str(file_path).lower().endswith(('.jpg', '.jpeg')):
+                        import sys as _sys, os as _os, warnings as _gw
+                        _ext_libs = _os.path.join(_os.path.dirname(__file__), 'external_libs')
+                        if _ext_libs not in _sys.path:
+                            _sys.path.insert(0, _ext_libs)
+                        from PIL import Image as _GPIL, ImageOps as _GOps
+                        from .utils import apply_icc_to_srgb_pil
+                        import numpy as _gnp
+                        _GPIL.MAX_IMAGE_PIXELS = 200000000
+                        _gw.filterwarnings('ignore', category=_GPIL.DecompressionBombWarning)
+
+                        _gpil = _GPIL.open(str(file_path))
+
+                        # Apply ICC → sRGB conversion for correct color display
+                        _gpil, _ = apply_icc_to_srgb_pil(_gpil)
+
+                        # Apply EXIF orientation
+                        try:
+                            _gpil = _GOps.exif_transpose(_gpil)
+                        except Exception:
+                            pass
+
+                        if _gpil.mode != 'RGB':
+                            _gpil = _gpil.convert('RGB')
+
+                        _garr = _gnp.array(_gpil)
+                        _gh, _gw2 = _garr.shape[:2]
+                        from PySide6.QtGui import QImage
+                        _gqimg = QImage(_garr.tobytes(), _gw2, _gh, _gw2 * 3, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(_gqimg.copy())
+
+                        if pixmap.isNull():
+                            raise Exception("QPixmap creation failed")
+
+                    except Exception as _gerr:
+                        # Fallback: tifffile for special TIFF formats, then QPixmap
+                        pixmap = None
+                        if str(file_path).lower().endswith(('.tif', '.tiff')):
                             try:
-                                import cv2
-                                import numpy as np
-                                
-                                img = cv2.imread(str(file_path), cv2.IMREAD_COLOR)
-                                
-                                if img is not None:
-                                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                                    
-                                    from PySide6.QtGui import QImage
-                                    height, width, channels = img.shape
-                                    bytes_per_line = width * channels
-                                    q_image = QImage(img.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                                    pixmap = QPixmap.fromImage(q_image.copy())
-                                else:
-                                    raise Exception("OpenCV failed")
-                            except:
-                                pixmap = QPixmap(str(file_path))
-                        else:
-                            pixmap = QPixmap(str(file_path))
-                        
-                        # If QPixmap failed, try tifffile for special TIFF formats
-                        if (pixmap is None or pixmap.isNull()) and str(file_path).lower().endswith(('.tif', '.tiff')):
-                            try:
-                                import sys
-                                external_libs = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ddContentBrowser', 'external_libs')
-                                if external_libs not in sys.path:
-                                    sys.path.insert(0, external_libs)
-                                
                                 import tifffile
                                 import numpy as np
-                                
                                 img_array = tifffile.imread(str(file_path))
-                                
-                                # Normalize uint32 with gamma correction
                                 if img_array.dtype == np.uint32:
-                                    img_min = img_array.min()
-                                    img_max = img_array.max()
+                                    img_min, img_max = img_array.min(), img_array.max()
                                     if img_max > img_min:
                                         img_array = ((img_array.astype(np.float64) - img_min) / (img_max - img_min) * 255).astype(np.uint8)
                                     else:
                                         img_array = np.zeros_like(img_array, dtype=np.uint8)
                                 elif img_array.dtype == np.uint16:
                                     img_array = (img_array / 256).astype(np.uint8)
-                                elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-                                    img_array = (img_array * 255).astype(np.uint8)
-                                
-                                # Convert to RGB if needed
+                                elif img_array.dtype in (np.float32, np.float64):
+                                    img_array = (np.clip(img_array, 0, 1) * 255).astype(np.uint8)
                                 if len(img_array.shape) == 2:
                                     img_array = np.stack([img_array, img_array, img_array], axis=2)
-                                elif len(img_array.shape) == 3 and img_array.shape[2] > 3:
+                                elif img_array.shape[2] > 3:
                                     img_array = img_array[:, :, :3]
-                                
                                 from PySide6.QtGui import QImage
-                                height, width = img_array.shape[:2]
-                                bytes_per_line = width * 3
-                                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+                                _th, _tw = img_array.shape[:2]
+                                q_image = QImage(img_array.tobytes(), _tw, _th, _tw * 3, QImage.Format_RGB888)
                                 pixmap = QPixmap.fromImage(q_image.copy())
-                            except Exception as tiff_error:
-                                print(f"[QuickView Grid] tifffile failed: {tiff_error}")
-                                pixmap = None
-                    except:
-                        pixmap = QPixmap(str(file_path))
+                            except Exception:
+                                pass
+                        if pixmap is None or pixmap.isNull():
+                            pixmap = QPixmap(str(file_path))
                     canvas_size = None  # Not a PDF
                 
                 if pixmap and not pixmap.isNull():

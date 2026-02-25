@@ -190,6 +190,32 @@ class FileMetadata:
                 else:
                     self.metadata['bit_depth'] = img.mode
                 
+                # Color Space (from embedded ICC profile - most reliable method)
+                try:
+                    import io
+                    from PIL import ImageCms
+                    icc_data = img.info.get('icc_profile')
+                    if icc_data:
+                        src_profile = ImageCms.getOpenProfile(io.BytesIO(icc_data))
+                        profile_name = ImageCms.getProfileName(src_profile).strip()
+                        profile_desc = ImageCms.getProfileDescription(src_profile).strip()
+                        combined = (profile_name + ' ' + profile_desc).lower()
+                        if 'adobe rgb' in combined:
+                            self.metadata['color_space'] = 'Adobe RGB (1998)'
+                        elif 'display p3' in combined or 'p3-d65' in combined or 'p3 d65' in combined:
+                            self.metadata['color_space'] = 'Display P3'
+                        elif 'prophoto' in combined or 'romm rgb' in combined:
+                            self.metadata['color_space'] = 'ProPhoto RGB'
+                        elif 'rec. 2020' in combined or 'rec2020' in combined:
+                            self.metadata['color_space'] = 'Rec. 2020'
+                        elif 'srgb' in combined:
+                            self.metadata['color_space'] = 'sRGB'
+                        else:
+                            cs_name = profile_desc if profile_desc else profile_name
+                            self.metadata['color_space'] = cs_name[:50] if cs_name else 'Unknown Profile'
+                except Exception:
+                    pass
+                
                 # Try to extract EXIF
                 try:
                     exif = img._getexif()
@@ -279,6 +305,16 @@ class FileMetadata:
                                 self.metadata['orientation'] = "Landscape"
                             elif orientation in [5, 6, 7, 8]:
                                 self.metadata['orientation'] = "Portrait"
+                        
+                        # ColorSpace EXIF tag (40961) - fallback if no ICC profile
+                        if 40961 in exif and 'color_space' not in self.metadata:
+                            cs_value = exif[40961]
+                            if cs_value == 1:
+                                self.metadata['color_space'] = 'sRGB'
+                            elif cs_value == 2:
+                                self.metadata['color_space'] = 'Adobe RGB (1998)'
+                            elif cs_value == 65535:  # 0xFFFF = Uncalibrated (often means Adobe RGB)
+                                self.metadata['color_space'] = 'Uncalibrated'
                 except:
                     pass
                 

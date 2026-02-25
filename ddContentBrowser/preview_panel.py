@@ -542,6 +542,71 @@ def load_pdf_page(file_path, page_number=0, max_size=1024):
         return None, 0, None
 
 
+def apply_icc_to_srgb(pil_image):
+    """
+    Convert a PIL image from its embedded ICC profile to sRGB for correct display.
+    
+    Most monitors display in sRGB. Images tagged with Adobe RGB, Display P3, ProPhoto
+    etc. will appear desaturated/wrong if not converted before display.
+    
+    Args:
+        pil_image: PIL Image object (may have an embedded ICC profile)
+    
+    Returns:
+        tuple: (converted_image, color_space_name)
+               converted_image is sRGB after conversion (or original if already sRGB/no profile)
+               color_space_name is the detected source color space string
+    """
+    color_space_name = 'sRGB'  # Default assumption
+    
+    icc_data = pil_image.info.get('icc_profile')
+    if not icc_data:
+        return pil_image, color_space_name
+    
+    try:
+        import io
+        from PIL import ImageCms
+        
+        src_profile = ImageCms.getOpenProfile(io.BytesIO(icc_data))
+        profile_name = ImageCms.getProfileName(src_profile).strip()
+        profile_desc = ImageCms.getProfileDescription(src_profile).strip()
+        combined = (profile_name + ' ' + profile_desc).lower()
+        
+        # Determine human-readable color space name
+        if 'adobe rgb' in combined:
+            color_space_name = 'Adobe RGB (1998)'
+        elif 'display p3' in combined or 'p3-d65' in combined or 'p3 d65' in combined:
+            color_space_name = 'Display P3'
+        elif 'prophoto' in combined or 'romm rgb' in combined:
+            color_space_name = 'ProPhoto RGB'
+        elif 'rec. 2020' in combined or 'rec2020' in combined:
+            color_space_name = 'Rec. 2020'
+        elif 'srgb' in combined:
+            color_space_name = 'sRGB'
+        else:
+            cs_name = profile_desc if profile_desc else profile_name
+            color_space_name = cs_name[:50] if cs_name else 'Unknown Profile'
+        
+        # No conversion needed if already sRGB
+        if color_space_name == 'sRGB':
+            return pil_image, color_space_name
+        
+        # Convert to sRGB for display using PIL ImageCms
+        srgb_profile = ImageCms.createProfile('sRGB')
+        if pil_image.mode not in ('RGB', 'RGBA'):
+            pil_image = pil_image.convert('RGB')
+        converted = ImageCms.profileToProfile(
+            pil_image, src_profile, srgb_profile,
+            renderingIntent=ImageCms.Intent.PERCEPTUAL,
+            outputMode='RGB'
+        )
+        return converted, color_space_name
+    
+    except Exception:
+        # If anything fails, return original image unchanged
+        return pil_image, color_space_name
+
+
 class FlowLayout(QtWidgets.QLayout):
     """Flow layout that wraps widgets horizontally like tag chips (Qt example-based)"""
     
@@ -3341,43 +3406,53 @@ class PreviewPanel(QWidget):
                         else:
                             self.full_res_pixmap = None
                 else:
-                    # Non-TGA files: Use QImageReader for consistency with normal preview (handles EXIF orientation automatically)
+                    # Non-TGA files: Use PIL with ICC color space conversion for correct zoom display
                     try:
-                        image_reader = QImageReader(file_path_str)
-                        image_reader.setAllocationLimit(2048)  # 2 GB limit for large TGA files
-                        image_reader.setAutoTransform(True)  # Auto-apply EXIF orientation
+                        import sys as _sys, os as _os, warnings as _warnings
+                        _ext_libs = _os.path.join(_os.path.dirname(__file__), 'external_libs')
+                        if _ext_libs not in _sys.path:
+                            _sys.path.insert(0, _ext_libs)
+                        from PIL import Image as _PILImage, ImageOps as _ImageOps
+                        import numpy as _np
+                        _PILImage.MAX_IMAGE_PIXELS = 200000000
+                        _warnings.filterwarnings('ignore', category=_PILImage.DecompressionBombWarning)
                         
-                        # Check image size before loading - limit to 8K (8192x8192) for performance
-                        image_size = image_reader.size()
-                        max_dimension = 8192
+                        pil_image = _PILImage.open(file_path_str)
                         
-                        # Reset scaling info
+                        # Store original size for metadata
+                        self.original_image_size = (pil_image.width, pil_image.height)
                         self.is_image_scaled = False
-                        self.original_image_size = None
                         self.scaled_image_size = None
                         
-                        if image_size.width() > max_dimension or image_size.height() > max_dimension:
-                            # Scale down large images
-                            scale_factor = max_dimension / max(image_size.width(), image_size.height())
-                            new_width = int(image_size.width() * scale_factor)
-                            new_height = int(image_size.height() * scale_factor)
-                            from PySide6.QtCore import QSize
-                            image_reader.setScaledSize(QSize(new_width, new_height))
-                            
-                            # Store scaling info for user feedback
+                        # Apply ICC → sRGB conversion for correct color display
+                        pil_image, _ = apply_icc_to_srgb(pil_image)
+                        
+                        # Apply EXIF orientation
+                        try:
+                            pil_image = _ImageOps.exif_transpose(pil_image)
+                        except Exception:
+                            pass
+                        
+                        # Convert to RGB
+                        if pil_image.mode != 'RGB':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        # Scale down if too large (8K limit)
+                        max_dimension = 8192
+                        if pil_image.width > max_dimension or pil_image.height > max_dimension:
+                            scale_factor = max_dimension / max(pil_image.width, pil_image.height)
+                            new_width = int(pil_image.width * scale_factor)
+                            new_height = int(pil_image.height * scale_factor)
+                            pil_image = pil_image.resize((new_width, new_height), _PILImage.Resampling.LANCZOS)
                             self.is_image_scaled = True
-                            self.original_image_size = (image_size.width(), image_size.height())
                             self.scaled_image_size = (new_width, new_height)
                         
-                        # Read full resolution image (or scaled version)
-                        image = image_reader.read()
+                        # Convert PIL to QPixmap
+                        _img_arr = _np.array(pil_image)
+                        _h, _w = _img_arr.shape[:2]
+                        _q_image = QImage(_img_arr.tobytes(), _w, _h, _w * 3, QImage.Format_RGB888)
+                        self.full_res_pixmap = QPixmap.fromImage(_q_image.copy())
                         
-                        if not image.isNull():
-                            self.full_res_pixmap = QPixmap.fromImage(image)
-                        else:
-                            # Fallback: try direct QPixmap load
-                            self.full_res_pixmap = QPixmap(file_path_str)
-                            
                     except Exception as e:
                         # Fallback to standard QPixmap loading
                         
@@ -4431,40 +4506,75 @@ class PreviewPanel(QWidget):
                                     self.graphics_scene.clear()
                                     self.current_text_item = None
                         else:
-                            # Standard 8-bit image formats (PNG, JPG, etc.) - use QImageReader
-                            image_reader = QImageReader(file_path_str)
-                            image_reader.setAllocationLimit(2048)  # 2 GB limit for large images
-                            image_reader.setAutoTransform(True)  # Auto-apply EXIF orientation
-                            
-                            # Check original size (for resolution metadata)
-                            original_size = image_reader.size()
-                            if original_size.isValid():
-                                resolution_str = f"{original_size.width()} x {original_size.height()}"
-                            
-                            # If image is larger than 1024px, scale it down during load
-                            if original_size.width() > 1024 or original_size.height() > 1024:
-                                if original_size.width() > original_size.height():
-                                    scaled_size = QSize(1024, int(1024 * original_size.height() / original_size.width()))
+                            # Standard 8-bit image formats (PNG, JPG, etc.)
+                            # Use PIL with ICC color space conversion → sRGB for correct display
+                            try:
+                                import sys as _sys, os as _os, warnings as _warnings
+                                _ext_libs = _os.path.join(_os.path.dirname(__file__), 'external_libs')
+                                if _ext_libs not in _sys.path:
+                                    _sys.path.insert(0, _ext_libs)
+                                from PIL import Image as _PILImage, ImageOps as _ImageOps
+                                import numpy as _np
+                                _PILImage.MAX_IMAGE_PIXELS = 200000000
+                                _warnings.filterwarnings('ignore', category=_PILImage.DecompressionBombWarning)
+                                
+                                pil_image = _PILImage.open(file_path_str)
+                                
+                                # Store original resolution
+                                resolution_str = f"{pil_image.width} x {pil_image.height}"
+                                
+                                # Apply ICC → sRGB conversion for correct color display
+                                pil_image, _ = apply_icc_to_srgb(pil_image)
+                                
+                                # Apply EXIF orientation (handles rotated photos)
+                                try:
+                                    pil_image = _ImageOps.exif_transpose(pil_image)
+                                except Exception:
+                                    pass
+                                
+                                # Convert to RGB
+                                if pil_image.mode != 'RGB':
+                                    pil_image = pil_image.convert('RGB')
+                                
+                                # Scale down for preview (1024px max)
+                                if pil_image.width > 1024 or pil_image.height > 1024:
+                                    pil_image.thumbnail((1024, 1024), _PILImage.Resampling.LANCZOS)
+                                
+                                _img_arr = _np.array(pil_image)
+                                _h, _w = _img_arr.shape[:2]
+                                _q_image = QImage(_img_arr.tobytes(), _w, _h, _w * 3, QImage.Format_RGB888)
+                                pixmap = QPixmap.fromImage(_q_image.copy())
+                                
+                                if not pixmap.isNull():
+                                    self.current_pixmap = pixmap
+                                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                                    self.fit_pixmap_to_label()
                                 else:
-                                    scaled_size = QSize(int(1024 * original_size.width() / original_size.height()), 1024)
-                                image_reader.setScaledSize(scaled_size)
-                            
-                            # Read the (scaled) image
-                            image = image_reader.read()
-                            
-                            if not image.isNull():
-                                pixmap = QPixmap.fromImage(image)
+                                    raise Exception("PIL ICC path: QPixmap creation failed")
                                 
-                                self.current_pixmap = pixmap
-                                
-                                # Add to cache
-                                self.add_to_cache(file_path_str, pixmap, resolution_str)
-                                
-                                # Fit to current panel size
-                                self.fit_pixmap_to_label()
-                            else:
-                                self.graphics_scene.clear()
-                                self.current_text_item = None
+                            except Exception:
+                                # Fallback: QImageReader (no ICC conversion)
+                                image_reader = QImageReader(file_path_str)
+                                image_reader.setAllocationLimit(2048)
+                                image_reader.setAutoTransform(True)
+                                original_size = image_reader.size()
+                                if original_size.isValid():
+                                    resolution_str = f"{original_size.width()} x {original_size.height()}"
+                                if original_size.width() > 1024 or original_size.height() > 1024:
+                                    if original_size.width() > original_size.height():
+                                        scaled_size = QSize(1024, int(1024 * original_size.height() / original_size.width()))
+                                    else:
+                                        scaled_size = QSize(int(1024 * original_size.width() / original_size.height()), 1024)
+                                    image_reader.setScaledSize(scaled_size)
+                                image = image_reader.read()
+                                if not image.isNull():
+                                    pixmap = QPixmap.fromImage(image)
+                                    self.current_pixmap = pixmap
+                                    self.add_to_cache(file_path_str, pixmap, resolution_str)
+                                    self.fit_pixmap_to_label()
+                                else:
+                                    self.graphics_scene.clear()
+                                    self.current_text_item = None
                             
                 except Exception as e:
                     print(f"Preview load error: {e}")
@@ -4653,6 +4763,10 @@ class PreviewPanel(QWidget):
             # Resolution (if we have it)
             if resolution_str:
                 self.add_metadata_row("📐", "Resolution", resolution_str)
+            
+            # Color Space (from ICC profile or EXIF tag)
+            if 'color_space' in exif_meta:
+                self.add_metadata_row("🎨", "Color Space", exif_meta['color_space'])
         
         # Load tags for this asset (in Tags tab)
         self.load_tags(asset)

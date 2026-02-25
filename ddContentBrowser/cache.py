@@ -186,6 +186,48 @@ def apply_exif_orientation_thumbnail(pixmap, file_path):
         return pixmap
 
 
+def _apply_exif_orientation_np(img_array, orientation):
+    """
+    Apply EXIF orientation correction to a uint8 numpy array (H×W×C or H×W).
+    Returns C-contiguous corrected array (required for Qt memory layout).
+
+    EXIF → transformation needed to display correctly:
+      1 = normal        (no-op)
+      2 = flip horiz
+      3 = rotate 180°
+      4 = flip vert
+      5 = transpose     (flip around main diagonal)
+      6 = rotate 90° CW
+      7 = transverse    (flip around anti-diagonal)
+      8 = rotate 90° CCW
+    """
+    import numpy as np
+    if not orientation or orientation == 1:
+        return img_array
+    three_d = img_array.ndim == 3
+    if not three_d:
+        img_array = img_array[:, :, np.newaxis]
+    if orientation == 2:
+        out = img_array[:, ::-1, :]
+    elif orientation == 3:
+        out = np.rot90(img_array, 2)
+    elif orientation == 4:
+        out = img_array[::-1, :, :]
+    elif orientation == 5:
+        out = np.transpose(img_array, (1, 0, 2))
+    elif orientation == 6:
+        out = np.rot90(img_array, 3)   # 90° CW
+    elif orientation == 7:
+        out = np.rot90(np.transpose(img_array, (1, 0, 2)), 2)
+    elif orientation == 8:
+        out = np.rot90(img_array, 1)   # 90° CCW
+    else:
+        out = img_array
+    if not three_d:
+        out = out[:, :, 0]
+    return np.ascontiguousarray(out)  # Qt requires C-contiguous memory
+
+
 class ThumbnailCache:
     """In-memory thumbnail cache manager"""
     
@@ -1153,6 +1195,51 @@ class ThumbnailGenerator(QThread):
                             thread_name = threading.current_thread().name
                             print(f"[{thread_name}] → Using TurboJPEG for {extension}")
                         
+                        # --- Quick ICC + EXIF orientation check (metadata only, no full pixel decode) ---
+                        # Single PIL header-open to read both the icc_profile tag and EXIF orientation
+                        _needs_icc = False
+                        _exif_orientation = 1
+                        try:
+                            from PIL import Image as _PILCheck
+                            with _PILCheck.open(str(file_path)) as _img_check:
+                                _needs_icc = bool(_img_check.info.get('icc_profile'))
+                                # Peek at profile name to decide if conversion is needed
+                                if _needs_icc:
+                                    import io as _io
+                                    from PIL import ImageCms as _Cms
+                                    _prof = _Cms.getOpenProfile(_io.BytesIO(_img_check.info['icc_profile']))
+                                    _desc = (_Cms.getProfileName(_prof) + ' ' + _Cms.getProfileDescription(_prof)).lower()
+                                    _needs_icc = 'srgb' not in _desc
+                                # Also capture EXIF orientation for use after TurboJPEG decode
+                                _exif_orientation = _img_check.getexif().get(274, 1) or 1
+                        except Exception:
+                            _needs_icc = False
+                            _exif_orientation = 1
+
+                        if _needs_icc:
+                            # Non-sRGB ICC profile → use PIL + ImageCms (colour-accurate)
+                            from PIL import Image as _PILImg, ImageOps as _ImgOps
+                            from .utils import apply_icc_to_srgb_pil
+                            import numpy as np
+                            _pil = _PILImg.open(str(file_path))
+                            _pil, _ = apply_icc_to_srgb_pil(_pil)
+                            try:
+                                _pil = _ImgOps.exif_transpose(_pil)
+                            except Exception:
+                                pass
+                            if _pil.mode != 'RGB':
+                                _pil = _pil.convert('RGB')
+                            _pil.thumbnail((self.thumbnail_size, self.thumbnail_size), _PILImg.Resampling.LANCZOS)
+                            img = np.array(_pil)
+                            height, width = img.shape[:2]
+                            return {
+                                'array': img,
+                                'width': width,
+                                'height': height,
+                                'channels': 3,
+                                'is_rgb': True
+                            }
+                        
                         # Read file into memory
                         with open(str(file_path), 'rb') as f:
                             jpeg_data = f.read()
@@ -1163,10 +1250,14 @@ class ThumbnailGenerator(QThread):
                         # IMPORTANT: Specify TJPF_RGB pixel format (default is BGR!)
                         from turbojpeg import TJPF_RGB
                         img = TURBOJPEG_INSTANCE.decode(jpeg_data, pixel_format=TJPF_RGB, scaling_factor=(1, 8))
-                        
+
+                        # Apply EXIF orientation (TurboJPEG ignores the orientation tag)
+                        if _exif_orientation != 1:
+                            img = _apply_exif_orientation_np(img, _exif_orientation)
+
                         if DEBUG_MODE:
                             print(f"[{thread_name}] ✓ TurboJPEG loaded: {img.shape}")
-                        
+
                         # TurboJPEG returns RGB format (not BGR like OpenCV!)
                         height, width = img.shape[:2]
                         channels = img.shape[2] if len(img.shape) == 3 else 1
@@ -1236,6 +1327,44 @@ class ThumbnailGenerator(QThread):
                     if DEBUG_MODE:
                         print(f"[{thread_name}] ✓ OpenCV loaded: {img.shape}")
                     
+                    # ICC color space conversion for JPG/PNG (OpenCV ignores ICC profiles)
+                    # If the file has a non-sRGB ICC profile, convert via PIL+ImageCms
+                    if extension in ('.jpg', '.jpeg', '.png'):
+                        try:
+                            from PIL import Image as _PILIcc
+                            import io as _io_icc
+                            with _PILIcc.open(str(file_path)) as _icc_img:
+                                _icc_data = _icc_img.info.get('icc_profile')
+                            if _icc_data:
+                                from PIL import ImageCms as _Cms
+                                _prof = _Cms.getOpenProfile(_io_icc.BytesIO(_icc_data))
+                                _desc = (_Cms.getProfileName(_prof) + ' ' + _Cms.getProfileDescription(_prof)).lower()
+                                if 'srgb' not in _desc:
+                                    # Re-load via PIL with ICC conversion (more accurate)
+                                    from PIL import Image as _PILImg2, ImageOps as _ImgOps2
+                                    from .utils import apply_icc_to_srgb_pil
+                                    import numpy as np
+                                    _pil2 = _PILIcc.open(str(file_path))
+                                    _pil2, _ = apply_icc_to_srgb_pil(_pil2)
+                                    try:
+                                        _pil2 = _ImgOps2.exif_transpose(_pil2)
+                                    except Exception:
+                                        pass
+                                    if _pil2.mode != 'RGB':
+                                        _pil2 = _pil2.convert('RGB')
+                                    _pil2.thumbnail((self.thumbnail_size, self.thumbnail_size), _PILImg2.Resampling.LANCZOS)
+                                    img = np.array(_pil2)  # RGB
+                                    height, width = img.shape[:2]
+                                    return {
+                                        'array': img,
+                                        'width': width,
+                                        'height': height,
+                                        'channels': 3,
+                                        'is_rgb': True
+                                    }
+                        except Exception:
+                            pass  # Keep OpenCV result on any error
+
                     # Keep in BGR format (will be converted to RGB in _numpy_to_pixmap)
                     if len(img.shape) == 3:
                         channels = img.shape[2]
@@ -1250,7 +1379,18 @@ class ThumbnailGenerator(QThread):
                     elif img.dtype in [np.float32, np.float64]:
                         img = np.clip(img, 0, 1)
                         img = (img * 255).astype(np.uint8)
-                    
+
+                    # Apply EXIF orientation (OpenCV ignores the orientation tag)
+                    if extension in ('.jpg', '.jpeg', '.png', '.tiff', '.tif', '.webp'):
+                        try:
+                            from PIL import Image as _PILori
+                            with _PILori.open(str(file_path)) as _ori_img:
+                                _cv_orientation = _ori_img.getexif().get(274, 1) or 1
+                            if _cv_orientation != 1:
+                                img = _apply_exif_orientation_np(img, _cv_orientation)
+                        except Exception:
+                            pass
+
                     # Resize
                     height, width = img.shape[:2]
                     if width > self.thumbnail_size or height > self.thumbnail_size:
@@ -1303,6 +1443,12 @@ class ThumbnailGenerator(QThread):
                 Image.MAX_IMAGE_PIXELS = None
                 
                 pil_img = Image.open(str(file_path))
+                # Apply EXIF orientation before converting
+                try:
+                    from PIL import ImageOps as _FbOps
+                    pil_img = _FbOps.exif_transpose(pil_img)
+                except Exception:
+                    pass
                 pil_img = pil_img.convert('RGB')
                 pil_img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
                 
