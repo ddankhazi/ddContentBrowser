@@ -4158,6 +4158,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Clear in-memory cache too (including sequence pattern keys)
             self.memory_cache.clear()
             
+            # Clear delegate's scaled pixmap cache (CRITICAL for UI refresh!)
+            self.thumbnail_delegate._scaled_cache.clear()
+            
             # Request thumbnail regeneration for visible items
             # Use a longer delay to ensure caches are fully cleared
             QTimer.singleShot(100, self.request_thumbnails_for_visible_items)

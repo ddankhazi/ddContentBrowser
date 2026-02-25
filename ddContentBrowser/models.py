@@ -884,7 +884,7 @@ class FileSystemModel(QAbstractListModel):
     
     def _sort_assets(self):
         """Sort assets based on current sort settings"""
-        # Batch load stat info if sorting by size or date
+        # Batch load stat info if sorting by size or date (FILES ONLY - folders don't need stat)
         if self.sort_column in ["size", "date"]:
             for asset in self.assets:
                 if not asset.is_folder:
@@ -894,9 +894,11 @@ class FileSystemModel(QAbstractListModel):
             # Natural sorting: 1, 2, 10 instead of 1, 10, 2
             self.assets.sort(key=lambda x: (not x.is_folder, natural_sort_key(x.name)), reverse=not self.sort_ascending)
         elif self.sort_column == "size":
-            self.assets.sort(key=lambda x: (not x.is_folder, x.size), reverse=not self.sort_ascending)
+            # Folders first, then files by size (folders get 0 size without loading stat)
+            self.assets.sort(key=lambda x: (not x.is_folder, x.size if not x.is_folder else 0), reverse=not self.sort_ascending)
         elif self.sort_column == "date":
-            self.assets.sort(key=lambda x: (not x.is_folder, x.modified), reverse=not self.sort_ascending)
+            # Folders first, then files by date (folders get epoch 0 without loading stat)
+            self.assets.sort(key=lambda x: (not x.is_folder, x.modified if not x.is_folder else datetime.fromtimestamp(0)), reverse=not self.sort_ascending)
         elif self.sort_column == "type":
             self.assets.sort(key=lambda x: (not x.is_folder, x.extension.lower()), reverse=not self.sort_ascending)
     

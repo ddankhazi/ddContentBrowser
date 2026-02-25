@@ -2,8 +2,10 @@
 DD Content Browser - Cache Module
 Thumbnail caching system with memory and disk storage
 
-OPTIMIZATIONS (2025-11):
-- OpenCV IMREAD_REDUCED_* for faster TIFF/HDR decoding (2-8× speedup)
+OPTIMIZATIONS (2025-12):
+- OpenCV IMREAD_REDUCED_* with smart size checking (2-8× speedup)
+- Dynamic reduction based on original image dimensions (min 256px output)
+- Small images (<512px) loaded at full resolution (no quality loss)
 - Smart routing: Large files (>50MB) → OpenCV, others → QImageReader
 - Optimized scaling logic: Load at 8-16× thumbnail size for quality/speed balance
 
@@ -882,16 +884,17 @@ class ThumbnailGenerator(QThread):
                 self.msleep(1)
             
             # Debug stats (periodic)
-            if DEBUG_MODE:
-                import time
-                current_time = time.time()
-                if current_time - self._last_stats_time > self._stats_interval:
-                    self._last_stats_time = current_time
-                    with self.futures_lock:
-                        active_count = len(self.active_futures)
-                    queue_size = len(self.queue)
-                    result_queue_size = self.result_queue.qsize()
-                    print(f"[STATS] Queue: {queue_size} | Active: {active_count} | Results: {result_queue_size} | Progress: {self.processed_count}/{self.total_count}")
+            # Removed spammy STATS output - only log important events
+            # if DEBUG_MODE:
+            #     import time
+            #     current_time = time.time()
+            #     if current_time - self._last_stats_time > self._stats_interval:
+            #         self._last_stats_time = current_time
+            #         with self.futures_lock:
+            #             active_count = len(self.active_futures)
+            #         queue_size = len(self.queue)
+            #         result_queue_size = self.result_queue.qsize()
+            #         print(f"[STATS] Queue: {queue_size} | Active: {active_count} | Results: {result_queue_size} | Progress: {self.processed_count}/{self.total_count}")
     
     def _submit_worker_job(self, file_path, file_mtime, asset, cache_key, is_sequence):
         """Submit a job to the worker pool (extracted helper method)."""
@@ -1295,8 +1298,8 @@ class ThumbnailGenerator(QThread):
                     thread_name = threading.current_thread().name
                     print(f"[{thread_name}] → Using OpenCV for {extension}")
                 
-                # Get optimized imread flags
-                imread_flags = self._get_opencv_imread_flags()
+                # Get optimized imread flags (pass file_path to check original dimensions)
+                imread_flags = self._get_opencv_imread_flags(file_path=file_path)
                 
                 # Handle non-ASCII paths
                 file_path_str = str(file_path)
@@ -1884,12 +1887,18 @@ class ThumbnailGenerator(QThread):
                 print(f"[PDF-DATA] Error: {e}")
             return None
     
-    def _get_opencv_imread_flags(self):
+    def _get_opencv_imread_flags(self, file_path=None):
         """
-        Calculate optimal OpenCV imread flags based on thumbnail size.
+        Calculate optimal OpenCV imread flags based on thumbnail size AND original image dimensions.
         Uses IMREAD_REDUCED_* for faster decoding of large TIFF/HDR images.
         
-        Optimized logic: Loaded size should be ~8-16× thumbnail size for best quality/speed balance.
+        Optimized logic:
+        - Min pre-downsampled size: 256px (max thumbnail size)
+        - Only use IMREAD_REDUCED_* if original image > 512px (ensures 256px minimum after reduction)
+        - Small images loaded at full resolution (fast anyway)
+        
+        Args:
+            file_path: Path to image file (optional, for size checking)
         
         Returns:
             OpenCV imread flags (int)
@@ -1898,39 +1907,54 @@ class ThumbnailGenerator(QThread):
         # Suppress OpenCV/FFmpeg verbose output
         cv2.setLogLevel(0)  # 0 = Silent
         
-        # For small thumbnails, use aggressive downsampling during decode
-        # This is MUCH faster for large TIFF files (2-8× speedup)
-        # 
-        # OPTIMIZED LOGIC:
-        # - thumbnail ≤ 64px  → load at 1/8 scale (e.g., 16k→2048, 8k→1024) = 32-16× thumbnail
-        # - thumbnail ≤ 128px → load at 1/4 scale (e.g., 16k→4096, 8k→2048) = 32-16× thumbnail  
-        # - thumbnail ≤ 256px → load at 1/8 scale (e.g., 16k→2048, 8k→1024) = 8-4× thumbnail
-        # - thumbnail > 256px → load at 1/2 scale (e.g., 16k→8192) = preserve detail
+        # If no file path provided, use default flags
+        if file_path is None:
+            if DEBUG_MODE:
+                print(f"[OPENCV] No file path, using default IMREAD_COLOR")
+            return cv2.IMREAD_COLOR | cv2.IMREAD_ANYDEPTH
         
-        if self.thumbnail_size <= 64:
-            # 1/8 scale - fastest for tiny thumbnails
-            # 16k TIFF → 2048px → resize to 64px (32× downscale total)
+        # Quick header read to get original image dimensions (PIL is very fast for this)
+        try:
+            from PIL import Image
+            with Image.open(file_path) as img:
+                width, height = img.size
+                min_dimension = min(width, height)
+                
             if DEBUG_MODE:
-                print(f"[OPENCV] Using 1/8 scale (IMREAD_REDUCED_COLOR_8) for thumbnail_size={self.thumbnail_size}")
-            return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
-        elif self.thumbnail_size <= 128:
-            # 1/4 scale - good balance for default size
-            # 16k TIFF → 4096px → resize to 128px (32× downscale total)
+                print(f"[OPENCV] Image size: {width}×{height}px (min={min_dimension}px)")
+            
+            # REDUCTION LOGIC (target: 256px minimum after reduction)
+            # - < 512px     → Full resolution (360×360 stays 360×360)
+            # - 512-1023px  → 1/2 reduction (512×512 → 256×256)
+            # - 1024-2047px → 1/4 reduction (1024×1024 → 256×256)
+            # - 2048px+     → 1/8 reduction (2048×2048 → 256×256)
+            
+            if min_dimension >= 2048:
+                # 1/8 reduction: 2048×2048 → 256×256
+                if DEBUG_MODE:
+                    print(f"[OPENCV] 1/8 reduction (IMREAD_REDUCED_COLOR_8): {min_dimension}px → {min_dimension//8}px")
+                return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
+            elif min_dimension >= 1024:
+                # 1/4 reduction: 1024×1024 → 256×256
+                if DEBUG_MODE:
+                    print(f"[OPENCV] 1/4 reduction (IMREAD_REDUCED_COLOR_4): {min_dimension}px → {min_dimension//4}px")
+                return cv2.IMREAD_REDUCED_COLOR_4 | cv2.IMREAD_ANYDEPTH
+            elif min_dimension >= 512:
+                # 1/2 reduction: 512×512 → 256×256
+                if DEBUG_MODE:
+                    print(f"[OPENCV] 1/2 reduction (IMREAD_REDUCED_COLOR_2): {min_dimension}px → {min_dimension//2}px")
+                return cv2.IMREAD_REDUCED_COLOR_2 | cv2.IMREAD_ANYDEPTH
+            else:
+                # < 512px: Full resolution (360×360 stays 360×360, fast to load anyway)
+                if DEBUG_MODE:
+                    print(f"[OPENCV] Full resolution (no reduction): {min_dimension}px")
+                return cv2.IMREAD_COLOR | cv2.IMREAD_ANYDEPTH
+                
+        except Exception as e:
+            # If PIL fails, use conservative default (no reduction)
             if DEBUG_MODE:
-                print(f"[OPENCV] Using 1/4 scale (IMREAD_REDUCED_COLOR_4) for thumbnail_size={self.thumbnail_size}")
-            return cv2.IMREAD_REDUCED_COLOR_4 | cv2.IMREAD_ANYDEPTH
-        elif self.thumbnail_size <= 256:
-            # 1/8 scale - OPTIMIZED! Previously was 1/2 (too much data)
-            # 16k TIFF → 2048px → resize to 256px (8× downscale, perfect quality)
-            if DEBUG_MODE:
-                print(f"[OPENCV] Using 1/8 scale (IMREAD_REDUCED_COLOR_8) for thumbnail_size={self.thumbnail_size}")
-            return cv2.IMREAD_REDUCED_COLOR_8 | cv2.IMREAD_ANYDEPTH
-        else:
-            # 1/2 scale for larger thumbnails (256+) to preserve detail
-            # 16k TIFF → 8192px → resize to 512px+ (preserves detail for large thumbnails)
-            if DEBUG_MODE:
-                print(f"[OPENCV] Using 1/2 scale (IMREAD_REDUCED_COLOR_2) for thumbnail_size={self.thumbnail_size}")
-            return cv2.IMREAD_REDUCED_COLOR_2 | cv2.IMREAD_ANYDEPTH
+                print(f"[OPENCV] PIL header read failed ({e}), using full resolution")
+            return cv2.IMREAD_COLOR | cv2.IMREAD_ANYDEPTH
     
     @staticmethod
     def _load_psd_composite(file_path, max_size=None):
@@ -1976,13 +2000,17 @@ class ThumbnailGenerator(QThread):
                     print(f"[PSD] No composite available")
                 return None
             
-            # Convert to RGB if needed
-            if composite.mode not in ('RGB', 'L'):
+            # Preserve alpha channel if present
+            if composite.mode in ('RGBA', 'LA', 'PA'):
                 if DEBUG_MODE:
-                    print(f"[PSD] Converting {composite.mode} → RGB")
-                composite = composite.convert('RGB')
+                    print(f"[PSD] Preserving transparency: {composite.mode} → RGBA")
+                composite = composite.convert('RGBA')
             elif composite.mode == 'L':
                 composite = composite.convert('RGB')
+            elif composite.mode not in ('RGB', 'RGBA'):
+                if DEBUG_MODE:
+                    print(f"[PSD] Converting {composite.mode} → RGBA")
+                composite = composite.convert('RGBA')
             
             # Resize if max_size specified
             if max_size:
@@ -1990,21 +2018,31 @@ class ThumbnailGenerator(QThread):
                 if DEBUG_MODE:
                     print(f"[PSD] Resized to: {composite.size}")
             
-            # Convert PIL Image to QPixmap
+            # Convert PIL Image to QPixmap with proper byte order handling
             import numpy as np
-            img_array = np.array(composite)
-            height, width = img_array.shape[:2]
             
             if PYSIDE_VERSION == 6:
                 from PySide6.QtGui import QImage
             else:
                 from PySide2.QtGui import QImage
             
-            bytes_per_line = width * 3
-            q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+            # Handle RGBA with correct byte order for Qt
+            if composite.mode == 'RGBA':
+                # Convert PIL RGBA to Qt-compatible BGRA byte order
+                data = composite.tobytes("raw", "BGRA")
+                width, height = composite.size
+                bytes_per_line = width * 4
+                # Format_ARGB32 expects BGRA byte order on little-endian systems (Windows)
+                q_image = QImage(data, width, height, bytes_per_line, QImage.Format_ARGB32)
+            else:
+                # RGB888 has correct byte order
+                img_array = np.array(composite)
+                height, width = img_array.shape[:2]
+                bytes_per_line = width * 3
+                q_image = QImage(img_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
             
             if DEBUG_MODE:
-                print(f"[PSD] ✓ Composite loaded: {width}x{height}")
+                print(f"[PSD] ✓ Composite loaded: {width}x{height}, mode={composite.mode}")
             
             return QPixmap.fromImage(q_image.copy())
             
@@ -2691,7 +2729,8 @@ class ThumbnailGenerator(QThread):
                     cv2.setLogLevel(0)  # 0 = Silent
                     
                     # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
-                    imread_flags = self._get_opencv_imread_flags()
+                    # Pass file_path to check original dimensions
+                    imread_flags = self._get_opencv_imread_flags(file_path=file_path)
                     print(f"  OpenCV flags: {imread_flags}")
                     
                     # OpenCV can't handle Unicode paths, check for non-ASCII first
@@ -2990,20 +3029,20 @@ class ThumbnailGenerator(QThread):
                                 if DEBUG_MODE:
                                     print(f"[THUMB] tifffile also failed: {tifffile_error}")
                         
-                        # Special handling for PSD files: try psd-tools first, then embedded thumbnail
+                        # Special handling for PSD files: try embedded thumbnail FIRST (fast), then psd-tools (slow)
                         if extension == '.psd':
                             try:
                                 if DEBUG_MODE:
-                                    print(f"[THUMB] Trying to load PSD composite with psd-tools...")
-                                pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=self.thumbnail_size)
+                                    print(f"[THUMB] Trying embedded PSD thumbnail (fast)...")
+                                pixmap = ThumbnailGenerator._extract_psd_thumbnail(file_path, thumbnail_size=self.thumbnail_size)
                                 if pixmap and not pixmap.isNull():
                                     if DEBUG_MODE:
-                                        print(f"[THUMB] ✓ PSD composite loaded successfully")
+                                        print(f"[THUMB] ✓ PSD embedded thumbnail loaded successfully")
                                     return pixmap
                                 else:
                                     if DEBUG_MODE:
-                                        print(f"[THUMB] psd-tools failed, trying embedded thumbnail...")
-                                    pixmap = ThumbnailGenerator._extract_psd_thumbnail(file_path, thumbnail_size=self.thumbnail_size)
+                                        print(f"[THUMB] No embedded thumbnail, trying psd-tools (slow)...")
+                                    pixmap = ThumbnailGenerator._load_psd_composite(file_path, max_size=self.thumbnail_size)
                                     if pixmap and not pixmap.isNull():
                                         if DEBUG_MODE:
                                             print(f"[THUMB] ✓ PSD thumbnail extracted successfully")
@@ -3085,7 +3124,8 @@ class ThumbnailGenerator(QThread):
                     cv2.setLogLevel(0)  # 0 = Silent
                     
                     # Get optimized imread flags (uses IMREAD_REDUCED_* for faster decoding)
-                    imread_flags = self._get_opencv_imread_flags()
+                    # Pass file_path to check original dimensions
+                    imread_flags = self._get_opencv_imread_flags(file_path=file_path)
                     
                     # OpenCV can't handle Unicode paths, check for non-ASCII first
                     file_path_str = str(file_path)
@@ -3726,7 +3766,8 @@ class ThumbnailGenerator(QThread):
             
             # OPTIMIZATION: Use OpenCV imread with REDUCED flag for fast thumbnail
             # This loads the image at 1/2, 1/4, or 1/8 resolution during decode
-            imread_flags = self._get_opencv_imread_flags()
+            # Pass file_path to check original dimensions
+            imread_flags = self._get_opencv_imread_flags(file_path=file_path)
             
             if DEBUG_MODE:
                 print(f"[HDR-OPT] → Using imread flags: {imread_flags}")
