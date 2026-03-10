@@ -460,10 +460,6 @@ class AdvancedFiltersPanelV2(QWidget):
             if 'bit_depth' in metadata:
                 category_values['Bit Depth'][metadata['bit_depth']] += 1
             
-            # Color Space (from ICC profile or EXIF tag)
-            if 'color_space' in metadata:
-                category_values['Color Space'][metadata['color_space']] += 1
-            
             # EXIF Camera Data
             if 'camera_model' in metadata:
                 category_values['Camera'][metadata['camera_model']] += 1
@@ -633,8 +629,6 @@ class AdvancedFiltersPanelV2(QWidget):
                     category_match = metadata.get('color_mode') in selected_values
                 elif category_name == 'Bit Depth':
                     category_match = metadata.get('bit_depth') in selected_values
-                elif category_name == 'Color Space':
-                    category_match = metadata.get('color_space') in selected_values
                 elif category_name == 'Camera':
                     category_match = metadata.get('camera_model') in selected_values
                 elif category_name == 'Lens':
