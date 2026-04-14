@@ -1,3 +1,4 @@
+#! python3.11
 """
 DD Content Browser - Standalone Launcher (PORTABLE version)
 Launch the content browser without Maya - portable, works if any Python 3.11 is available

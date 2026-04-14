@@ -1,3 +1,4 @@
+#! python3.11
 """
 DD Content Browser - Standalone Launcher (PORTABLE - NO CONSOLE)
 Launch the content browser without Maya - no console window

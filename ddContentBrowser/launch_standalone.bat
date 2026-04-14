@@ -1,9 +1,7 @@
 @echo off
+setlocal enabledelayedexpansion
 REM DD Content Browser - Standalone Launcher BAT
-REM Uses company Python 3.11 installation
-
-REM Set Python 3.11 path
-set PYTHON_PATH=C:\Python311\python.exe
+REM Finds Python 3.11 from multiple locations
 
 REM Get script directory
 set SCRIPT_DIR=%~dp0
@@ -16,11 +14,26 @@ echo ============================================================
 echo DD Content Browser v%VERSION% (Standalone)
 echo ============================================================
 
-REM Check if Python exists
-if not exist "%PYTHON_PATH%" (
-    echo ERROR: Python 3.11 not found at: %PYTHON_PATH%
-    echo.
-    echo Please check the Python installation path.
+REM Find Python 3.11 - try multiple locations
+set "PYTHON_PATH="
+
+REM 1. Try Windows py launcher - resolve actual exe path
+where py >nul 2>nul && py -3.11 --version >nul 2>nul && (
+    for /f "delims=" %%p in ('py -3.11 -c "import sys; print(sys.executable)"') do set "PYTHON_PATH=%%p"
+)
+
+REM 2. Company-wide install
+if "%PYTHON_PATH%"=="" if exist "C:\Python311\python.exe" set "PYTHON_PATH=C:\Python311\python.exe"
+
+REM 3. User AppData install
+if "%PYTHON_PATH%"=="" (
+    set "_USER_PY=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311\python.exe"
+    if exist "!_USER_PY!" set "PYTHON_PATH=!_USER_PY!"
+)
+
+if "%PYTHON_PATH%"=="" (
+    echo ERROR: Python 3.11 not found!
+    echo Install Python 3.11 from https://www.python.org/downloads/
     pause
     exit /b 1
 )

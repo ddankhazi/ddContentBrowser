@@ -8,8 +8,15 @@ echo Starting DD Content Browser (Standalone - PORTABLE)...
 REM Try to find python 3.11 executable
 set "PYTHON_CMD="
 
-REM 1. Check if python311 is in PATH
-where python311 >nul 2>nul && set "PYTHON_CMD=python311"
+REM 1. Try Windows py launcher - resolve actual exe path
+where py >nul 2>nul && py -3.11 --version >nul 2>nul && (
+    for /f "delims=" %%p in ('py -3.11 -c "import sys; print(sys.executable)"') do set "PYTHON_CMD=%%p"
+)
+
+REM 2. Check if python311 is in PATH
+if "%PYTHON_CMD%"=="" (
+    where python311 >nul 2>nul && set "PYTHON_CMD=python311"
+)
 
 REM 2. If not found, check if python is in PATH and is version 3.11
 if "%PYTHON_CMD%"=="" (
