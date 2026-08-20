@@ -1,9 +1,9 @@
-import pytest
+"""
+This conftest is required to set the numpy print options
+to legacy mode for doctests
+"""
 
-# List of files that pytest should ignore
-collect_ignore = [
-    "io/_plugins",
-]
+import pytest
 
 
 @pytest.fixture(autouse=True)

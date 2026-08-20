@@ -1,4 +1,4 @@
-"""
+﻿"""
 DD Content Browser - UI Widgets
 Breadcrumb navigation, filter panel, and custom list view
 
@@ -17,10 +17,17 @@ from datetime import datetime, timedelta
 UI_FONT = "Segoe UI"
 
 # Add external_libs to path for OpenEXR
+# In Maya, append to avoid conflicting with Maya's own numpy/cv2/etc.
+# In standalone mode, insert at front so external_libs packages take priority.
 import sys
-_external_libs = os.path.join(os.path.dirname(__file__), "external_libs")
+from .utils import get_external_libs_dir
+_external_libs = get_external_libs_dir()
 if os.path.exists(_external_libs) and _external_libs not in sys.path:
-    sys.path.insert(0, _external_libs)
+    try:
+        import maya.cmds  # noqa: F401
+        sys.path.append(_external_libs)
+    except ImportError:
+        sys.path.insert(0, _external_libs)
 
 # NumPy is built into Maya 2026+
 try:
@@ -30,15 +37,13 @@ except ImportError:
     NUMPY_AVAILABLE = False
     print("NumPy not available")
 
-# Try to import OpenEXR for proper HDR/EXR support
-try:
-    import OpenEXR
-    import Imath
-    OPENEXR_AVAILABLE = True
-    # print(f"OpenEXR loaded - Full EXR support enabled")  # Commented to avoid duplicate messages
-except ImportError:
-    OPENEXR_AVAILABLE = False
-    # print("OpenEXR not available - EXR preview will be limited")
+# Try to import OpenEXR for proper HDR/EXR support (prefers the bundled
+# build over Maya's own older OpenEXR module - see utils.import_openexr())
+from .utils import import_openexr
+OpenEXR, Imath = import_openexr()
+OPENEXR_AVAILABLE = OpenEXR is not None
+# if not OPENEXR_AVAILABLE:
+#     print("OpenEXR not available - EXR preview will be limited")
 
 # Try to import OpenCV for Radiance HDR (.hdr) support
 try:
@@ -59,21 +64,23 @@ except ImportError:
     # print("PyMuPDF not available - PDF preview will be limited")
 
 try:
-    from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                                    QLineEdit, QScrollArea, QFrame, QGroupBox, QCheckBox, 
+    from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                                    QLineEdit, QScrollArea, QFrame, QGroupBox, QCheckBox,
                                     QSpinBox, QFormLayout, QDateEdit, QDialog, QGraphicsView,
-                                    QApplication, QListView, QListWidget, QCompleter, QAbstractItemView)
+                                    QApplication, QListView, QListWidget, QCompleter, QAbstractItemView, QMenu,
+                                    QGraphicsOpacityEffect)
     from PySide6.QtCore import Signal, Qt, QEvent, QPoint, QSize, QDate, QRect
-    from PySide6.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont
+    from PySide6.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont, QIcon
     from PySide6 import QtCore, QtGui, QtWidgets
     PYSIDE_VERSION = 6
 except ImportError:
     from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                     QLineEdit, QScrollArea, QFrame, QGroupBox, QCheckBox,
                                     QSpinBox, QFormLayout, QDateEdit, QDialog, QGraphicsView,
-                                    QApplication, QListView, QListWidget, QCompleter, QAbstractItemView)
+                                    QApplication, QListView, QListWidget, QCompleter, QAbstractItemView, QMenu,
+                                    QGraphicsOpacityEffect)
     from PySide2.QtCore import Signal, Qt, QEvent, QPoint, QSize, QDate, QRect
-    from PySide2.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont
+    from PySide2.QtGui import QPixmap, QColor, QPainter, QImageReader, QImage, QCursor, QFont, QIcon
     from PySide2 import QtCore, QtGui, QtWidgets
     PYSIDE_VERSION = 2
 
@@ -470,6 +477,29 @@ class BreadcrumbWidget(QWidget):
         self.update_breadcrumbs()
 
 
+def _build_grey_folder_icon(size=16):
+    """
+    Draw a small folder icon in the app's own grey palette (same colors as
+    the plain-folder icon in delegates.py). Used instead of the color emoji
+    for the full-path search toggle - the emoji renders as a fixed yellow
+    glyph (Segoe UI Emoji's own COLR/CPAL colors), which a QSS 'color' rule
+    or opacity effect can't turn grey, so a hand-drawn icon is required to
+    actually look grey and match the rest of the UI.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QColor(100, 100, 100))
+    painter.setBrush(QColor(160, 160, 160))
+    body_rect = QRect(1, size // 4, size - 2, size - size // 4 - 2)
+    tab_rect = QRect(1, size // 7, size // 2, size // 7)
+    painter.drawRect(tab_rect)
+    painter.drawRect(body_rect)
+    painter.end()
+    return QIcon(pixmap)
+
+
 class EnhancedSearchBar(QWidget):
     """Enhanced search bar with case-sensitive and regex toggles"""
     
@@ -490,7 +520,37 @@ class EnhancedSearchBar(QWidget):
         layout.setContentsMargins(0, 5, 0, 5)
         layout.setSpacing(5)
         
-        # Search input field (no icon before it)
+        # Recent searches dropdown - placed before the input, like a browser
+        # address bar's history dropdown. Populated/managed externally by
+        # browser.py, same pattern as the toolbar's recent-folders button:
+        # this widget just owns the button/menu (doesn't touch config
+        # itself); browser.py builds the menu actions and wires each one's
+        # triggered signal directly.
+        self.history_btn = QPushButton(u"\U0001F552")  # Clock emoji
+        self.history_btn.setMaximumWidth(30)
+        self.history_btn.setMinimumHeight(28)
+        self.history_btn.setMaximumHeight(28)
+        self.history_btn.setToolTip("Recent Searches")
+        self.history_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 2px;
+                background-color: #2a2a2a;
+                font-size: 13px;
+            }
+            QPushButton::menu-indicator {
+                width: 0px;
+            }
+            QPushButton:hover {
+                background-color: #3a3a3a;
+            }
+        """)
+        history_menu = QMenu(self.history_btn)
+        self.history_btn.setMenu(history_menu)
+        layout.addWidget(self.history_btn)
+
+        # Search input field
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("Search files... (Ctrl+F)")
         self.search_input.setMinimumWidth(300)
@@ -529,7 +589,40 @@ class EnhancedSearchBar(QWidget):
         self.search_btn.clicked.connect(self._on_search_clicked)
         self.search_btn.setEnabled(False)  # Initially disabled (not hidden)
         layout.addWidget(self.search_btn)
-        
+
+        # Fuzzy toggle button (fzf/VSCode "Ctrl+P" style subsequence match -
+        # mutually exclusive with regex, since they're different matching
+        # modes entirely; checking one unchecks the other). On by default -
+        # it's a superset of plain substring matching in practice (a
+        # contiguous substring is itself a valid subsequence), so leaving
+        # it on doesn't lose the old default behavior, just broadens it.
+        self.fuzzy_btn = QPushButton("~")
+        self.fuzzy_btn.setCheckable(True)
+        self.fuzzy_btn.setChecked(True)
+        self.fuzzy_btn.setToolTip("Fuzzy Search (e.g. \"rgh\" matches \"roughness\")")
+        self.fuzzy_btn.setMaximumWidth(35)
+        self.fuzzy_btn.setMinimumHeight(28)
+        self.fuzzy_btn.setMaximumHeight(28)
+        self.fuzzy_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 4px;
+                background-color: #2a2a2a;
+                font-family: 'Courier New', monospace;
+                font-weight: bold;
+            }
+            QPushButton:checked {
+                background-color: #4b7daa;
+                border-color: #5a8db8;
+            }
+            QPushButton:hover {
+                background-color: #3a3a3a;
+            }
+        """)
+        self.fuzzy_btn.clicked.connect(self._on_fuzzy_toggled)
+        layout.addWidget(self.fuzzy_btn)
+
         # Case-sensitive toggle button
         self.case_btn = QPushButton("Aa")
         self.case_btn.setCheckable(True)
@@ -580,7 +673,11 @@ class EnhancedSearchBar(QWidget):
         """)
         self.regex_btn.clicked.connect(self._on_options_changed)
         layout.addWidget(self.regex_btn)
-        
+
+        # Separator before the subfolders-related controls (same visual
+        # pattern as the toolbar's "  |  " separator before its Thumbnails checkbox)
+        layout.addWidget(QLabel("  |  "))
+
         # Subfolders checkbox - search in subfolders when enabled
         self.subfolders_checkbox = QCheckBox("Subfolders")
         self.subfolders_checkbox.setToolTip("Search in subfolders (manual trigger with search button)")
@@ -588,7 +685,50 @@ class EnhancedSearchBar(QWidget):
         # Use default checkbox style (same as Thumbnails and Sequences checkboxes)
         self.subfolders_checkbox.stateChanged.connect(self._on_subfolders_toggled)
         layout.addWidget(self.subfolders_checkbox)
-        
+
+        # Full-path toggle - match against the whole path instead of just
+        # the filename (e.g. to find everything under a folder named "Wall").
+        # Off by default (filename-only matches the old/expected behavior).
+        # Placed right after Subfolders since it only matters together with it
+        # (see browser.py's update_full_path_button_state, which greys this
+        # out when neither subfolder mode is on).
+        self.full_path_btn = QPushButton("")
+        self.full_path_btn.setIcon(_build_grey_folder_icon())
+        self.full_path_btn.setIconSize(QSize(15, 15))
+        self.full_path_btn.setCheckable(True)
+        self.full_path_btn.setToolTip("Search Full Path (not just filename)")
+        self.full_path_btn.setMaximumWidth(35)
+        self.full_path_btn.setMinimumHeight(28)
+        self.full_path_btn.setMaximumHeight(28)
+        self.full_path_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 2px;
+                background-color: #2a2a2a;
+                font-size: 13px;
+            }
+            QPushButton:checked {
+                background-color: #4b7daa;
+                border-color: #5a8db8;
+            }
+            QPushButton:hover {
+                background-color: #3a3a3a;
+            }
+            QPushButton:disabled {
+                background-color: transparent;
+                border-color: transparent;
+            }
+        """)
+        self.full_path_btn.clicked.connect(self._on_options_changed)
+        layout.addWidget(self.full_path_btn)
+        # Qt stylesheets can't dim the button's emoji glyph (color/opacity
+        # properties don't affect colored emoji glyphs), so a real
+        # QGraphicsOpacityEffect is used instead - see set_full_path_active().
+        self._full_path_opacity_effect = QGraphicsOpacityEffect(self.full_path_btn)
+        self._full_path_opacity_effect.setOpacity(1.0)
+        self.full_path_btn.setGraphicsEffect(self._full_path_opacity_effect)
+
         # Clear button (only visible when text present)
         self.clear_btn = QPushButton("❌")
         self.clear_btn.setMaximumWidth(30)
@@ -640,8 +780,17 @@ class EnhancedSearchBar(QWidget):
     
     def _on_options_changed(self):
         """Handle case/regex toggle change"""
+        # Regex and fuzzy are different matching modes - mutually exclusive
+        if self.regex_btn.isChecked() and self.fuzzy_btn.isChecked():
+            self.fuzzy_btn.setChecked(False)
         self.optionsChanged.emit()
-    
+
+    def _on_fuzzy_toggled(self):
+        """Handle fuzzy toggle change"""
+        if self.fuzzy_btn.isChecked() and self.regex_btn.isChecked():
+            self.regex_btn.setChecked(False)
+        self.optionsChanged.emit()
+
     def clear_search(self):
         """Clear search text"""
         self.search_input.clear()
@@ -668,7 +817,15 @@ class EnhancedSearchBar(QWidget):
     def is_regex_enabled(self):
         """Check if regex search is enabled"""
         return self.regex_btn.isChecked()
-    
+
+    def is_fuzzy_enabled(self):
+        """Check if fuzzy search is enabled"""
+        return self.fuzzy_btn.isChecked()
+
+    def is_full_path_enabled(self):
+        """Check if full-path search is enabled"""
+        return self.full_path_btn.isChecked()
+
     def is_subfolders_enabled(self):
         """Check if subfolder search is enabled"""
         return self.subfolders_checkbox.isChecked()
@@ -676,7 +833,11 @@ class EnhancedSearchBar(QWidget):
     def get_text(self):
         """Get current search text"""
         return self.search_input.text()
-    
+
+    def set_text(self, text):
+        """Set the search text (e.g. picking a recent search) - triggers the normal textChanged flow"""
+        self.search_input.setText(text)
+
     def set_case_sensitive(self, enabled):
         """Set case-sensitive mode"""
         self.case_btn.setChecked(enabled)
@@ -684,7 +845,24 @@ class EnhancedSearchBar(QWidget):
     def set_regex_enabled(self, enabled):
         """Set regex mode"""
         self.regex_btn.setChecked(enabled)
-    
+
+    def set_fuzzy_enabled(self, enabled):
+        """Set fuzzy mode"""
+        self.fuzzy_btn.setChecked(enabled)
+
+    def set_full_path_enabled(self, enabled):
+        """Set full-path search mode"""
+        self.full_path_btn.setChecked(enabled)
+
+    def set_full_path_active(self, active):
+        """
+        Enable/disable the full-path button AND visibly dim it when inactive.
+        Separate from set_full_path_enabled() (which sets the checked *value*) -
+        this controls whether the toggle can currently do anything at all.
+        """
+        self.full_path_btn.setEnabled(active)
+        self._full_path_opacity_effect.setOpacity(1.0 if active else 0.25)
+
     def set_subfolders_enabled(self, enabled):
         """Set subfolders search mode"""
         self.subfolders_checkbox.setChecked(enabled)
@@ -1078,7 +1256,7 @@ def load_hdr_exr_raw(file_path, max_size=2048):
             resolution_str = f"{width} x {height}"
             
             # Scale if needed
-            if width > max_size or height > max_size:
+            if max_size and (width > max_size or height > max_size):
                 scale = min(max_size / width, max_size / height)
                 new_width = int(width * scale)
                 new_height = int(height * scale)
@@ -1131,7 +1309,7 @@ def load_hdr_exr_raw(file_path, max_size=2048):
                     return None, None, None, None
                 
                 # Scale if needed
-                if width > max_size or height > max_size:
+                if max_size and (width > max_size or height > max_size):
                     scale = min(max_size / width, max_size / height)
                     new_width = int(width * scale)
                     new_height = int(height * scale)
@@ -1194,35 +1372,70 @@ def load_hdr_exr_image(file_path, max_size=3840, exposure=0.0, return_raw=False,
                     return None, "Deep EXR - No Preview"
         except:
             pass
-    
-    # Use OpenCV for .hdr (Radiance RGBE) files if available
+
+    # SLOW CHECK: Not tagged yet (first time seeing this file) - ask OIIO
+    # directly via spec.deep. Needed because read_exr_via_oiio() raising a
+    # generic "no pixel data" error for deep files (OIIO's read_image()
+    # just returns None for them, no dtype-based signal like the old
+    # OpenEXR-binding path had) wouldn't be recognized as "deep" by the
+    # string-matching in the except clause below, so this must be checked
+    # upfront rather than inferred from the failure afterwards.
+    if file_ext.endswith('.exr'):
+        try:
+            from .preview_panel import is_deep_exr
+            if is_deep_exr(file_path_str):
+                if metadata_manager:
+                    try:
+                        tag_id = metadata_manager.add_tag("deepdata", category=None, color=None)
+                        metadata_manager.add_tag_to_file(file_path_str, tag_id)
+                    except Exception:
+                        pass
+                if return_raw:
+                    return None, "Deep EXR - No Preview", None
+                else:
+                    return None, "Deep EXR - No Preview"
+        except ImportError:
+            pass
+
+    # Use OpenImageIO for .hdr (Radiance RGBE) files if available - measured
+    # ~30% faster than OpenCV's Radiance decoder (see
+    # _generate_hdr_thumbnail_data() in cache.py for the benchmark)
     if file_ext.endswith('.hdr') and OPENCV_AVAILABLE and NUMPY_AVAILABLE:
         try:
-            # Read HDR with OpenCV
-            rgb = cv2.imread(file_path_str, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-            
-            if rgb is None:
-                raise Exception("OpenCV returned None")
-            
-            # OpenCV loads as BGR, convert to RGB
-            rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-            
+            import sys
+            from .utils import get_external_libs_dir
+            external_libs = get_external_libs_dir()
+            if external_libs not in sys.path:
+                sys.path.append(external_libs)
+            from OpenImageIO import ImageInput
+
+            inp = ImageInput.open(file_path_str)
+            if not inp:
+                raise Exception("OpenImageIO could not open file")
+            spec = inp.spec()
+            width, height = spec.width, spec.height
+            pixels = inp.read_image()
+            inp.close()
+
+            if pixels is None:
+                raise Exception("OpenImageIO returned no pixel data")
+
+            rgb = np.array(pixels, dtype=np.float32)
             if rgb.ndim == 2:
                 # Grayscale - convert to RGB
                 rgb = np.stack([rgb, rgb, rgb], axis=2)
-            elif rgb.shape[2] == 4:
+            elif rgb.ndim == 3 and rgb.shape[2] >= 4:
                 # RGBA - drop alpha
                 rgb = rgb[:, :, :3]
-            
-            height, width = rgb.shape[:2]
+
             resolution_str = f"{width} x {height}"
-            
+
             # Scale if needed
-            if width > max_size or height > max_size:
+            if max_size and (width > max_size or height > max_size):
                 scale = min(max_size / width, max_size / height)
                 new_width = int(width * scale)
                 new_height = int(height * scale)
-                
+
                 # Use OpenCV resize
                 rgb = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
                 width, height = new_width, new_height
@@ -1278,200 +1491,160 @@ def load_hdr_exr_image(file_path, max_size=3840, exposure=0.0, return_raw=False,
             return pixmap, resolution_str
             
         except Exception as e:
-            print(f"OpenCV HDR loading failed: {e}")
+            print(f"HDR loading failed: {e}")
             import traceback
             traceback.print_exc()
             # Fall through to Maya MImage fallback
     
-    # Use OpenEXR for .exr files if available
+    # Use OpenImageIO for .exr files if available - measured ~2-3x faster
+    # than the OpenEXR Python binding (see read_exr_via_oiio() in utils.py
+    # for the benchmark and channel-grouping details)
     if file_ext.endswith('.exr') and OPENEXR_AVAILABLE and NUMPY_AVAILABLE:
         try:
-            # Open EXR file
-            with OpenEXR.File(file_path_str) as exr_file:
-                # Get header info
-                header = exr_file.header()
-                dw = header['dataWindow']
-                width = dw[1][0] - dw[0][0] + 1
-                height = dw[1][1] - dw[0][1] + 1
-                resolution_str = f"{width} x {height}"
-                
-                # Read RGB channels as interleaved array
-                channels = exr_file.channels()
-                
-                # Get RGB data (returns numpy array directly!)
-                # Try multiple naming conventions for RGB channels
-                rgb = None
-                
-                # 1. Try standard interleaved RGB or RGBA
-                if "RGB" in channels:
-                    rgb_data = channels["RGB"].pixels  # Shape: (height, width, 3)
-                    if rgb_data is not None:
-                        rgb = rgb_data
-                elif "RGBA" in channels:
-                    rgba_data = channels["RGBA"].pixels  # Shape: (height, width, 4)
-                    if rgba_data is not None:
-                        rgb = rgba_data[:, :, :3]  # Drop alpha, keep RGB only
-                
-                # 2. Try separate R, G, B channels
-                elif all(c in channels for c in ["R", "G", "B"]):
-                    r = channels["R"].pixels
-                    g = channels["G"].pixels
-                    b = channels["B"].pixels
-                    if r is not None and g is not None and b is not None:
-                        rgb = np.stack([r, g, b], axis=2)  # Shape: (height, width, 3)
-                
-                # 3. Try Beauty pass (common in render layers)
-                elif all(c in channels for c in ["Beauty.R", "Beauty.G", "Beauty.B"]):
-                    r = channels["Beauty.R"].pixels
-                    g = channels["Beauty.G"].pixels
-                    b = channels["Beauty.B"].pixels
-                    if r is not None and g is not None and b is not None:
-                        rgb = np.stack([r, g, b], axis=2)
-                
-                # 4. Try first layer with .R .G .B (generic multi-layer)
-                else:
-                    # Find first layer that has RGB channels
-                    channel_names = list(channels.keys())
-                    layer_prefixes = set()
-                    for name in channel_names:
-                        if '.' in name:
-                            prefix = name.rsplit('.', 1)[0]
-                            layer_prefixes.add(prefix)
-                    
-                    # Try each layer prefix
-                    for prefix in sorted(layer_prefixes):
-                        r_name = f"{prefix}.R"
-                        g_name = f"{prefix}.G"
-                        b_name = f"{prefix}.B"
-                        if all(c in channels for c in [r_name, g_name, b_name]):
-                            r = channels[r_name].pixels
-                            g = channels[g_name].pixels
-                            b = channels[b_name].pixels
-                            if r is not None and g is not None and b is not None:
-                                rgb = np.stack([r, g, b], axis=2)
-                                break
-                
-                # 5. If still no RGB, try single channel (grayscale)
-                if rgb is None:
-                    # Try common single-channel names first
-                    single_channels = ["Y", "Z", "depth", "A", "alpha", "luminance"]
-                    for ch_name in single_channels:
-                        if ch_name in channels:
-                            gray = channels[ch_name].pixels
-                            if gray is not None:
-                                # Convert to RGB by repeating channel
-                                if gray.ndim == 2:
-                                    rgb = np.stack([gray, gray, gray], axis=2)
-                                else:
-                                    # Already 3D, just use it
-                                    rgb = gray
-                                break
-                
-                # 6. Last resort: use ANY available channel as grayscale
-                if rgb is None and len(channels) > 0:
-                    # Take the first available channel
-                    first_channel_name = list(channels.keys())[0]
-                    gray = channels[first_channel_name].pixels
-                    
-                    if gray is not None:
+            from .utils import read_exr_via_oiio
+
+            # channels is grouped the same way OpenEXR.File().channels()
+            # groups them (e.g. "Beauty.R/G/B" -> one "Beauty"-keyed
+            # 3-channel entry), so the fallback ladder below checks those
+            # group keys directly instead of re-deriving them from
+            # individual dotted channel names.
+            width, height, channels = read_exr_via_oiio(file_path_str)
+            resolution_str = f"{width} x {height}"
+
+            # Get RGB data - try multiple naming conventions for RGB channels
+            rgb = None
+
+            # 1. Try standard interleaved RGB or RGBA
+            if "RGB" in channels:
+                data = channels["RGB"]
+                rgb = data[:, :, :3] if data.ndim == 3 and data.shape[2] >= 3 else data
+            elif "RGBA" in channels:
+                rgb = channels["RGBA"][:, :, :3]  # Drop alpha, keep RGB only
+
+            # 2. Try Beauty pass (common in render layers)
+            elif "Beauty" in channels and channels["Beauty"].ndim == 3 and channels["Beauty"].shape[2] >= 3:
+                rgb = channels["Beauty"][:, :, :3]
+
+            # 3. Try the first other grouped (3+ channel) layer, in file order
+            if rgb is None:
+                for key, data in channels.items():
+                    if key in ("RGB", "RGBA", "Beauty"):
+                        continue
+                    if data.ndim == 3 and data.shape[2] >= 3:
+                        rgb = data[:, :, :3]
+                        break
+
+            # 4. If still no RGB, try single channel (grayscale)
+            if rgb is None:
+                single_channels = ["Y", "Z", "depth", "A", "alpha", "luminance"]
+                for ch_name in single_channels:
+                    if ch_name in channels:
+                        gray = channels[ch_name]
                         # Convert to RGB by repeating channel
-                        if gray.ndim == 2:
-                            rgb = np.stack([gray, gray, gray], axis=2)
-                        elif gray.ndim == 3 and gray.shape[2] == 1:
-                            # Single channel as 3D array
-                            rgb = np.concatenate([gray, gray, gray], axis=2)
-                        else:
-                            rgb = gray
-                
-                # If still nothing, list available channels and give up
-                if rgb is None:
-                    available = ", ".join(sorted(channels.keys())[:10])  # Show first 10
-                    raise Exception(f"No usable channels found. Available: {available}")
-                
-                # Final safety check: verify rgb is valid numpy array with data
-                if rgb is None or not isinstance(rgb, np.ndarray) or rgb.size == 0:
-                    raise Exception(f"RGB data is invalid or empty after channel processing")
-                
-                # Check if dtype is numeric (not object or other non-numeric types)
-                # Deep EXR channels can return object arrays which we can't process
-                if rgb.dtype == np.object_ or not np.issubdtype(rgb.dtype, np.number):
-                    raise Exception(f"RGB data has non-numeric dtype: {rgb.dtype} (deep/volumetric EXR not supported)")
-                
-                # Scale if needed
-                if width > max_size or height > max_size:
-                    scale = min(max_size / width, max_size / height)
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    
-                    # Simple nearest-neighbor resize (fast)
-                    indices_h = np.linspace(0, height-1, new_height, dtype=int)
-                    indices_w = np.linspace(0, width-1, new_width, dtype=int)
-                    rgb = rgb[np.ix_(indices_h, indices_w)]
-                    
-                    width, height = new_width, new_height
-                
-                # Check for ACES color management via tags
-                use_aces = False
-                if metadata_manager:
-                    try:
-                        from pathlib import Path
-                        file_metadata = metadata_manager.get_file_metadata(str(file_path))
-                        file_tags = file_metadata.get('tags', [])
-                        tag_names_lower = [tag['name'].lower() for tag in file_tags]
-                        
-                        if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
-                            use_aces = True
-                    except:
-                        pass
-                
-                # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
-                compensated_exposure = exposure - 1.0
-                
-                if use_aces:
-                    # Use ACES view transform
-                    from .aces_color import apply_aces_view_transform
-                    with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
-                        rgb_display = apply_aces_view_transform(rgb, exposure=compensated_exposure)
+                        rgb = np.stack([gray, gray, gray], axis=2) if gray.ndim == 2 else gray
+                        break
+
+            # 5. Last resort: use ANY available channel as grayscale
+            if rgb is None and len(channels) > 0:
+                first_channel_name = next(iter(channels))
+                gray = channels[first_channel_name]
+
+                if gray.ndim == 2:
+                    rgb = np.stack([gray, gray, gray], axis=2)
+                elif gray.ndim == 3 and gray.shape[2] == 1:
+                    rgb = np.concatenate([gray, gray, gray], axis=2)
                 else:
-                    # Standard tone mapping
-                    exposure_multiplier = pow(2.0, compensated_exposure)
-                    rgb = rgb * exposure_multiplier
-                    
-                    # ACES Filmic tone mapping
-                    a = 2.51
-                    b = 0.03
-                    c = 2.43
-                    d = 0.59
-                    e = 0.14
-                    
-                    # Suppress numpy warnings for HDR tonemapping
-                    with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
-                        rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
-                    
-                    # Gamma correction (2.2 for sRGB)
-                    gamma = 1.0 / 2.2
-                    rgb_display = np.power(rgb_tonemapped, gamma)
-                
-                # Convert to 8-bit
-                with np.errstate(invalid='ignore'):
-                    rgb_8bit = (rgb_display * 255).astype(np.uint8)
-                
-                # Create QImage
-                bytes_per_line = width * 3
-                q_image = QImage(rgb_8bit.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
-                q_image = q_image.copy()
-                
-                # Convert to QPixmap
-                pixmap = QPixmap.fromImage(q_image)
-                return pixmap, resolution_str
-                
+                    rgb = gray
+
+            # If still nothing, list available channels and give up
+            if rgb is None:
+                available = ", ".join(sorted(channels.keys())[:10])  # Show first 10
+                raise Exception(f"No usable channels found. Available: {available}")
+
+            # Final safety check: verify rgb is valid numpy array with data
+            if rgb is None or not isinstance(rgb, np.ndarray) or rgb.size == 0:
+                raise Exception(f"RGB data is invalid or empty after channel processing")
+
+            # Check if dtype is numeric (not object or other non-numeric types)
+            # Deep EXR channels can return object arrays which we can't process
+            if rgb.dtype == np.object_ or not np.issubdtype(rgb.dtype, np.number):
+                raise Exception(f"RGB data has non-numeric dtype: {rgb.dtype} (deep/volumetric EXR not supported)")
+
+            # Scale if needed
+            if max_size and (width > max_size or height > max_size):
+                scale = min(max_size / width, max_size / height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+
+                # Simple nearest-neighbor resize (fast)
+                indices_h = np.linspace(0, height-1, new_height, dtype=int)
+                indices_w = np.linspace(0, width-1, new_width, dtype=int)
+                rgb = rgb[np.ix_(indices_h, indices_w)]
+
+                width, height = new_width, new_height
+
+            # Check for ACES color management via tags
+            use_aces = False
+            if metadata_manager:
+                try:
+                    from pathlib import Path
+                    file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names_lower = [tag['name'].lower() for tag in file_tags]
+
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                except:
+                    pass
+
+            # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
+            compensated_exposure = exposure - 1.0
+
+            if use_aces:
+                # Use ACES view transform
+                from .aces_color import apply_aces_view_transform
+                with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                    rgb_display = apply_aces_view_transform(rgb, exposure=compensated_exposure)
+            else:
+                # Standard tone mapping
+                exposure_multiplier = pow(2.0, compensated_exposure)
+                rgb = rgb * exposure_multiplier
+
+                # ACES Filmic tone mapping
+                a = 2.51
+                b = 0.03
+                c = 2.43
+                d = 0.59
+                e = 0.14
+
+                # Suppress numpy warnings for HDR tonemapping
+                with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                    rgb_tonemapped = np.clip((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), 0, 1)
+
+                # Gamma correction (2.2 for sRGB)
+                gamma = 1.0 / 2.2
+                rgb_display = np.power(rgb_tonemapped, gamma)
+
+            # Convert to 8-bit
+            with np.errstate(invalid='ignore'):
+                rgb_8bit = (rgb_display * 255).astype(np.uint8)
+
+            # Create QImage
+            bytes_per_line = width * 3
+            q_image = QImage(rgb_8bit.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+            q_image = q_image.copy()
+
+            # Convert to QPixmap
+            pixmap = QPixmap.fromImage(q_image)
+            return pixmap, resolution_str
+
         except Exception as e:
             error_msg = str(e)
             # Deep/volumetric EXR files are not supported
             if "non-numeric dtype" in error_msg or "deep/volumetric" in error_msg.lower():
                 print(f"ℹ️  Deep/volumetric EXR not supported for preview: {Path(file_path_str).name}")
             else:
-                print(f"OpenEXR loading failed: {e}")
+                print(f"EXR loading failed: {e}")
             # Fall through to Maya MImage fallback
     
     # Fallback: Use Maya MImage for HDR or if OpenEXR not available
@@ -1492,7 +1665,7 @@ def load_hdr_exr_image(file_path, max_size=3840, exposure=0.0, return_raw=False,
         resolution_str = f"{width} x {height}"
         
         # Calculate scaled size if needed
-        if width > max_size or height > max_size:
+        if max_size and (width > max_size or height > max_size):
             if width > height:
                 scaled_width = max_size
                 scaled_height = int(max_size * height / width)
@@ -2141,14 +2314,56 @@ class MayaStyleListView(QListView):
         indexes = self.selectedIndexes()
         file_paths = []
         urls = []
+        texture_set_assets = []
         
         for index in indexes:
             if index.isValid():
                 asset = self.model().data(index, Qt.UserRole)
-                if asset and not asset.is_folder:
-                    file_path = str(asset.file_path)
-                    file_paths.append(file_path)
-                    urls.append(QUrl.fromLocalFile(file_path))
+                if not asset or asset.is_folder:
+                    continue
+                # Texture set: build shader graph on drop (do NOT drag the raw file URL)
+                if getattr(asset, 'is_texture_set', False) and getattr(asset, 'texture_set', None):
+                    texture_set_assets.append(asset)
+                    # For MMB (collections/batch import) keep a representative URL so the
+                    # internal drop handler still has something to work with.
+                    if is_middle_button:
+                        rep = str(asset.file_path)
+                        file_paths.append(rep)
+                        urls.append(QUrl.fromLocalFile(rep))
+                    continue
+                file_path = str(asset.file_path)
+                file_paths.append(file_path)
+                urls.append(QUrl.fromLocalFile(file_path))
+        
+        # Texture set drag -> stash payload and set the shader-build MEL command as text.
+        # Only for ALT/external (Windows-native) drags; MMB drops build via batch_import_files.
+        if texture_set_assets and not is_middle_button:
+            try:
+                from . import models as _models
+                # Stash the list-based channels (not channel_paths) so
+                # apply_pending_texture_set_drop() can still convert every
+                # UDIM tile to TIF if that setting is on, not just the
+                # first/representative one per channel.
+                _models._PENDING_TEXTURE_SET_DROP = {
+                    'sets': [
+                        {'name': a.texture_set.name, 'channels': a.texture_set.channels}
+                        for a in texture_set_assets
+                    ]
+                }
+            except Exception as e:
+                print(f"[TextureSet] Failed to stash drop payload: {e}")
+            mime_data.setText(
+                'python("import ddContentBrowser.models as _m; _m.apply_pending_texture_set_drop()");'
+            )
+            drag.setMimeData(mime_data)
+            if is_middle_button:
+                self.middle_button_pressed = False
+                self.drag_start_position = None
+                self.drag_started = False
+                self.setCursor(Qt.ArrowCursor)
+                self.unsetCursor()
+            drag.exec_(supportedActions)
+            return
         
         if not urls:
             # No files to drag - reset state if middle button
@@ -2181,11 +2396,25 @@ class MayaStyleListView(QListView):
             return
         
         paths = []
+        texture_set_assets = []
         for index in indexes:
             if index.isValid():
                 asset = self.model().data(index, Qt.UserRole)
-                if asset and not asset.is_folder:
-                    paths.append(str(asset.file_path))
+                if not asset or asset.is_folder:
+                    continue
+                # Texture set -> build shader network instead of importing the base color file
+                if getattr(asset, 'is_texture_set', False) and getattr(asset, 'texture_set', None):
+                    texture_set_assets.append(asset)
+                    continue
+                paths.append(str(asset.file_path))
+        
+        # Build shader network(s) for any texture sets via the browser
+        if texture_set_assets:
+            browser = self.parent()
+            while browser and not hasattr(browser, '_build_texture_set_shaders'):
+                browser = browser.parent()
+            if browser and hasattr(browser, '_build_texture_set_shaders'):
+                browser._build_texture_set_shaders(texture_set_assets)
         
         if not paths:
             return
@@ -2196,10 +2425,16 @@ class MayaStyleListView(QListView):
             
             imported_count = 0
             failed_count = 0
-            
+
             # Get image extensions from config
             image_exts = get_extensions_by_category('images')
-            
+
+            # Find the browser instance once, for the auto-material hook below
+            # (same lookup pattern as _build_texture_set_shaders above)
+            browser = self.parent()
+            while browser and not hasattr(browser, '_try_auto_assign_texture_set_material'):
+                browser = browser.parent()
+
             for file_path in paths:
                 try:
                     file_ext = Path(file_path).suffix.lower()
@@ -2242,24 +2477,30 @@ class MayaStyleListView(QListView):
                         # Get Maya import type from config
                         file_type = get_maya_import_type(file_ext)
                         
+                        new_nodes = []
                         if file_type:
                             # Import with type specification
-                            cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
+                            new_nodes = cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
                                      mergeNamespacesOnClash=False, namespace=':',
-                                     options='v=0', preserveReferences=True)
+                                     options='v=0', preserveReferences=True, returnNewNodes=True) or []
                             imported_count += 1
                         else:
                             # Unknown format or no import type - try auto-detect
                             try:
-                                cmds.file(file_path, i=True, ignoreVersion=True,
+                                new_nodes = cmds.file(file_path, i=True, ignoreVersion=True,
                                          mergeNamespacesOnClash=False, namespace=':',
-                                         preserveReferences=True)
+                                         preserveReferences=True, returnNewNodes=True) or []
                                 imported_count += 1
                             except:
                                 # Skip unsupported file types
                                 failed_count += 1
                                 continue
-                    
+
+                        # Auto-build & assign a material from a matching texture
+                        # set (same folder or subfolders), if one is found
+                        if browser:
+                            browser._try_auto_assign_texture_set_material(file_path, new_nodes)
+
                 except Exception as e:
                     failed_count += 1
             
@@ -2386,7 +2627,12 @@ class DragDropCollectionListWidget(QListWidget):
         for index in indexes:
             if index.isValid():
                 asset = source.model().data(index, Qt.UserRole)
-                if asset and not asset.is_folder:
+                if not asset or asset.is_folder:
+                    continue
+                if getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                    # Add every file that makes up the set, not just the representative thumbnail
+                    file_paths.extend(str(f) for f in asset.texture_set.files)
+                else:
                     file_paths.append(str(asset.file_path))
         
         if file_paths:
@@ -2397,100 +2643,54 @@ class DragDropCollectionListWidget(QListWidget):
             event.ignore()
 
 
-def load_oiio_image_array(file_path, max_size=2048, mip_level=0):
+# Qt-free decode/tonemap logic lives in sequence_decode.py - imported
+# here (and used verbatim below) so cache.py/quick_view.py/preview_panel.py
+# can keep importing these names from widgets, while
+# sequence_decode_worker.py can import the same functions without pulling
+# in any Qt/Maya dependency (see sequence_decode.py's module docstring).
+from .sequence_decode import (
+    _resize_float_rgb, _compute_auto_mip_level, load_oiio_image_array,
+    decode_tiff_array, tonemap_hdr_linear_array, tonemap_tx_array,
+    decode_sequence_frame_raw,
+)
+
+
+def load_tiff_fast(file_path, max_size=1024):
     """
-    Load image using OpenImageIO and return as numpy array (worker thread safe).
-    Simpler version of load_oiio_image that returns raw array instead of QPixmap.
-    
+    Load a TIFF preview via OpenImageIO with its native pixel format (no
+    float upcast for uint8-native TIFFs). Single-decoder fast path shared by
+    the Preview panel and Quick View (single-file and grid mode).
+
+    Measured on real 4K Megascans TIFFs: ~2.3x faster than PIL for
+    uncompressed uint8, ~1.6x faster for LZW-compressed, and it's the only
+    decoder among PIL/tifffile/Qt's QImageReader that reliably handles
+    uncompressed float32 TIFFs (PIL can't open them at all; QImageReader
+    opens them but took ~900ms vs this path's ~150-200ms).
+
     Args:
-        file_path: Path to image file
-        max_size: Maximum width/height for thumbnail
-        mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.)
-        
+        file_path: Path to the TIFF file
+        max_size: Maximum width/height for the returned pixmap
+
     Returns:
-        numpy array (RGB, uint8) or None on failure
+        tuple: (QPixmap, resolution_string) or (None, None) on failure
     """
+    array, resolution_str = decode_tiff_array(file_path, max_size=max_size)
+    if array is None:
+        return None, None
     try:
-        import sys
-        import os
-        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
-        if external_libs not in sys.path:
-            sys.path.insert(0, external_libs)
-        
-        from OpenImageIO import ImageInput
-        import numpy as np
-        
-        file_path_str = str(file_path)
-        
-        # Open image
-        inp = ImageInput.open(file_path_str)
-        if not inp:
-            return None
-        
-        # Get image spec
-        spec = inp.spec()
-        width = spec.width
-        height = spec.height
-        
-        # If mipmap requested and available
-        if mip_level > 0 and spec.get_int_attribute('miplevels', 1) > mip_level:
-            inp.seek_subimage(0, mip_level)
-            spec = inp.spec()
-            width = spec.width
-            height = spec.height
-        
-        # Check valid dimensions
-        if width <= 0 or height <= 0:
-            return None
-        
-        # Read pixels
-        pixels = inp.read_image()
-        inp.close()
-        
-        if pixels is None:
-            return None
-        
-        # Convert to numpy array
-        img = np.array(pixels, dtype=np.float32)
-        
-        if img.size == 0:
-            return None
-        
-        # Handle different channel counts
-        if img.ndim == 2:
-            # Grayscale -> RGB
-            img = np.stack([img, img, img], axis=2)
-        elif img.ndim == 3:
-            actual_channels = img.shape[2]
-            if actual_channels == 1:
-                img = np.concatenate([img, img, img], axis=2)
-            elif actual_channels == 2:
-                img = np.concatenate([img[:,:,0:1], img[:,:,0:1], img[:,:,0:1]], axis=2)
-            elif actual_channels == 4:
-                # RGBA -> RGB
-                img = img[:, :, :3]
-            elif actual_channels > 4:
-                # Take first 3 channels
-                img = img[:, :, :3]
-        
-        # Resize if needed
-        if width > max_size or height > max_size:
-            scale = min(max_size / width, max_size / height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            
-            if new_width < 1 or new_height < 1:
-                return None
-            
-            import cv2
-            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-        
-        # Return as float32 [0-inf] - caller will handle tone mapping
-        # This allows HDR/ACEScg color management in the worker thread
-        return img
-        
-    except Exception as e:
-        return None
+        try:
+            from PySide6.QtGui import QImage, QPixmap
+        except ImportError:
+            from PySide2.QtGui import QImage, QPixmap
+
+        hh, ww = array.shape[:2]
+        q_image = QImage(array.tobytes(), ww, hh, ww * 3, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image.copy())
+        if pixmap and not pixmap.isNull():
+            return pixmap, resolution_str
+        return None, None
+    except Exception:
+        return None, None
 
 
 def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadata_manager=None):
@@ -2501,7 +2701,8 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadat
     Args:
         file_path: Path to image file
         max_size: Maximum width/height for preview
-        mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.)
+        mip_level: Mipmap level to load (0 = full res, 1 = half res, etc.),
+                   or 'auto' to pick the smallest mip level that still covers max_size
         exposure: Exposure compensation in stops (0.0 = neutral)
         metadata_manager: Optional metadata manager for tag-based color management
         
@@ -2511,9 +2712,10 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadat
     try:
         import sys
         import os
-        external_libs = os.path.join(os.path.dirname(__file__), 'external_libs')
+        from .utils import get_external_libs_dir
+        external_libs = get_external_libs_dir()
         if external_libs not in sys.path:
-            sys.path.insert(0, external_libs)
+            sys.path.append(external_libs)
         
         from OpenImageIO import ImageInput, ImageBuf, ImageSpec
         import numpy as np
@@ -2552,13 +2754,19 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadat
         #     print(f"[OIIO]   Format: {metadata['format']}, Compression: {metadata['compression']}")
         #     print(f"[OIIO]   Color Space: {metadata['color_space']}")
         
-        # If mipmap requested and available
-        if mip_level > 0 and spec.get_int_attribute('miplevels', 1) > mip_level:
-            inp.seek_subimage(0, mip_level)
+        # Seek to the requested mip level, probing downward if it doesn't
+        # exist (seek_subimage() is the source of truth - the 'miplevels'
+        # spec attribute is not reliably populated, see _compute_auto_mip_level)
+        if mip_level == 'auto':
+            mip_level = _compute_auto_mip_level(width, height, max_size)
+
+        while mip_level > 0 and not inp.seek_subimage(0, mip_level):
+            mip_level -= 1
+        if mip_level > 0:
             spec = inp.spec()
             width = spec.width
             height = spec.height
-        
+
         resolution_str = f"{width} x {height}"
         
         # Debug: Check for invalid dimensions
@@ -2612,59 +2820,77 @@ def load_oiio_image(file_path, max_size=2048, mip_level=0, exposure=0.0, metadat
             if new_width < 1 or new_height < 1:
                 return None, None, None
             
-            import cv2
-            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            img = _resize_float_rgb(img, new_width, new_height)
             width, height = new_width, new_height
         
-        # Detect ACES color space
-        use_aces = False
-        
-        # Method 1: Check filename for ACEScg marker (RenderMan .tx convention)
-        # Example: "texture_ACEScg.tx" or "env_scene-linear Rec.709-sRGB_ACEScg.hdr.tx"
+        # Detect color space: "ACEScg", "DCI-P3", or "Linear sRGB"
+        detected_colorspace = "Linear sRGB"
+
         from pathlib import Path
-        filename = Path(file_path_str).stem.lower()  # Get filename without extension
-        
-        # Debug: Show what we're checking (disabled for production)
-        # if file_path_str.lower().endswith('.tx'):
-        #     print(f"[OIIO] Checking filename stem: '{filename}'")
-        
-        if '_acescg' in filename or '-acescg' in filename or 'acescg' in filename:
-            use_aces = True
-            # print(f"[OIIO] ✓ Detected ACEScg from filename: {Path(file_path_str).name}")
-        
-        # Method 2: Check OIIO metadata color_space attribute
-        if not use_aces and metadata.get('color_space', '').lower() in ['acescg', 'aces', 'aces_cg']:
-            use_aces = True
-            # print(f"[OIIO] Detected ACEScg from metadata: {metadata['color_space']}")
-        
-        # Method 3: Check tags (if metadata_manager provided)
-        if not use_aces and metadata_manager:
-            try:
-                file_metadata = metadata_manager.get_file_metadata(str(file_path))
-                file_tags = file_metadata.get('tags', [])
-                tag_names_lower = [tag['name'].lower() for tag in file_tags]
-                
-                if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
-                    use_aces = True
-                    # print(f"[OIIO] Detected ACEScg from tags: {[tag['name'] for tag in file_tags]}")
-            except:
-                pass
-        
-        # Debug: Print final color management decision (disabled for production)
-        # if file_path_str.lower().endswith('.tx'):
-        #     if use_aces:
-        #         print(f"[OIIO] → Using ACES view transform")
-        #     else:
-        #         print(f"[OIIO] → Using standard filmic tone mapping")
-        
+        file_path_obj = Path(file_path_str)
+        filename = file_path_obj.stem.lower()  # Get filename without extension
+
+        if file_path_obj.suffix.lower() == '.tx':
+            # .tx files: filename render-colorspace suffix is authoritative
+            # (same rule as aces_color.auto_tag_file_colorspace's .tx branch -
+            # kept in sync here so Preview/Quick View never disagrees with the
+            # tag a file was auto-tagged with). Does NOT apply to any other
+            # extension reaching this loader (e.g. the EXR fallback path below).
+            colorspace_suffix_map = [
+                ('acescg', "ACEScg"),
+                ('scene-linear rec.2020', "ACEScg"),          # close enough to ACEScg's AP1 gamut
+                ('scene-linear rec.709-srgb', "Linear sRGB"),
+                ('scene-linear dci-p3', "DCI-P3"),
+            ]
+            matched = None
+            for suffix, colorspace in colorspace_suffix_map:
+                if suffix in filename:
+                    matched = colorspace
+                    break
+            # No explicit indicator - .tx files in this pipeline default to ACEScg
+            detected_colorspace = matched if matched else "ACEScg"
+        else:
+            # Method 1: Check filename for ACEScg marker (legacy, non-.tx formats)
+            use_aces = False
+            if '_acescg' in filename or '-acescg' in filename or 'acescg' in filename:
+                use_aces = True
+
+            # Method 2: Check OIIO metadata color_space attribute
+            if not use_aces and metadata.get('color_space', '').lower() in ['acescg', 'aces', 'aces_cg']:
+                use_aces = True
+
+            # Method 3: Check tags (if metadata_manager provided)
+            if not use_aces and metadata_manager:
+                try:
+                    file_metadata = metadata_manager.get_file_metadata(str(file_path))
+                    file_tags = file_metadata.get('tags', [])
+                    tag_names_lower = [tag['name'].lower() for tag in file_tags]
+
+                    if "acescg" in tag_names_lower or "srgb(aces)" in tag_names_lower:
+                        use_aces = True
+                except:
+                    pass
+
+            detected_colorspace = "ACEScg" if use_aces else "Linear sRGB"
+
         # Apply exposure compensation with -1 stop offset (match Nuke/Maya)
         compensated_exposure = exposure - 1.0
-        
+
         # Apply color management and tone mapping
-        if use_aces and img.max() > 1.0:
-            # ACES view transform for HDR .tx files
+        # NOTE: ACES/DCI-P3 view transforms apply whenever detected, regardless
+        # of value range - most .tx textures (Albedo, Roughness, etc.) are
+        # LDR (max <= 1.0) but still need the gamut/display transform, not
+        # just a range check. Matches cache.py's thumbnail generator, which
+        # applies it unconditionally too - previously this was gated on
+        # img.max() > 1.0, so LDR-tagged .tx files silently fell through to
+        # plain gamma with no color management applied at all.
+        if detected_colorspace == "ACEScg":
             from .aces_color import apply_aces_view_transform
             img = apply_aces_view_transform(img, exposure=compensated_exposure)
+        elif detected_colorspace == "DCI-P3":
+            from .aces_color import apply_dci_p3_view_transform
+            # No baked-in exposure offset - matches Linear sRGB (LDR texture data)
+            img = apply_dci_p3_view_transform(img, exposure=0.0)
         else:
             # Standard tone mapping
             if exposure != 0.0:

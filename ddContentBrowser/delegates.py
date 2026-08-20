@@ -83,7 +83,60 @@ class ThumbnailDelegate(QStyledItemDelegate):
         
         text = extension[1:].upper() if len(extension) > 1 else "FILE"
         painter.drawText(rect, Qt.AlignCenter, text)
-        
+
+    def _get_search_highlight_indices(self, asset):
+        """Character indices in asset.name matched by the current search, or None (no active search / no match)."""
+        if not self.browser or not hasattr(self.browser, 'file_model'):
+            return None
+        try:
+            return self.browser.file_model.get_search_highlight_indices(asset.name)
+        except Exception:
+            return None
+
+    def _draw_highlighted_text(self, painter, rect, text, matched_indices, alignment, base_color, highlight_color):
+        """
+        Draw `text` inside `rect`, highlighting the characters at
+        matched_indices (current search-match positions, e.g. from fuzzy
+        search) in highlight_color/bold, everything else in base_color -
+        drawn character-by-character since QPainter has no built-in
+        partial-rich-text mode. Supports the two alignments actually used
+        in this delegate: Qt.AlignTop|Qt.AlignHCenter (grid mode) and
+        Qt.AlignVCenter/left (list mode).
+        """
+        if not matched_indices:
+            painter.setPen(base_color)
+            painter.drawText(rect, alignment, text)
+            return
+
+        matched_set = set(matched_indices)
+        metrics = painter.fontMetrics()
+        base_font = painter.font()
+        highlight_font = QFont(base_font)
+        highlight_font.setBold(True)
+
+        total_width = metrics.horizontalAdvance(text)
+        if alignment & Qt.AlignHCenter:
+            x = rect.x() + max(0, (rect.width() - total_width) // 2)
+        else:
+            x = rect.x()
+
+        if alignment & Qt.AlignVCenter:
+            y = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) // 2
+        else:
+            y = rect.y() + metrics.ascent()
+
+        for i, ch in enumerate(text):
+            if i in matched_set:
+                painter.setFont(highlight_font)
+                painter.setPen(highlight_color)
+            else:
+                painter.setFont(base_font)
+                painter.setPen(base_color)
+            painter.drawText(x, y, ch)
+            x += metrics.horizontalAdvance(ch)
+
+        painter.setFont(base_font)
+
     def sizeHint(self, option, index):
         """Return size hint for item"""
         if self.icon_mode:
@@ -132,31 +185,41 @@ class ThumbnailDelegate(QStyledItemDelegate):
         thumb_y = rect.y() + 5
         thumb_rect = QRect(thumb_x, thumb_y, thumb_size, thumb_size)
         
-        # Special handling for folders
-        if asset.is_folder:
+        # Check if thumbnails are enabled
+        thumbnails_enabled = True
+        if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
+            thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
+        folder_thumbnails_enabled = True
+        if self.browser and hasattr(self.browser, 'folder_thumbnails_enabled_checkbox'):
+            folder_thumbnails_enabled = self.browser.folder_thumbnails_enabled_checkbox.isChecked()
+
+        # Special handling for folders - unless it has a *preview image AND
+        # both thumbnail toggles are enabled, in which case it falls through
+        # to the normal thumbnail rendering below. Checked live here (not
+        # just at listing time) so toggling "Folder Thumbnails" off/on takes
+        # effect immediately, without reloading the directory.
+        if asset.is_folder and (not thumbnails_enabled or not folder_thumbnails_enabled
+                                 or not getattr(asset, 'folder_preview_path', None)):
             # Draw folder icon (gray/neutral to not distract from files)
             painter.setPen(QPen(QColor(100, 100, 100), 2))
             painter.setBrush(QColor(160, 160, 160))
-            
+
             # Draw main folder body
             folder_body = QRect(thumb_x + 5, thumb_y + 10, thumb_size - 10, thumb_size - 15)
             painter.drawRoundedRect(folder_body, 4, 4)
-            
+
             # Draw folder tab
             tab_width = thumb_size // 3
             tab_rect = QRect(thumb_x + 5, thumb_y + 5, tab_width, 8)
             painter.drawRoundedRect(tab_rect, 2, 2)
         else:
-            # Check if thumbnails are enabled
-            thumbnails_enabled = True
-            if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
-                thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
-            
             # Get thumbnail from cache only if enabled
             # Determine cache key
             file_path_key = str(asset.file_path)
             if asset.is_sequence and asset.sequence:
                 file_path_key = str(asset.sequence.pattern)
+            elif getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                file_path_key = "texset::" + str(asset.texture_set.directory) + "::" + str(asset.texture_set.name)
             
             thumbnail = self.memory_cache.get(file_path_key) if thumbnails_enabled else None
             
@@ -188,25 +251,45 @@ class ThumbnailDelegate(QStyledItemDelegate):
                     self._draw_sequence_badge(painter, thumb_x + offset_x, thumb_y + offset_y, 
                                             scaled.width(), scaled.height(), 
                                             asset.sequence.frame_count)
+                # Draw texture-set badge if this is a texture set
+                elif getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                    self._draw_texture_set_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
+                                                 scaled.width(), scaled.height(),
+                                                 len(asset.texture_set.files),
+                                                 len(asset.texture_set.extra_formats))
+                # Draw folder badge if this is a folder shown via its *preview image
+                elif asset.is_folder:
+                    self._draw_folder_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
+                                            scaled.width(), scaled.height())
             else:
                 # Draw gradient placeholder (no scaling, always sharp!)
                 self.draw_gradient_placeholder(painter, thumb_rect, asset.extension)
         
         # Draw file name below thumbnail
-        text_rect = QRect(rect.x(), thumb_y + thumb_size + 5, 
+        text_rect = QRect(rect.x(), thumb_y + thumb_size + 5,
                                 rect.width(), rect.height() - thumb_size - 10)
-        
-        painter.setPen(option.palette.text().color() if not (option.state & QStyle.State_Selected)
+
+        base_color = (option.palette.text().color() if not (option.state & QStyle.State_Selected)
                       else option.palette.highlightedText().color())
-        
+
         # Fixed font size for grid mode file names
         painter.setFont(QFont(UI_FONT, 9))
-        
+
         # Elide text if too long
         metrics = painter.fontMetrics()
         elided_text = metrics.elidedText(asset.name, Qt.ElideMiddle, text_rect.width() - 10)
-        painter.drawText(text_rect, Qt.AlignTop | Qt.AlignHCenter, elided_text)
-    
+
+        # Highlight the matched search characters - only when NOT elided,
+        # since matched_indices refer to positions in the full name and
+        # wouldn't line up with an elided (shortened) string.
+        highlight_indices = self._get_search_highlight_indices(asset) if elided_text == asset.name else None
+        if highlight_indices:
+            self._draw_highlighted_text(painter, text_rect, elided_text, highlight_indices,
+                                        Qt.AlignTop | Qt.AlignHCenter, base_color, QColor(93, 173, 226))
+        else:
+            painter.setPen(base_color)
+            painter.drawText(text_rect, Qt.AlignTop | Qt.AlignHCenter, elided_text)
+
     def _paint_list_mode(self, painter, option, asset):
         """Paint item in list mode with columns (Name, Type, Size, Date)"""
         rect = option.rect
@@ -255,28 +338,38 @@ class ThumbnailDelegate(QStyledItemDelegate):
         thumb_y = rect.y() + (rect.height() - thumb_size) // 2
         thumb_rect = QRect(thumb_x, thumb_y, thumb_size, thumb_size)
         
-        # Special handling for folders
-        if asset.is_folder:
+        # Check if thumbnails are enabled
+        thumbnails_enabled = True
+        if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
+            thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
+        folder_thumbnails_enabled = True
+        if self.browser and hasattr(self.browser, 'folder_thumbnails_enabled_checkbox'):
+            folder_thumbnails_enabled = self.browser.folder_thumbnails_enabled_checkbox.isChecked()
+
+        # Special handling for folders - unless it has a *preview image AND
+        # both thumbnail toggles are enabled, in which case it falls through
+        # to the normal thumbnail rendering below. Checked live here (not
+        # just at listing time) so toggling "Folder Thumbnails" off/on takes
+        # effect immediately, without reloading the directory.
+        if asset.is_folder and (not thumbnails_enabled or not folder_thumbnails_enabled
+                                 or not getattr(asset, 'folder_preview_path', None)):
             # Draw folder icon - scale with thumb_size
             painter.setPen(QPen(QColor(100, 100, 100), max(1, thumb_size // 28)))
             painter.setBrush(QColor(160, 160, 160))
-            folder_body = QRect(thumb_x + 2, thumb_y + thumb_size // 4, 
+            folder_body = QRect(thumb_x + 2, thumb_y + thumb_size // 4,
                                thumb_size - 4, thumb_size - thumb_size // 4 - 2)
             painter.drawRoundedRect(folder_body, 2, 2)
-            tab_rect = QRect(thumb_x + 2, thumb_y + thumb_size // 7, 
+            tab_rect = QRect(thumb_x + 2, thumb_y + thumb_size // 7,
                             thumb_size // 3, thumb_size // 7)
             painter.drawRoundedRect(tab_rect, 1, 1)
         else:
-            # Check if thumbnails are enabled
-            thumbnails_enabled = True
-            if self.browser and hasattr(self.browser, 'thumbnails_enabled_checkbox'):
-                thumbnails_enabled = self.browser.thumbnails_enabled_checkbox.isChecked()
-            
             # Get thumbnail from cache only if enabled
             # For sequences, use pattern as cache key
             cache_key = str(asset.file_path)
             if asset.is_sequence and asset.sequence:
                 cache_key = str(asset.sequence.pattern)
+            elif getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                cache_key = "texset::" + str(asset.texture_set.directory) + "::" + str(asset.texture_set.name)
             
             thumbnail = self.memory_cache.get(cache_key) if thumbnails_enabled else None
             if thumbnail and not thumbnail.isNull():
@@ -305,17 +398,33 @@ class ThumbnailDelegate(QStyledItemDelegate):
                     self._draw_sequence_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
                                             scaled.width(), scaled.height(),
                                             asset.sequence.frame_count)
+                # Draw texture-set badge if this is a texture set
+                elif getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                    self._draw_texture_set_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
+                                                 scaled.width(), scaled.height(),
+                                                 len(asset.texture_set.files),
+                                                 len(asset.texture_set.extra_formats))
+                # Draw folder badge if this is a folder shown via its *preview image
+                elif asset.is_folder:
+                    self._draw_folder_badge(painter, thumb_x + offset_x, thumb_y + offset_y,
+                                            scaled.width(), scaled.height())
             else:
                 self.draw_gradient_placeholder(painter, thumb_rect, asset.extension)
-        
+
         # Draw file name next to thumbnail
-        painter.setPen(text_color)
         text_x = thumb_x + thumb_size + 6
         name_rect = QRect(text_x, rect.y(), name_width - thumb_size - 10, rect.height())
         # Fixed font size for file name (even in compact 16px rows)
         painter.setFont(QFont(UI_FONT, 9))
-        painter.drawText(name_rect, Qt.AlignVCenter, asset.name)
-        
+        highlight_indices = self._get_search_highlight_indices(asset)
+        if highlight_indices:
+            self._draw_highlighted_text(painter, name_rect, asset.name, highlight_indices,
+                                        Qt.AlignVCenter, text_color, QColor(93, 173, 226))
+        else:
+            painter.setPen(text_color)
+            painter.drawText(name_rect, Qt.AlignVCenter, asset.name)
+
+
         # ===== COLUMN 2: TYPE =====
         type_rect = QRect(type_x + 5, rect.y(), type_width - 10, rect.height())
         # Fixed font size for type column
@@ -407,4 +516,108 @@ class ThumbnailDelegate(QStyledItemDelegate):
         # Draw text
         painter.setPen(QPen(QColor(255, 255, 255)))
         painter.drawText(badge_rect, Qt.AlignCenter, badge_text)
+
+    def _draw_texture_set_badge(self, painter, x, y, width, height, map_count, extra_format_count=0):
+        """
+        Draw a texture-set badge (top-left) indicating a grouped PBR set.
+
+        Args:
+            painter: QPainter instance
+            x, y: Position of thumbnail
+            width, height: Actual displayed size of thumbnail
+            map_count: Number of files in the set
+            extra_format_count: Number of alternate-format duplicates that
+                were demoted out of the set (same channel+UDIM, lower-priority
+                extension) - shown as "+N" next to the count.
+        """
+        thumb_size = height
+
+        # Size scaling (mirror sequence badge proportions)
+        if thumb_size <= 24:
+            badge_height = 10
+            font_size = 7
+        elif thumb_size <= 32:
+            badge_height = 12
+            font_size = 8
+        elif thumb_size <= 48:
+            badge_height = 14
+            font_size = 9
+        elif thumb_size <= 64:
+            badge_height = 16
+            font_size = 10
+        else:
+            badge_height = max(18, int(thumb_size * 0.12))
+            font_size = max(10, int(badge_height * 0.6))
+
+        badge_margin = 2
+
+        # Compact for tiny thumbnails
+        if thumb_size <= 32:
+            badge_text = "SET"
+        elif extra_format_count > 0:
+            badge_text = f"SET · {map_count} +{extra_format_count}"
+        else:
+            badge_text = f"SET · {map_count}"
+
+        font = QFont()
+        font.setPixelSize(font_size)
+        font.setBold(True)
+        painter.setFont(font)
+
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(badge_text)
+
+        badge_width = text_width + badge_margin * 3
+        badge_rect = QRect(
+            x + badge_margin,           # Top-left (distinct from sequence's bottom-center)
+            y + badge_margin,
+            badge_width,
+            badge_height
+        )
+
+        # Teal/blue background to visually distinguish from sequence badge
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(20, 130, 160, 210)))
+        painter.drawRoundedRect(badge_rect, 2, 2)
+
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.drawText(badge_rect, Qt.AlignCenter, badge_text)
+
+    def _draw_folder_badge(self, painter, x, y, width, height):
+        """
+        Draw a small folder-icon badge (bottom-right) on a folder's
+        *preview thumbnail, so it stays visually identifiable as a folder
+        rather than a regular image - bottom-right keeps it clear of the
+        sequence (bottom-center) and texture-set (top-left) badge spots,
+        though those never co-occur on a folder anyway.
+
+        A miniature of the plain folder icon itself (same colors and the
+        same proportional body/tab layout as the list-mode folder icon),
+        just scaled down to badge size, so it reads as "the same folder
+        icon" rather than a new/different shape.
+        """
+        thumb_size = height
+        if thumb_size <= 32:
+            badge_size = 16
+        elif thumb_size <= 48:
+            badge_size = 20
+        elif thumb_size <= 64:
+            badge_size = 24
+        else:
+            badge_size = max(26, int(thumb_size * 0.18))
+
+        badge_margin = 3
+        bx = x + width - badge_size - badge_margin
+        by = y + height - badge_size - badge_margin
+
+        # Same proportional layout as the list-mode plain folder icon
+        body_rect = QRect(bx + 2, by + badge_size // 4,
+                           badge_size - 4, badge_size - badge_size // 4 - 2)
+        tab_rect = QRect(bx + 2, by + badge_size // 7,
+                          badge_size // 3, badge_size // 7)
+
+        painter.setPen(QPen(QColor(100, 100, 100), max(1, badge_size // 14)))
+        painter.setBrush(QColor(160, 160, 160))
+        painter.drawRoundedRect(body_rect, 2, 2)
+        painter.drawRoundedRect(tab_rect, 1, 1)
 

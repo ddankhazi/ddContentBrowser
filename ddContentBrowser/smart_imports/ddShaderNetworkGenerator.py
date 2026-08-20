@@ -5,6 +5,7 @@ import os
 import re
 import json
 import glob
+import hashlib
 
 import maya.cmds as cmds
 
@@ -18,6 +19,7 @@ _DEFAULT_CONFIG = {
         "roughness": ["roughness", "rough", "glossiness", "gloss"],
         "metalness": ["metalness", "metallic", "metal", "met"],
         "normal": ["normal", "normalmap", "nrm", "nor", "norm"],
+        "bump": ["bump", "bumpmap"],
         "height": ["height", "heightmap", "bumpheight"],
         "displacement": ["displacement", "disp", "displ", "displace"],
         "emission": ["emission", "emissive", "emit"],
@@ -146,6 +148,21 @@ def _channel_dst_attr(material, channel):
             # prefer scalar geometryOpacity, fall back to the older color-style names if present
             "opacity":      ["geometryOpacity", "opacity", "cutoutOpacity"],
             "transmission": ["transmission", "transmissionWeight", "baseTransmission"],
+            "translucency": ["subsurfaceColor"],
+        }
+
+    elif t == "dGecko":
+        mapping = {
+            "baseColor":    ["diffuse_color"],
+            "roughness":    ["reflection_roughness"],
+            "metalness":    ["metalness"],
+            "normal":       ["normal_map"],
+            "emission":     ["incandescence"],
+            "opacity":      ["geometry_mask"],
+            "translucency": ["translucency_color"],
+            # Not a weight like the other shader types - a filter-color
+            # style refraction input. See _ensure_dgecko_transmission().
+            "transmission": ["refraction_transparency"],
         }
 
     else:  # aiStandardSurface
@@ -157,6 +174,7 @@ def _channel_dst_attr(material, channel):
             "emission":     ["emissionColor"],
             "opacity":      ["opacity"],          # cutout/alpha
             "transmission": ["transmission"],     # weight
+            "translucency": ["subsurfaceColor"],
         }
     return _first_existing(mapping.get(channel, []))
 
@@ -371,11 +389,29 @@ def _get_sg_nodes_for_material(material):
 def _ensure_displacement_shader(name):
     """Create or reuse a Maya displacementShader node."""
     if cmds.objExists(name) and cmds.nodeType(name) == "displacementShader":
-        return name
-    return cmds.shadingNode("displacementShader", asShader=True, n=name)
+        node = name
+    else:
+        node = cmds.shadingNode("displacementShader", asShader=True, n=name)
+    try:
+        if cmds.attributeQuery("disp_zero_value", node=node, exists=True):
+            cmds.setAttr(node + ".disp_zero_value", 0)
+    except Exception:
+        pass
+    return node
+
+
+def _ensure_lookdevkit():
+    if not cmds.pluginInfo("lookdevKit", q=True, loaded=True):
+        try:
+            cmds.loadPlugin("lookdevKit")
+        except Exception:
+            print("[ShaderGen] lookdevKit plugin not available.")
+            return False
+    return True
 
 
 def _ensure_floatMath(name):
+    _ensure_lookdevkit()
     if cmds.objExists(name) and cmds.nodeType(name) == "floatMath":
         return name
     return cmds.shadingNode("floatMath", asUtility=True, n=name)
@@ -397,9 +433,19 @@ def _map_material_to_shapes(shapes):
     return result
 
 
-def _set_shape_disp_settings(shapes):
+def _set_shape_disp_settings(shapes, shader_type="aiStandardSurface"):
     """Apply displacement-friendly settings on the given mesh shapes."""
-    _ensure_mtoa()  # ensures ai* attrs exist
+    if shader_type == "dGecko":
+        # Custom (non-MtoA) Arnold pipeline - shape carries its own subdiv/
+        # displacement attrs, not the standard ai* ones. dGecko scenes run at
+        # 1:10 scale, hence the much smaller padding than the ai* default.
+        subdiv_type_attr, subdiv_iter_attr, padding_attr = "subdiv_type", "subdiv_iterations", "disp_padding"
+        subdiv_iterations, disp_padding = 3, 1
+    else:
+        _ensure_mtoa()  # ensures ai* attrs exist
+        subdiv_type_attr, subdiv_iter_attr, padding_attr = "aiSubdivType", "aiSubdivIterations", "aiDispPadding"
+        subdiv_iterations, disp_padding = 4, 10
+
     for sh in shapes:
         # Smooth Mesh preview / render linkage
         try:
@@ -418,20 +464,20 @@ def _set_shape_disp_settings(shapes):
         except Exception:
             pass
 
-        # Arnold subdivision + displacement padding
+        # Subdivision + displacement padding
         try:
-            if cmds.attributeQuery("aiSubdivType", node=sh, exists=True):
-                cmds.setAttr(sh + ".aiSubdivType", 1)  # 1 = catclark
+            if cmds.attributeQuery(subdiv_type_attr, node=sh, exists=True):
+                cmds.setAttr(sh + "." + subdiv_type_attr, 1)  # 1 = catclark
         except Exception:
             pass
         try:
-            if cmds.attributeQuery("aiSubdivIterations", node=sh, exists=True):
-                cmds.setAttr(sh + ".aiSubdivIterations", 4)
+            if cmds.attributeQuery(subdiv_iter_attr, node=sh, exists=True):
+                cmds.setAttr(sh + "." + subdiv_iter_attr, subdiv_iterations)
         except Exception:
             pass
         try:
-            if cmds.attributeQuery("aiDispPadding", node=sh, exists=True):
-                cmds.setAttr(sh + ".aiDispPadding", 10)
+            if cmds.attributeQuery(padding_attr, node=sh, exists=True):
+                cmds.setAttr(sh + "." + padding_attr, disp_padding)
         except Exception:
             pass
 
@@ -475,6 +521,13 @@ def _create_file_node(label, texture_path_or_pattern, is_udim, colorspace, place
                 ud = os.path.join(os.path.dirname(texture_path_or_pattern), ud)
                 cmds.setAttr(node + ".fileTextureName", ud, type="string")
 
+    # .tx files are already baked to the render engine's native/working color
+    # space (RenderMan txmake, etc.) - applying any further color transform on
+    # top would double-convert them. Force Raw regardless of what the caller
+    # requested for this channel (e.g. baseColor normally wants sRGB).
+    if os.path.splitext(texture_path_or_pattern)[1].lower() == ".tx":
+        colorspace = "Raw"
+
     # Force color space and ignore file-rule mapping
     _set_file_colorspace(node, colorspace)
 
@@ -492,18 +545,15 @@ def _create_file_node(label, texture_path_or_pattern, is_udim, colorspace, place
         else:
             p2d = cmds.shadingNode("place2dTexture", asUtility=True, n=label + "_place2d")
 
-        for a in ["coverage", "translateFrame", "rotateFrame", "mirrorU", "mirrorV", "stagger",
-                  "wrapU", "wrapV", "repeatUV", "offset", "rotateUV", "noiseUV", "vertexUvOne",
-                  "vertexUvTwo", "vertexUvThree", "vertexCameraOne"]:
-            try:
-                cmds.connectAttr(p2d + "." + a, node + "." + a, f=True)
-            except Exception:
-                pass
-        for a in ["outUV", "outUvFilterSize"]:
-            try:
-                cmds.connectAttr(p2d + "." + a, node + "." + a, f=True)
-            except Exception:
-                pass
+        # Let Maya wire every relevant place2dTexture<->file attr pair itself
+        # (coverage, UV transform attrs, outUV->uvCoord, outUvFilterSize-
+        # >uvFilterSize, ...) instead of listing them out by hand - this is
+        # the same mechanism Hypershade's "Connect to existing" uses, and
+        # what the studio's own MaterialBuilder reference tool relies on.
+        try:
+            cmds.defaultNavigation(connectToExisting=True, force=True, source=p2d, destination=node)
+        except Exception as e:
+            print("[ShaderGen] place2d connection failed ({0}->{1}): {2}".format(p2d, node, e))
 
     return node
 
@@ -517,9 +567,11 @@ def _ensure_mtoa():
             return False
     return True
 
-def _ensure_emission_rayswitch(label, file_node, material):
+def _ensure_emission_rayswitch(label, file_node, material, dst_attr="emissionColor"):
     """Create/reuse an aiRaySwitch and wire emission through it."""
-    if not _ensure_mtoa():
+    # dGecko runs on a custom, non-standard Arnold integration - not the
+    # official "mtoa" plugin - so don't gate node creation on that check.
+    if cmds.nodeType(material) != "dGecko" and not _ensure_mtoa():
         return None
 
     rs_name = label + "_aiRaySwitch"
@@ -532,10 +584,11 @@ def _ensure_emission_rayswitch(label, file_node, material):
     for attr in ("hardwareColor", "camera", "specularReflection", "specularTransmission"):
         _connect_if_free(file_node + ".outColor", rs + "." + attr)
 
-    # Connect rayswitch outColor to the shader emissionColor (don’t double-connect)
-    _connect_if_free(rs + ".outColor", material + ".emissionColor")
+    # Connect rayswitch outColor to the shader's emission input (don’t double-connect)
+    _connect_if_free(rs + ".outColor", material + "." + dst_attr)
 
     # Make sure emission is enabled/weighted, per shader type
+    # (dGecko's incandescence has no separate weight attribute to enable - skip.)
     try:
         t = cmds.nodeType(material)
         if t == "openPBRSurface":
@@ -568,6 +621,51 @@ def _ensure_normal_chain(label, file_node, material):
     # aiNormalMap.outValue -> material.normalCamera (only if free)
     _connect_if_free(n_node + ".outValue", material + ".normalCamera")
 
+
+def _ensure_dgecko_normal_chain(label, file_node, material, invert_g=False):
+    """dGecko has its own normal-map utility node (not Arnold's aiNormalMap).
+
+    dGecko expects DirectX-style normal maps (Y-down); our own in-house
+    exports already are DirectX. OpenGL-convention sources (e.g. Megascans)
+    need the green channel inverted to compensate - but that can't be told
+    apart from an OpenGL/DirectX-tagged filename or the pixel content, so
+    the caller decides via invert_g (see the "OpenGL source" setting).
+    """
+    n_name = label + "_NormalMap"
+    if cmds.objExists(n_name) and cmds.nodeType(n_name) == "NormalMap":
+        n_node = n_name
+    else:
+        n_node = cmds.shadingNode("NormalMap", asUtility=True, n=n_name)
+
+    try:
+        if cmds.attributeQuery("invertG", node=n_node, exists=True):
+            cmds.setAttr(n_node + ".invertG", 1 if invert_g else 0)
+    except Exception:
+        pass
+
+    _connect_if_free(file_node + ".outColor", n_node + ".normalMapInput")
+    _connect_if_free(n_node + ".outValue", material + ".normal_map")
+
+
+def _ensure_bump2d_chain(label, file_node, material):
+    """Wire a bump map through Maya's native bump2d node.
+
+    Only called when a texture set has a bump channel but no normal map -
+    normal always takes priority over bump, so this is the fallback path.
+    """
+    b_name = label + "_bump2d"
+    if cmds.objExists(b_name) and cmds.nodeType(b_name) == "bump2d":
+        b_node = b_name
+    else:
+        b_node = cmds.shadingNode("bump2d", asUtility=True, n=b_name)
+
+    # file.outAlpha -> bump2d.bumpValue (standard Maya bump hookup - luminance in)
+    _connect_if_free(file_node + ".outAlpha", b_node + ".bumpValue")
+    # bump2d.outNormal -> material.normalCamera (only if free)
+    _connect_if_free(b_node + ".outNormal", material + ".normalCamera")
+
+    return b_node
+
     return n_node
 
 
@@ -580,7 +678,87 @@ def _connect_if_free(src_attr, dst_attr):
     return True
 
 
-def _connect_channel(material, channel, file_node):
+def _ensure_translucency(material, file_node):
+    """
+    Wire a translucency (diffuse/subsurface-style transmission - e.g. leaves,
+    paper) texture. Distinct from the "transmission" channel, which is
+    specular/refractive (glass-like) and uses a different shader input
+    entirely. Per-shader-type recipe, attrs set before the color connection
+    in every case:
+        dGecko:            translucency=1, translucency_in_shadows=0,
+                            thin_walled=1, then file.outColor -> translucency_color
+        aiStandardSurface: subsurface=0.3, thinWalled=1, then
+                            file -> subsurfaceColor
+        openPBRSurface:     geometryThinWalled=1, subsurfaceWeight=0.3, then
+                            file -> subsurfaceColor
+    """
+    t = cmds.nodeType(material)
+    dst_attr = _channel_dst_attr(material, "translucency")
+    if not dst_attr:
+        print("[ShaderGen] No translucency dst attr on {0}".format(t))
+        return
+    dst = material + "." + dst_attr
+    if _dst_has_input(dst):
+        print("[ShaderGen] translucency already connected on {0}, skipping.".format(material))
+        return
+
+    if t == "dGecko":
+        _set_attr_safe(material + ".translucency", 1)
+        _set_attr_safe(material + ".translucency_in_shadows", 0)
+        _set_attr_safe(material + ".thin_walled", 1)
+        _connect_if_free(file_node + ".outColor", dst)
+    elif t == "openPBRSurface":
+        _set_attr_safe(material + ".geometryThinWalled", 1)
+        _set_attr_safe(material + ".subsurfaceWeight", 0.3)
+        try:
+            cmds.defaultNavigation(connectToExisting=True, source=file_node, destination=dst)
+        except Exception as e:
+            print("[ShaderGen] translucency connection failed ({0}->{1}): {2}".format(file_node, dst, e))
+    else:  # aiStandardSurface
+        _set_attr_safe(material + ".subsurface", 0.3)
+        _set_attr_safe(material + ".thinWalled", 1)
+        try:
+            cmds.defaultNavigation(connectToExisting=True, source=file_node, destination=dst)
+        except Exception as e:
+            print("[ShaderGen] translucency connection failed ({0}->{1}): {2}".format(file_node, dst, e))
+
+
+def _ensure_dgecko_transmission(material, file_node):
+    """
+    Wire dGecko's transmission (refraction) texture. Reference recipe:
+        defaultNavigation file -> <mat>.refraction_transparency
+        refraction_ior = 1.5
+        thin_walled = 1 (a safety default, not universally correct - the
+                          user may want to turn it back off for thick glass)
+    Attrs are set before the color connection, same convention as
+    _ensure_translucency().
+    """
+    dst = material + ".refraction_transparency"
+    if _dst_has_input(dst):
+        print("[ShaderGen] transmission already connected on {0}, skipping.".format(material))
+        return
+    _set_attr_safe(material + ".refraction_ior", 1.5)
+    _set_attr_safe(material + ".thin_walled", 1)
+    try:
+        cmds.defaultNavigation(connectToExisting=True, source=file_node, destination=dst)
+    except Exception as e:
+        print("[ShaderGen] transmission connection failed ({0}->{1}): {2}".format(file_node, dst, e))
+
+
+def _path_contains_megascans(path):
+    """
+    True if any path segment contains 'megascans' (case-insensitive).
+
+    Used to flag Megascans-sourced (OpenGL-convention) normal maps for the
+    dGecko invertG compensation - there's no way to tell OpenGL vs DirectX
+    normal maps apart from pixel content, only from where the texture came
+    from. Doesn't catch Megascans data reached through a differently-named
+    path/re-exported elsewhere - that case still needs a manual fix.
+    """
+    return 'megascans' in (path or '').lower()
+
+
+def _connect_channel(material, channel, file_node, invert_normal_g=False):
     t = cmds.nodeType(material)
     dst_attr = _channel_dst_attr(material, channel)
     if not dst_attr:
@@ -602,10 +780,13 @@ def _connect_channel(material, channel, file_node):
         if _dst_has_input(dst):
             print("[ShaderGen] emission already connected on {0}, skipping.".format(material))
             return
-        _ensure_emission_rayswitch(material + "_emission", file_node, material)
+        _ensure_emission_rayswitch(material + "_emission", file_node, material, dst_attr=dst_attr)
 
     elif channel == "normal":
-        _ensure_normal_chain(material + "_normal", file_node, material)
+        if t == "dGecko":
+            _ensure_dgecko_normal_chain(material + "_normal", file_node, material, invert_g=invert_normal_g)
+        else:
+            _ensure_normal_chain(material + "_normal", file_node, material)
 
     elif channel == "opacity":
         # Use R for scalar plugs (e.g., openPBRSurface.geometryOpacity), else full color
@@ -615,8 +796,17 @@ def _connect_channel(material, channel, file_node):
 
 
     elif channel == "transmission":
-        # Weight is scalar
-        _connect_if_free(file_node + ".outColorR", dst)
+        if t == "dGecko":
+            _ensure_dgecko_transmission(material, file_node)
+        elif t == "openPBRSurface":
+            _set_attr_safe(material + ".geometryThinWalled", 1)
+            _connect_if_free(file_node + ".outAlpha", dst)
+        else:  # aiStandardSurface
+            _set_attr_safe(material + ".thinWalled", 1)
+            _connect_if_free(file_node + ".outAlpha", dst)
+
+    elif channel == "translucency":
+        _ensure_translucency(material, file_node)
 
     else:
         print("[ShaderGen] Channel not wired in base version: {0}".format(channel))
@@ -704,12 +894,10 @@ def _build_for_material(material, base_dir, shapes_for_material):
             # file.outColorR -> offset.floatA (only if free)
             _connect_if_free(disp_file + ".outColorR", offset_node + ".floatA")
 
-            # offset.floatB: EXR uses signed (mid=0), others are [0..1] (mid=0.5 -> B=-0.5)
+            # offset.floatB is always -0.5 regardless of source format.
             try:
-                ext = os.path.splitext(disp_tex)[1].lower()
-                offset_val = 0.0 if ext == ".exr" else -0.5
-                if cmds.getAttr(offset_node + ".floatB") != offset_val:
-                    cmds.setAttr(offset_node + ".floatB", offset_val)
+                if cmds.getAttr(offset_node + ".floatB") != -0.5:
+                    cmds.setAttr(offset_node + ".floatB", -0.5)
             except Exception:
                 pass
 
@@ -767,4 +955,262 @@ def run(base_dir=None):
         _build_for_material(m, base_dir, mat_to_shapes[m])
 
     print("[ShaderGen] Done.")
+
+
+# =====================================================================
+# Texture-set driven build (used by DD Content Browser drag & drop)
+# =====================================================================
+
+def _sanitize_name(name):
+    """Turn an arbitrary set name into a valid Maya node base name."""
+    s = re.sub(r'[^0-9a-zA-Z_]', '_', str(name))
+    if s and s[0].isdigit():
+        s = "_" + s
+    return s or "texture_set"
+
+
+def _looks_like_udim(path):
+    """Return True if a texture path/filename contains a UDIM (1xxx) tile token."""
+    bn = os.path.basename(path or "")
+    udim_re = re.compile(CONFIG.get("udim_regex", r"(?:[\._-])(1\d{3})(?=[\._-]|$)"))
+    return bool(udim_re.search(bn))
+
+
+def _create_material(name, shader_type):
+    """Create a new surface material + shading group. Returns (material, sg)."""
+    if shader_type not in ("aiStandardSurface", "openPBRSurface", "dGecko"):
+        shader_type = "aiStandardSurface"
+    if shader_type == "dGecko":
+        material = cmds.shadingNode(shader_type, asShader=True, n=name)
+        if cmds.attributeQuery('shader_mode', node=material, exists=True):
+            cmds.setAttr(material + ".shader_mode", 1)
+    else:
+        _ensure_mtoa()
+        material = cmds.shadingNode(shader_type, asShader=True, n=name)
+    sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, n=material + "SG")
+    try:
+        cmds.connectAttr(material + ".outColor", sg + ".surfaceShader", f=True)
+    except Exception as e:
+        print("[ShaderGen] Failed to connect material to SG: {0}".format(e))
+    return material, sg
+
+
+def _channels_signature(channels):
+    """
+    Stable signature for a resolved channel->file mapping. Used to decide
+    whether two texture-set builds should share one material (identical
+    inputs) or need separate ones - e.g. a "High" geo build has no
+    displacement channel while a LOD build does, or LOD0 vs LOD6 each pull
+    their own normal file even though every other channel is identical.
+    Same signature = same graph, safe to reuse; different signature = the
+    graph would actually differ, so a separate material is built.
+    """
+    key = "|".join("{0}={1}".format(ch, channels[ch]) for ch in sorted(channels.keys()))
+    return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
+
+
+_SIGNATURE_ATTR = "ddChannelSignature"
+
+
+def _find_reusable_material(base_name, shader_type, signature):
+    """
+    Find an existing material named base_name (or base_name<N> from Maya's
+    own uniquify-on-collision) of the right type, whose stamped channel
+    signature matches. Returns (material, sg), or (None, None) if none match.
+    """
+    name_re = re.compile(r'^' + re.escape(base_name) + r'\d*$')
+    for mat in cmds.ls(base_name + "*", type=shader_type) or []:
+        if not name_re.match(mat):
+            continue
+        if not cmds.attributeQuery(_SIGNATURE_ATTR, node=mat, exists=True):
+            continue
+        try:
+            if cmds.getAttr(mat + "." + _SIGNATURE_ATTR) != signature:
+                continue
+        except Exception:
+            continue
+        sgs = cmds.listConnections(mat, type="shadingEngine") or []
+        if sgs:
+            return mat, sgs[0]
+    return None, None
+
+
+def _stamp_material_signature(material, signature):
+    """Store the channel signature on a newly created material for future reuse checks."""
+    try:
+        if not cmds.attributeQuery(_SIGNATURE_ATTR, node=material, exists=True):
+            cmds.addAttr(material, longName=_SIGNATURE_ATTR, dataType="string")
+        cmds.setAttr(material + "." + _SIGNATURE_ATTR, signature, type="string")
+    except Exception as e:
+        print("[ShaderGen] Failed to stamp signature on {0}: {1}".format(material, e))
+
+
+def _get_or_create_material(base_name, shader_type, channels):
+    """
+    Reuse an existing material built from the exact same channel->file
+    mapping, or create a new one (uniquified by Maya if base_name is taken
+    by a material with a different signature). Returns (material, sg).
+    """
+    signature = _channels_signature(channels)
+
+    material, sg = _find_reusable_material(base_name, shader_type, signature)
+    if material:
+        print("[ShaderGen] Reusing existing material '{0}' (same channel set)".format(material))
+        return material, sg
+
+    material, sg = _create_material(base_name, shader_type)
+    _stamp_material_signature(material, signature)
+    return material, sg
+
+
+def _assign_material_to_shapes(sg, shapes):
+    """Assign a shading group to the given shapes."""
+    for sh in shapes:
+        try:
+            cmds.sets(sh, e=True, forceElement=sg)
+        except Exception as e:
+            print("[ShaderGen] Failed to assign material to {0}: {1}".format(sh, e))
+
+
+def _set_attr_safe(attr, value):
+    """setAttr with visible diagnostics instead of silently swallowing failures."""
+    try:
+        current = cmds.getAttr(attr)
+    except Exception as e:
+        print("[ShaderGen] Could not read {0}: {1}".format(attr, e))
+        return False
+    if current == value:
+        print("[ShaderGen] {0} already {1}, no change needed.".format(attr, value))
+        return True
+    try:
+        cmds.setAttr(attr, value)
+        print("[ShaderGen] Set {0} = {1} (was {2}).".format(attr, value, current))
+        return True
+    except Exception as e:
+        conns = cmds.listConnections(attr, s=True, d=False, plugs=True) or []
+        try:
+            locked = cmds.getAttr(attr, lock=True)
+        except Exception:
+            locked = "?"
+        print("[ShaderGen] Failed to set {0} = {1}: {2} (incoming connections={3}, locked={4})".format(
+            attr, value, e, conns, locked))
+        return False
+
+
+def _build_displacement_chain(material, disp_tex, shared_place2d, shapes_to_set):
+    """Build the offset->multiply->displacementShader chain for a material."""
+    shader_type = cmds.nodeType(material)
+    sgs = _get_sg_nodes_for_material(material)
+
+    # Ensure + (re)sync the offset/multiply node values even when the chain
+    # already exists from a previous build (reused material) - only the
+    # actual node creation/wiring below is skipped in that case, not this.
+    offset_node = _ensure_floatMath("{0}_disp_offset".format(material))
+    multiply_node = _ensure_floatMath("{0}_disp_multiply".format(material))
+
+    _set_attr_safe(offset_node + ".operation", 0)  # add
+    _set_attr_safe(offset_node + ".floatB", -0.5)
+    _set_attr_safe(multiply_node + ".operation", 2)  # multiply
+
+    if any(_dst_has_input(sg + ".displacementShader") for sg in sgs):
+        if shapes_to_set:
+            _set_shape_disp_settings(shapes_to_set, shader_type=shader_type)
+        return
+
+    disp_file = _create_file_node(
+        "{0}_displacement".format(material), disp_tex, _looks_like_udim(disp_tex),
+        colorspace="Raw", place2d=shared_place2d
+    )
+    _connect_if_free(disp_file + ".outColorR", offset_node + ".floatA")
+    _connect_if_free(offset_node + ".outFloat", multiply_node + ".floatA")
+
+    disp_shd = _ensure_displacement_shader("{0}_displacementShader".format(material))
+    _connect_if_free(multiply_node + ".outFloat", disp_shd + ".displacement")
+    for sg in sgs:
+        _connect_if_free(disp_shd + ".displacement", sg + ".displacementShader")
+
+    if shapes_to_set:
+        _set_shape_disp_settings(shapes_to_set, shader_type=shader_type)
+
+
+def build_from_texture_sets(texture_sets, shader_type="aiStandardSurface", assign_to_selection=True):
+    """
+    Build shader network(s) from explicit texture set(s).
+
+    Args:
+        texture_sets: list of dicts: {"name": str, "channels": {channel_key: path}}
+        shader_type: "aiStandardSurface", "openPBRSurface", or "dGecko"
+        assign_to_selection: if True and geometry is selected (and a single set is
+                             dropped), assign the generated material to the selection.
+    """
+    if not texture_sets:
+        print("[ShaderGen] No texture sets provided.")
+        return []
+
+    # dGecko runs on a custom, non-standard Arnold integration - skip the
+    # "mtoa" plugin check entirely for it (see _ensure_emission_rayswitch).
+    if shader_type != "dGecko":
+        _ensure_mtoa()
+
+    selected_shapes = _shapes_from_selection() if assign_to_selection else []
+    # Only auto-assign when a single set is dropped onto a selection (unambiguous)
+    do_assign = bool(selected_shapes) and len(texture_sets) == 1
+
+    channel_cs = {
+        "baseColor": "sRGB", "emission": "sRGB", "translucency": "sRGB",
+        "roughness": "Raw", "metalness": "Raw", "normal": "Raw",
+        "opacity": "Raw", "transmission": "Raw", "height": "Raw", "displacement": "Raw",
+    }
+    supported = ["baseColor", "roughness", "metalness", "normal", "emission", "opacity", "transmission", "translucency"]
+
+    created = []
+    for ts in texture_sets:
+        set_name = ts.get("name") or "texture_set"
+        channels = ts.get("channels") or {}
+
+        material, sg = _get_or_create_material(_sanitize_name(set_name) + "_MAT", shader_type, channels)
+        created.append(material)
+        shared_place2d = _get_or_create_shared_place2d(material)
+
+        for ch in supported:
+            path = channels.get(ch)
+            if not path:
+                continue
+            fnode = _create_file_node(
+                "{0}_{1}".format(material, ch), path, _looks_like_udim(path),
+                colorspace=channel_cs.get(ch, "Raw"), place2d=shared_place2d
+            )
+            if ch == "normal":
+                _connect_channel(material, ch, fnode, invert_normal_g=_path_contains_megascans(path))
+            else:
+                _connect_channel(material, ch, fnode)
+
+        # Bump: normal always takes priority. Only wire bump (via bump2d)
+        # when there's no normal map in this set. dGecko has no .normalCamera
+        # input for bump2d to feed - not wired for that shader type.
+        bump_path = channels.get("bump")
+        if bump_path and not channels.get("normal") and shader_type != "dGecko":
+            bfile = _create_file_node(
+                "{0}_bump".format(material), bump_path, _looks_like_udim(bump_path),
+                colorspace="Raw", place2d=shared_place2d
+            )
+            _ensure_bump2d_chain(material + "_bump", bfile, material)
+
+        # Displacement: prefer displacement, else height as displacement
+        disp_path = channels.get("displacement") or channels.get("height")
+        if disp_path:
+            print("[ShaderGen] Building displacement chain from '{0}'.".format(disp_path))
+            _build_displacement_chain(material, disp_path, shared_place2d,
+                                      selected_shapes if do_assign else [])
+        else:
+            print("[ShaderGen] No displacement/height channel in set '{0}' - skipping displacement chain.".format(set_name))
+
+        if do_assign:
+            _assign_material_to_shapes(sg, selected_shapes)
+
+        print("[ShaderGen] Built material '{0}' from set '{1}'".format(material, set_name))
+
+    print("[ShaderGen] Done. Created {0} material(s).".format(len(created)))
+    return created
+
 

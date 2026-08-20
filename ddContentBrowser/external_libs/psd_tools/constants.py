@@ -35,7 +35,7 @@ class ColorMode(IntEnum):
     LAB = 9
 
     @staticmethod
-    def channels(value, alpha=False):
+    def channels(value: "ColorMode", alpha: bool = False) -> int:
         return {
             ColorMode.BITMAP: 1,
             ColorMode.GRAYSCALE: 1,
@@ -45,7 +45,7 @@ class ColorMode(IntEnum):
             ColorMode.MULTICHANNEL: 1,
             ColorMode.DUOTONE: 1,
             ColorMode.LAB: 3,
-        }.get(value) + alpha
+        }.get(value, 0) + alpha
 
 
 class ColorSpaceID(IntEnum):
@@ -204,11 +204,11 @@ class Resource(IntEnum):
     PRINT_FLAGS_INFO = 10000
 
     @staticmethod
-    def is_path_info(value):
+    def is_path_info(value: int) -> bool:
         return 2000 <= value and value <= 2997
 
     @staticmethod
-    def is_plugin_resource(value):
+    def is_plugin_resource(value: int) -> bool:
         return 4000 <= value and value <= 4999
 
 
@@ -521,10 +521,46 @@ class TextType(IntEnum):
     PARAGRAPH = 1
 
 
+class Justification(IntEnum):
+    """Text justification / paragraph alignment."""
+
+    LEFT = 0
+    RIGHT = 1
+    CENTER = 2
+    JUSTIFY_LAST_LEFT = 3
+    JUSTIFY_LAST_RIGHT = 4
+    JUSTIFY_LAST_CENTER = 5
+    JUSTIFY_ALL = 6
+
+
+class FontCaps(IntEnum):
+    """Font capitalization style."""
+
+    NORMAL = 0
+    SMALL_CAPS = 1
+    ALL_CAPS = 2
+
+
+class FontBaseline(IntEnum):
+    """Font baseline position."""
+
+    NORMAL = 0
+    SUPERSCRIPT = 1
+    SUBSCRIPT = 2
+
+
+class WritingDirection(IntEnum):
+    """Text writing direction."""
+
+    HORIZONTAL_TB = 0
+    VERTICAL_RL = 2
+
+
 class ProtectedFlags(IntEnum):
     """
     Flags for layer locking
     """
+
     TRANSPARENCY = 0x01
     COMPOSITE = 0x02
     POSITION = 0x04
@@ -532,7 +568,7 @@ class ProtectedFlags(IntEnum):
 
     COMPLETE = 2147483648
 
-    
+
 class AlphaChannelMode(IntEnum):
     """
     alpha channel types.

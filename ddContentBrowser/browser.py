@@ -21,7 +21,7 @@ from .cache import ThumbnailCache, ThumbnailDiskCache, ThumbnailGenerator
 from .models import AssetItem, FileSystemModel
 from .delegates import ThumbnailDelegate
 from .widgets import BreadcrumbWidget, PreviewPanel, MayaStyleListView
-from .settings import SettingsManager, SettingsDialog
+from .settings import SettingsManager, SettingsDialog, TextureSetSettingsDialog
 from .advanced_filters_v2 import AdvancedFiltersPanelV2
 
 # PySide imports
@@ -462,6 +462,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.cache_hits = 0
         self.generations = 0
         
+        # Internal file clipboard state (mirrors OS clipboard cut/copy intent)
+        self._file_clipboard_cut = False
+        
         # Track loading state (to prevent thumbnail progress from overwriting loading messages)
         self._loading_in_progress = False
         self._limit_reached_shown = False
@@ -535,8 +538,19 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Restore sequence mode from config (UI state)
         sequence_mode = self.config.config.get("sequence_mode", False)
+        texture_set_mode = self.config.config.get("texture_set_mode", False)
+        # Texture sets and sequences are mutually exclusive
+        if texture_set_mode:
+            sequence_mode = False
         self.sequence_mode_checkbox.setChecked(sequence_mode)
         self.file_model.sequence_mode = sequence_mode
+        self.texture_set_mode_checkbox.setChecked(texture_set_mode)
+        self.file_model.texture_set_mode = texture_set_mode
+        # Only-sets filter (only meaningful in texture set mode)
+        texture_sets_only = self.config.config.get("texture_sets_only", False) and texture_set_mode
+        self.texture_sets_only_checkbox.setChecked(texture_sets_only)
+        self.texture_sets_only_checkbox.setEnabled(texture_set_mode)
+        self.file_model.texture_sets_only = texture_sets_only
         
         # Apply settings from settings manager (overrides config if exists)
         self.apply_settings()
@@ -614,6 +628,15 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Right panel - Preview (initially visible)
         self.preview_panel = PreviewPanel(self.settings_manager, config=self.config, metadata_manager=self.metadata_manager)
         self.content_splitter.addWidget(self.preview_panel)
+
+        # Let the preview panel show a selected folder's own thumbnail (if
+        # it has one - see resolve_folder_previews() in utils.py): a direct
+        # read-only handle to the memory cache for the synchronous check,
+        # and a callback to ask the browser to generate one on demand when
+        # it isn't cached yet (browser.py owns the enable-checks/disk-cache/
+        # generator-queue logic already, via request_folder_thumbnail_for_preview()).
+        self.preview_panel.memory_cache = self.memory_cache
+        self.preview_panel.request_folder_thumbnail = self.request_folder_thumbnail_for_preview
         
         # Set splitter initial sizes (20% nav, 50% browser, 30% preview)
         # Load saved splitter position or use default
@@ -680,42 +703,85 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             pass
     
     def create_menu_bar(self):
-        """Create menu bar with Tools menu"""
+        """Create menu bar with Settings, Tools, and Help menus"""
         menu_bar = self.menuBar()
-        
-        # Tools menu
-        tools_menu = menu_bar.addMenu("Tools")
-        
-        # Settings action
+
         # In PySide6, QAction is in QtGui, in PySide2 it's in QtWidgets
         QAction = QtGui.QAction if PYSIDE_VERSION == 6 else QtWidgets.QAction
-        
+
+        # Settings menu
+        settings_menu = menu_bar.addMenu("Settings")
+
         settings_action = QAction("Settings...", self)
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self.show_settings_dialog)
-        tools_menu.addAction(settings_action)
-        
+        settings_menu.addAction(settings_action)
+
+        texture_set_settings_action = QAction("Texture Set Settings...", self)
+        texture_set_settings_action.triggered.connect(self.show_texture_set_settings_dialog)
+        settings_menu.addAction(texture_set_settings_action)
+
+        # Tools menu
+        tools_menu = menu_bar.addMenu("Tools")
+
         # Batch Rename action
         batch_rename_action = QAction("Batch Rename...", self)
         batch_rename_action.setShortcut("Ctrl+R")
         batch_rename_action.triggered.connect(self.show_batch_rename_dialog)
         tools_menu.addAction(batch_rename_action)
-        
+
         # Separator
         tools_menu.addSeparator()
-        
+
         # Clear cache action
         clear_cache_action = QAction("Clear Thumbnail Cache", self)
         clear_cache_action.triggered.connect(self.clear_thumbnail_cache)
         tools_menu.addAction(clear_cache_action)
-        
+
         # Show Maya status in standalone mode
         if not MAYA_AVAILABLE:
             tools_menu.addSeparator()
             maya_status = QAction("⚠️ Standalone Mode (Maya features disabled)", self)
             maya_status.setEnabled(False)
             tools_menu.addAction(maya_status)
-    
+
+        # Help menu
+        help_menu = menu_bar.addMenu("Help")
+
+        documentation_action = QAction("Documentation...", self)
+        documentation_action.triggered.connect(self.show_help_dialog)
+        help_menu.addAction(documentation_action)
+
+    def show_help_dialog(self):
+        """Show the README as an in-app, rendered documentation dialog."""
+        readme_path = Path(__file__).parent / "README.md"
+        try:
+            readme_text = readme_path.read_text(encoding="utf-8")
+        except OSError as e:
+            self.safe_show_status(f"Could not open documentation: {e}")
+            return
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"DD Content Browser {__version__} - Documentation")
+        dialog.resize(900, 750)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        browser_view = QtWidgets.QTextBrowser(dialog)
+        browser_view.setOpenExternalLinks(True)
+        try:
+            browser_view.setMarkdown(readme_text)
+        except AttributeError:
+            # Qt < 5.14 has no Markdown support - fall back to plain text
+            browser_view.setPlainText(readme_text)
+        layout.addWidget(browser_view)
+
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.accept)
+        layout.addWidget(button_box)
+
+        dialog.exec_()
+
     def create_toolbar(self, parent_layout):
         """Create toolbar"""
         toolbar_layout = QtWidgets.QHBoxLayout()
@@ -1008,11 +1074,43 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.thumbnails_enabled_checkbox.setChecked(self.config.config.get("thumbnails_enabled", True))
         self.thumbnails_enabled_checkbox.setToolTip("Enable/disable thumbnail generation and loading")
         view_toolbar.addWidget(self.thumbnails_enabled_checkbox)
-        
+
+        # Separate toggle for folder *preview thumbnails specifically - the
+        # DB lookup + (first-visit) filesystem scan for these has its own
+        # cost independent of file thumbnails, so a user can keep file
+        # thumbnails on but turn this off when browsing a folder with
+        # thousands of subfolders.
+        self.folder_thumbnails_enabled_checkbox = QtWidgets.QCheckBox("Folder Thumbnails")
+        self.folder_thumbnails_enabled_checkbox.setChecked(self.config.config.get("folder_thumbnails_enabled", True))
+        self.folder_thumbnails_enabled_checkbox.setToolTip(
+            "Enable/disable showing a folder's *preview image as its thumbnail.\n"
+            "Turn off to speed up browsing folders with thousands of subfolders."
+        )
+        view_toolbar.addWidget(self.folder_thumbnails_enabled_checkbox)
+
         # Sequence mode toggle checkbox (will be initialized later from settings)
         self.sequence_mode_checkbox = QtWidgets.QCheckBox("Sequences")
         self.sequence_mode_checkbox.setToolTip("Group image sequences into single items\n(e.g. render_0001-0120.jpg → render_####.jpg)")
         view_toolbar.addWidget(self.sequence_mode_checkbox)
+        
+        # Texture set mode toggle checkbox (grouped: separator + Texture Sets + Show Only Sets)
+        view_toolbar.addWidget(QtWidgets.QLabel("  |  "))  # Separator before the texture-set group
+        self.texture_set_mode_checkbox = QtWidgets.QCheckBox("Texture Sets")
+        self.texture_set_mode_checkbox.setToolTip(
+            "Group PBR texture sets into single items (shown as the base color)\n"
+            "Drag a set into Maya to build its shader network.\n"
+            "Enabling this turns off Sequences."
+        )
+        view_toolbar.addWidget(self.texture_set_mode_checkbox)
+        
+        # Only-sets filter (enabled only in Texture Set mode)
+        self.texture_sets_only_checkbox = QtWidgets.QCheckBox("Show Only Sets")
+        self.texture_sets_only_checkbox.setToolTip(
+            "Show ONLY texture sets (hide loose files).\n"
+            "Great with 'Show Files from Subfolders' for a clean material library view."
+        )
+        self.texture_sets_only_checkbox.setEnabled(False)
+        view_toolbar.addWidget(self.texture_sets_only_checkbox)
         
         # Spacer before Load More button
         view_toolbar.addStretch()
@@ -1072,6 +1170,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # File list with custom delegate - Use MayaStyleListView
         self.file_model = FileSystemModel()
+        self.file_model.thumbnails_enabled = self.thumbnails_enabled_checkbox.isChecked()
+        self.file_model.folder_thumbnails_enabled = self.folder_thumbnails_enabled_checkbox.isChecked()
         self.file_list = MayaStyleListView()
         self.file_list.setModel(self.file_model)
         self.file_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -1280,6 +1380,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.breadcrumb.path_clicked.connect(self.navigate_to_path)
         self.preview_toggle_btn.clicked.connect(self.toggle_preview_panel)
         self.sequence_mode_checkbox.stateChanged.connect(self.toggle_sequence_mode)
+        self.texture_set_mode_checkbox.stateChanged.connect(self.toggle_texture_set_mode)
+        self.texture_sets_only_checkbox.stateChanged.connect(self.toggle_texture_sets_only)
         self.include_subfolders_checkbox.stateChanged.connect(self.on_subfolder_toggle)
         
         # Search bar connections
@@ -1293,7 +1395,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.grid_mode_btn.clicked.connect(lambda: self.set_view_mode(True))
         self.size_slider.valueChanged.connect(self.on_size_slider_changed)
         self.thumbnails_enabled_checkbox.stateChanged.connect(self.on_thumbnails_toggle)
-        
+        self.folder_thumbnails_enabled_checkbox.stateChanged.connect(self.on_folder_thumbnails_toggle)
+
         # Navigation connections
         # self.recent_list.itemClicked.connect(self.navigate_from_recent)  # Removed - now using dropdown menu
         self.favorites_list.itemClicked.connect(self.navigate_from_favorites)
@@ -1327,14 +1430,23 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Load search settings from settings manager and apply to search bar
         case_sensitive = self.settings_manager.get("filters", "case_sensitive_search", False)
         regex_enabled = self.settings_manager.get("filters", "regex_search", False)
+        fuzzy_enabled = self.settings_manager.get("filters", "fuzzy_search", True)
+        full_path_enabled = self.settings_manager.get("filters", "search_full_path", False)
         search_subfolders = self.settings_manager.get("filters", "search_in_subfolders", False)
         self.file_model.case_sensitive_search = case_sensitive
         self.file_model.regex_search = regex_enabled
+        self.file_model.fuzzy_search = fuzzy_enabled
+        self.file_model.search_full_path = full_path_enabled
         self.file_model.search_in_subfolders = search_subfolders
         self.search_bar.set_case_sensitive(case_sensitive)
         self.search_bar.set_regex_enabled(regex_enabled)
+        self.search_bar.set_fuzzy_enabled(fuzzy_enabled)
+        self.search_bar.set_full_path_enabled(full_path_enabled)
         self.search_bar.set_subfolders_enabled(search_subfolders)
-        
+        self.update_search_history_menu()  # Initialize recent-searches dropdown menu
+        self.update_full_path_button_state()  # Grey out full-path toggle if not in subfolder mode
+
+
         # Initialize Advanced Filters panel now that file_model exists
         self.init_advanced_filters()
         
@@ -1359,21 +1471,48 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             print("[Browser] Advanced Filters V2 panel initialized")
     
     def on_search_text_changed(self, text):
-        """Handle search text change (only called when Subfolders is OFF - real-time search)"""
+        """
+        Handle search text change (only called when Subfolders is OFF - real-time search).
+        Debounced (200ms) for non-empty text so a full model refresh doesn't run on
+        every single keystroke while typing - clearing the box (empty text) applies
+        immediately, since there's nothing expensive about reverting to "show everything".
+        """
+        if not hasattr(self, '_search_debounce_timer'):
+            self._search_debounce_timer = QTimer()
+            self._search_debounce_timer.setSingleShot(True)
+            self._search_debounce_timer.timeout.connect(self._apply_pending_search_text)
+        self._pending_search_text = text
+
+        if not text:
+            self._search_debounce_timer.stop()
+            self._apply_pending_search_text()
+            return
+
+        self._search_debounce_timer.start(200)
+
+    def _apply_pending_search_text(self):
+        """Actually apply the (possibly debounced) search text - see on_search_text_changed."""
+        text = self._pending_search_text
+
         # CLEAR thumbnail generator queue when search changes
         if hasattr(self, 'thumbnail_generator'):
             self.thumbnail_generator.clear_queue()
-        
+
         # If clearing search, clear progress display
         if not text:
             self.search_bar.clear_search_progress()
-        
+        else:
+            # Debounce already settled (200ms of no typing) - treat this as
+            # a "committed" search worth remembering.
+            self.config.add_recent_search(text)
+            self.update_search_history_menu()
+
         self.file_model.setFilterText(text)
         # Update match count (will be called after model refresh)
         QTimer.singleShot(50, self.update_search_match_count)
         # Request thumbnails for new filtered results
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
-    
+
     def on_subfolder_search_requested(self):
         """Handle manual subfolder search request (search button clicked or Enter pressed)"""
         # Get search text
@@ -1393,7 +1532,11 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Show initial progress
         self.search_bar.set_search_progress(0, 0)
-        
+
+        # Explicit search trigger (Enter/button) - always worth remembering
+        self.config.add_recent_search(search_text)
+        self.update_search_history_menu()
+
         # Trigger search with current text
         self.file_model.setFilterText(search_text)
         
@@ -1469,11 +1612,26 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             file_count = len(self.file_model.assets)
             self.safe_show_status(f"✓ Loaded {file_count} files from subfolders")
     
+    def update_full_path_button_state(self):
+        """
+        Full-path search only changes anything when actually searching
+        recursively (Include Subfolders, or the search bar's own Subfolders
+        toggle) - in a single, non-recursive folder view every visible item
+        shares the same parent path, so it can't discriminate anything.
+        Grey the toggle out otherwise so it doesn't look like a live option
+        with no effect.
+        """
+        subfolder_mode = self.include_subfolders_checkbox.isChecked() or self.search_bar.is_subfolders_enabled()
+        self.search_bar.set_full_path_active(subfolder_mode)
+
     def on_search_options_changed(self):
         """Handle search option (case/regex/subfolders) toggle"""
         self.file_model.case_sensitive_search = self.search_bar.is_case_sensitive()
         self.file_model.regex_search = self.search_bar.is_regex_enabled()
-        
+        self.file_model.fuzzy_search = self.search_bar.is_fuzzy_enabled()
+        self.file_model.search_full_path = self.search_bar.is_full_path_enabled()
+        self.update_full_path_button_state()
+
         # Check if subfolders setting changed
         old_subfolders = self.file_model.search_in_subfolders
         new_subfolders = self.search_bar.is_subfolders_enabled()
@@ -1484,6 +1642,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Save to settings
         self.settings_manager.set("filters", "case_sensitive_search", self.search_bar.is_case_sensitive())
         self.settings_manager.set("filters", "regex_search", self.search_bar.is_regex_enabled())
+        self.settings_manager.set("filters", "fuzzy_search", self.search_bar.is_fuzzy_enabled())
+        self.settings_manager.set("filters", "search_full_path", self.search_bar.is_full_path_enabled())
         self.settings_manager.set("filters", "search_in_subfolders", new_subfolders)
         self.settings_manager.save()
         
@@ -1541,7 +1701,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Handle both PySide2 (int) and PySide6 (enum) properly
         include_subfolders = bool(state == Qt.Checked or state == 2)
         self.file_model.include_subfolders = include_subfolders
-        
+        self.update_full_path_button_state()
+
         # Clear advanced filters when subfolders toggle (asset list will change)
         if hasattr(self, 'advanced_filters_panel'):
             print(f"[Browser] Subfolders toggled to {include_subfolders} - clearing advanced filters")
@@ -1590,7 +1751,25 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if not path.exists() or not path.is_dir():
             self.safe_show_status(f"Invalid path: {path}")
             return
-        
+
+        # If this navigation goes UP the tree (Backspace, or clicking an
+        # ancestor segment in the breadcrumb), remember the folder we're
+        # coming FROM so it can be re-selected in the new listing below -
+        # the folder that leads back to where we just were. self.breadcrumb
+        # still holds the OLD path here, since set_path() (which overwrites
+        # it) hasn't run yet for this navigation.
+        select_after = None
+        old_path_str = self.breadcrumb.current_path
+        if old_path_str:
+            old_path = Path(old_path_str)
+            if old_path != path:
+                try:
+                    rel = old_path.relative_to(path)
+                except ValueError:
+                    rel = None
+                if rel is not None and rel.parts:
+                    select_after = path / rel.parts[0]
+
         # Exit collection mode if active
         if self.file_model.collection_mode:
             self.on_collection_cleared()
@@ -1678,7 +1857,24 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Request thumbnails for visible items
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
-    
+
+        # Re-select the folder we navigated up FROM, once the view has
+        # settled (rows exist synchronously after setPath(), but give the
+        # view a paint cycle before scrolling/selecting into it)
+        if select_after is not None:
+            QTimer.singleShot(100, lambda p=select_after: self._select_folder_after_navigate(p))
+
+    def _select_folder_after_navigate(self, target_path):
+        """Re-select target_path's row in the file list, if still present (see navigate_to_path)."""
+        for row in range(self.file_model.rowCount()):
+            index = self.file_model.index(row, 0)
+            asset = self.file_model.data(index, Qt.UserRole)
+            if asset and asset.is_folder and Path(asset.file_path) == target_path:
+                self.file_list.clearSelection()
+                self.file_list.setCurrentIndex(index)
+                self.file_list.scrollTo(index)
+                return
+
     def navigate_back(self):
         """Navigate to previous path in history (or exit collection view if active)"""
         # If in collection mode, exit it instead of navigating history
@@ -1916,11 +2112,16 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     def on_thumbnails_toggle(self, state):
         """Handle thumbnail enable/disable toggle"""
         enabled = self.thumbnails_enabled_checkbox.isChecked()
-        
+
         # Save to config
         self.config.config["thumbnails_enabled"] = enabled
         self.config.save_config()
-        
+
+        # Push to the model - it has no widget access of its own, and skips
+        # folder-preview resolution (DB lookups + filesystem scans) entirely
+        # while thumbnails are off (see FileSystemModel._resolve_folder_previews)
+        self.file_model.thumbnails_enabled = enabled
+
         if enabled:
             # Re-enable thumbnails - request visible items
             QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -1928,10 +2129,40 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             # Clear thumbnail queue when disabled
             if hasattr(self, 'thumbnail_generator'):
                 self.thumbnail_generator.clear_queue()
-        
+
         # Schedule deferred update (Qt will refresh automatically)
         self.file_list.scheduleDelayedItemsLayout()
-    
+
+    def on_folder_thumbnails_toggle(self, state):
+        """Handle folder-preview-thumbnail enable/disable toggle (separate from the main Thumbnails one)"""
+        enabled = self.folder_thumbnails_enabled_checkbox.isChecked()
+
+        # Save to config
+        self.config.config["folder_thumbnails_enabled"] = enabled
+        self.config.save_config()
+
+        # Push to the model - future directory listings skip/do the
+        # DB lookup + filesystem scan (see FileSystemModel._resolve_folder_previews)
+        self.file_model.folder_thumbnails_enabled = enabled
+
+        if enabled and self.file_model.thumbnails_enabled:
+            # Re-resolve for whatever's already loaded in the CURRENT view
+            # too - otherwise a folder visited while this was off never got
+            # its folder_preview_path set, and re-enabling wouldn't show
+            # anything until the next full directory reload (F5).
+            self.file_model._resolve_folder_previews(self.file_model.assets)
+
+        # The delegate also checks this live at paint time, so already-
+        # resolved folder previews in the CURRENT listing hide/show
+        # immediately too, without needing to reload the directory.
+        self.file_list.scheduleDelayedItemsLayout()
+        self.file_list.viewport().update()
+
+        # Request thumbnail generation for any newly-revealed folder previews
+        if enabled:
+            QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+
+
     def browse_for_folder(self):
         """Browse for folder dialog"""
         current_path = self.breadcrumb.current_path or str(Path.home())
@@ -2060,7 +2291,43 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.update_recent_menu()
         self.update_recent_list()
         self.safe_show_status("Recent folders cleared")
-    
+
+    def update_search_history_menu(self):
+        """Update the search bar's recent-searches dropdown menu (same pattern as update_recent_menu)"""
+        menu = self.search_bar.history_btn.menu()
+        menu.clear()
+
+        from . import widgets
+        menu.setFont(QtGui.QFont(widgets.UI_FONT, 9))
+
+        recent_searches = self.config.config.get("recent_searches", [])
+
+        if not recent_searches:
+            no_recent_action = menu.addAction("No recent searches")
+            no_recent_action.setEnabled(False)
+        else:
+            for query in recent_searches:
+                action = menu.addAction(query)
+                action.triggered.connect(lambda checked=False, q=query: self.apply_recent_search(q))
+
+            menu.addSeparator()
+            clear_action = menu.addAction("Clear Recent Searches")
+            clear_action.triggered.connect(self.clear_recent_searches)
+
+    def apply_recent_search(self, query):
+        """Re-run a search picked from the recent-searches dropdown"""
+        self.search_bar.set_text(query)
+        if self.search_bar.is_subfolders_enabled():
+            # Subfolders mode needs an explicit trigger (matches typing behavior)
+            self.on_subfolder_search_requested()
+
+    def clear_recent_searches(self):
+        """Clear all recent searches"""
+        self.config.config["recent_searches"] = []
+        self.config.save_config()
+        self.update_search_history_menu()
+        self.safe_show_status("Recent searches cleared")
+
     def add_current_to_favorites(self):
         """Add current path to favorites"""
         current_path = self.breadcrumb.current_path.strip()
@@ -2702,6 +2969,21 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         """Toggle image sequence grouping mode"""
         is_checked = self.sequence_mode_checkbox.isChecked()
         
+        # Sequences and texture sets are mutually exclusive
+        if is_checked and self.texture_set_mode_checkbox.isChecked():
+            self.texture_set_mode_checkbox.blockSignals(True)
+            self.texture_set_mode_checkbox.setChecked(False)
+            self.texture_set_mode_checkbox.blockSignals(False)
+            self.file_model.texture_set_mode = False
+            self.config.config["texture_set_mode"] = False
+            # Also clear/disable the Only Sets filter
+            self.texture_sets_only_checkbox.blockSignals(True)
+            self.texture_sets_only_checkbox.setChecked(False)
+            self.texture_sets_only_checkbox.blockSignals(False)
+            self.texture_sets_only_checkbox.setEnabled(False)
+            self.file_model.texture_sets_only = False
+            self.config.config["texture_sets_only"] = False
+        
         # Update model
         self.file_model.sequence_mode = is_checked
         
@@ -2727,6 +3009,71 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         self.config.config["sequence_mode"] = is_checked
         self.config.save_config()
 
+    def toggle_texture_set_mode(self):
+        """Toggle PBR texture set grouping mode (mutually exclusive with Sequences)."""
+        is_checked = self.texture_set_mode_checkbox.isChecked()
+        
+        # Texture sets and sequences are mutually exclusive
+        if is_checked and self.sequence_mode_checkbox.isChecked():
+            self.sequence_mode_checkbox.blockSignals(True)
+            self.sequence_mode_checkbox.setChecked(False)
+            self.sequence_mode_checkbox.blockSignals(False)
+            self.file_model.sequence_mode = False
+            self.config.config["sequence_mode"] = False
+        
+        # Update model
+        self.file_model.texture_set_mode = is_checked
+        
+        # Enable/disable the "Only Sets" filter alongside texture set mode
+        self.texture_sets_only_checkbox.setEnabled(is_checked)
+        if not is_checked and self.texture_sets_only_checkbox.isChecked():
+            self.texture_sets_only_checkbox.blockSignals(True)
+            self.texture_sets_only_checkbox.setChecked(False)
+            self.texture_sets_only_checkbox.blockSignals(False)
+            self.file_model.texture_sets_only = False
+            self.config.config["texture_sets_only"] = False
+        
+        # Clear thumbnail cache to regenerate with correct cache keys
+        self.memory_cache.clear()
+        
+        # Reapply grouping WITHOUT reloading from filesystem
+        self.file_model.beginResetModel()
+        self.file_model.reapplySequenceGrouping()
+        self.file_model.endResetModel()
+        
+        # Request thumbnails for new state
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        
+        # Update status
+        if is_checked:
+            self.safe_show_status("Texture Set mode enabled - PBR sets grouped (drag to Maya builds shaders)")
+        else:
+            self.safe_show_status("Texture Set mode disabled - Showing individual files")
+        
+        # Save state to config (UI state, not settings)
+        self.config.config["texture_set_mode"] = is_checked
+        self.config.save_config()
+
+    def toggle_texture_sets_only(self):
+        """Toggle the 'Only Sets' filter (only meaningful in texture set mode)."""
+        is_checked = self.texture_sets_only_checkbox.isChecked()
+        self.file_model.texture_sets_only = is_checked
+        
+        # Reapply grouping/filter WITHOUT reloading from filesystem
+        self.file_model.beginResetModel()
+        self.file_model.reapplySequenceGrouping()
+        self.file_model.endResetModel()
+        
+        QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
+        
+        if is_checked:
+            self.safe_show_status("Showing only texture sets")
+        else:
+            self.safe_show_status("Showing texture sets and loose files")
+        
+        self.config.config["texture_sets_only"] = is_checked
+        self.config.save_config()
+
     
     def on_item_double_clicked(self, index):
         """Handle double-click on item - navigate into folders or import files"""
@@ -2749,6 +3096,198 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 # Not importable - show message and offer to open with default app
                 self.safe_show_status(f"Cannot import {asset.extension} files to Maya. Use 'Open' to view.", 4000)
     
+    def _tif_conversion_progress_callback(self):
+        """
+        Create a small progress dialog + callback for TIF conversion
+        (see _convert_channels_with_progress / the convert_to_tif setting).
+        A short setMinimumDuration keeps it from flashing on-screen for the
+        common fast case (a handful of textures converts in ~1s).
+
+        Returns (progress_dialog, callback) - callback(done, total) updates
+        the dialog; caller is responsible for closing progress_dialog when done.
+        """
+        progress = QtWidgets.QProgressDialog("Converting textures to TIF...", None, 0, 0, self)
+        progress.setWindowTitle("Texture Set")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(400)
+        progress.setCancelButton(None)
+
+        def _on_progress(done, total):
+            if progress.maximum() != total:
+                progress.setMaximum(total)
+            progress.setLabelText(f"Converting textures to TIF... ({done}/{total})")
+            progress.setValue(done)
+            QtWidgets.QApplication.processEvents()
+
+        return progress, _on_progress
+
+    def _convert_channels_with_progress(self, channels_list):
+        """
+        Convert JPG/PNG/TGA textures across one or more texture sets to TIF
+        (if the "convert_to_tif" setting is on), showing a single progress
+        dialog for the whole batch - not one per set, so dropping/importing
+        several sets at once still shows one accurate running count.
+
+        Args:
+            channels_list: list of dict[channel_key] -> list[Path], one per
+                texture set.
+
+        Returns:
+            The same-shaped list, converted if the setting is on, unchanged
+            otherwise.
+        """
+        if not self.settings_manager.get('smart_import', 'convert_to_tif', False):
+            return channels_list
+
+        from .utils import convert_texture_sets_to_tif
+        progress, on_progress = self._tif_conversion_progress_callback()
+        try:
+            return convert_texture_sets_to_tif(channels_list, progress_callback=on_progress)
+        finally:
+            progress.close()
+
+    def _build_texture_set_shaders(self, ts_assets):
+        """Build shader network(s) from texture-set asset(s) via the generator module."""
+        if not MAYA_AVAILABLE:
+            self.safe_show_status("Maya not available")
+            return
+        if not ts_assets:
+            return
+        from .utils import channel_paths_from_channels
+        converted = self._convert_channels_with_progress([a.texture_set.channels for a in ts_assets])
+        sets = [
+            {'name': a.texture_set.name, 'channels': channel_paths_from_channels(c)}
+            for a, c in zip(ts_assets, converted)
+        ]
+        shader_type = self.settings_manager.get('smart_import', 'shader_type', 'aiStandardSurface')
+        try:
+            import importlib.util
+            gen_path = Path(__file__).parent / 'smart_imports' / 'ddShaderNetworkGenerator.py'
+            spec = importlib.util.spec_from_file_location('ddShaderNetworkGenerator', str(gen_path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            created = mod.build_from_texture_sets(sets, shader_type=shader_type)
+            self.safe_show_status(f"✓ Built {len(created)} material(s) from texture set(s)", 3000)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.safe_show_status(f"Shader build failed: {e}", 4000)
+
+    def _try_auto_assign_texture_set_material(self, file_path, new_nodes):
+        """
+        After importing a geo file, look for a texture set matching its name
+        (own folder first, then subfolders) and auto-build + assign a
+        material to the newly imported geometry.
+
+        Opportunistic/best-effort: silently does nothing if no matching
+        texture set is found, so it never interferes with a plain geo import.
+        Callable from any import path (Import action, MMB batch import, ...)
+        - takes a plain file path rather than an AssetItem so it doesn't
+        depend on where the import was triggered from.
+        """
+        if not MAYA_AVAILABLE or not new_nodes:
+            return
+        geo_path = Path(file_path)
+        try:
+            from .utils import find_texture_set_for_geo, resolve_texture_set_channels
+
+            preferred_resolution = self.settings_manager.get('smart_import', 'preferred_resolution', '4K')
+            ts_data, geo_suffix, is_var_match = find_texture_set_for_geo(geo_path, preferred_resolution)
+            if not ts_data:
+                return
+
+            # VarN-matched assets (Megascans plants, etc.) skip displacement by
+            # default - most don't need it. Opt-in via Texture Set Settings.
+            exclude_displacement = is_var_match and not self.settings_manager.get(
+                'smart_import', 'var_import_displacement', False
+            )
+
+            variant_map = ts_data['variant_map']
+            if self.settings_manager.get('smart_import', 'convert_to_tif', False):
+                from .utils import convert_variant_map_to_tif
+                progress, on_progress = self._tif_conversion_progress_callback()
+                try:
+                    variant_map = convert_variant_map_to_tif(variant_map, progress_callback=on_progress)
+                finally:
+                    progress.close()
+
+            channels = resolve_texture_set_channels(variant_map, geo_suffix, exclude_displacement)
+            if not channels:
+                return
+
+            shapes = cmds.ls(new_nodes, dag=True, type=('mesh', 'nurbsSurface'), noIntermediate=True) or []
+            if not shapes:
+                return
+            transforms = list({cmds.listRelatives(s, parent=True, fullPath=True)[0] for s in shapes})
+            if not transforms:
+                return
+
+            shader_type = self.settings_manager.get('smart_import', 'shader_type', 'aiStandardSurface')
+
+            import importlib.util
+            gen_path = Path(__file__).parent / 'smart_imports' / 'ddShaderNetworkGenerator.py'
+            spec = importlib.util.spec_from_file_location('ddShaderNetworkGenerator', str(gen_path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            cmds.select(transforms, replace=True)
+            mod.build_from_texture_sets(
+                [{'name': ts_data['display'], 'channels': channels}],
+                shader_type=shader_type, assign_to_selection=True
+            )
+            self.safe_show_status(
+                f"✓ Auto-built material from texture set '{ts_data['display']}'", 3000
+            )
+
+            if self.settings_manager.get('smart_import', 'import_lod_proxy', False):
+                shading_group = None
+                for s in shapes:
+                    sgs = cmds.listConnections(s, type='shadingEngine') or []
+                    if sgs:
+                        shading_group = sgs[0]
+                        break
+                self._try_import_lod_proxy(geo_path, geo_suffix, shading_group)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[AutoMaterial] Failed for {geo_path.name}: {e}")
+
+    def _try_import_lod_proxy(self, geo_path, geo_suffix, shading_group):
+        """
+        Companion to _try_auto_assign_texture_set_material(): after a
+        "high"/untagged geo import gets its material built, also import a
+        lower-detail "LODN" proxy from the same folder (if one exists) and
+        assign it the SAME shading group - not a freshly built material, so
+        the proxy and the full-res geo genuinely share one material. Opt-in
+        via the 'smart_import.import_lod_proxy' setting; see
+        find_lod_proxy_for_geo() for the matching rules.
+        """
+        if not shading_group:
+            return
+        try:
+            from .utils import find_lod_proxy_for_geo, get_importable_extensions, get_maya_import_type
+
+            proxy_path = find_lod_proxy_for_geo(geo_path, geo_suffix, get_importable_extensions())
+            if not proxy_path:
+                return
+
+            file_type = get_maya_import_type(proxy_path.suffix)
+            kwargs = dict(i=True, ignoreVersion=True, mergeNamespacesOnClash=False,
+                          namespace=':', options='v=0', preserveReferences=True, returnNewNodes=True)
+            if file_type:
+                kwargs['type'] = file_type
+            new_nodes = cmds.file(str(proxy_path), **kwargs) or []
+
+            shapes = cmds.ls(new_nodes, dag=True, type=('mesh', 'nurbsSurface'), noIntermediate=True) or []
+            if not shapes:
+                return
+            cmds.sets(shapes, edit=True, forceElement=shading_group)
+            self.safe_show_status(f"✓ Imported LOD proxy '{proxy_path.name}' and assigned material", 3000)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[LODProxy] Failed for {geo_path.name}: {e}")
+
     def import_selected_file(self):
         """Import selected file or navigate into folder"""
         assets = self.get_selected_assets()
@@ -2764,6 +3303,14 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         if not MAYA_AVAILABLE:
             print("Maya not available")
             return
+        
+        # Texture sets: build shader network(s) directly (not file-node import)
+        ts_assets = [a for a in assets if getattr(a, 'is_texture_set', False) and a.texture_set]
+        if ts_assets:
+            self._build_texture_set_shaders(ts_assets)
+            assets = [a for a in assets if not (getattr(a, 'is_texture_set', False) and a.texture_set)]
+            if not assets:
+                return
         
         imported_count = 0
         error_count = 0
@@ -2862,27 +3409,32 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 else:
                     # Other 3D file types (OBJ, FBX, ABC, USD, DAE, STL, etc.)
                     from .utils import get_maya_import_type
-                    
+
                     file_path = str(asset.file_path)
-                    
+
                     # Get Maya import type from config
                     file_type = get_maya_import_type(asset.extension)
-                    
+
+                    new_nodes = []
                     if file_type:
                         # Import with type specification
-                        cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
+                        new_nodes = cmds.file(file_path, i=True, type=file_type, ignoreVersion=True,
                                  mergeNamespacesOnClash=False, namespace=':',
-                                 options='v=0', preserveReferences=True)
+                                 options='v=0', preserveReferences=True, returnNewNodes=True) or []
                         imported_count += 1
                     else:
                         # Unknown 3D format, try without type specification
                         try:
-                            cmds.file(file_path, i=True)
+                            new_nodes = cmds.file(file_path, i=True, returnNewNodes=True) or []
                             imported_count += 1
                         except:
                             # Skip if import fails
                             pass
-                    
+
+                    # Auto-build & assign a material from a matching texture
+                    # set (same folder or subfolders), if one is found
+                    self._try_auto_assign_texture_set_material(asset.file_path, new_nodes)
+
             except Exception as e:
                 error_count += 1
                 self.safe_show_status(f"Import error ({asset.name}): {e}", 3000)
@@ -2962,6 +3514,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     
     def on_thumbnail_ready(self, file_path, pixmap):
         """Handle thumbnail ready from generator"""
+        if not pixmap or pixmap.isNull():
+            return
+
         # Use fast O(1) lookup instead of looping through all rows
         model = self.file_list.model()
         if model:
@@ -2975,7 +3530,38 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         
         # Also update viewport for good measure
         self.file_list.viewport().update()
-    
+
+        # If the preview panel is waiting on this exact folder's thumbnail
+        # (see request_folder_thumbnail_for_preview()), push it there too
+        if hasattr(self, 'preview_panel'):
+            self.preview_panel.update_folder_thumbnail(file_path, pixmap)
+
+    def request_folder_thumbnail_for_preview(self, asset):
+        """
+        On-demand thumbnail generation for a single folder selected in the
+        preview panel (see PreviewPanel._show_folder_thumbnail() in
+        preview_panel.py). Same enable-checks/disk-cache/queue protocol as
+        request_thumbnails_for_visible_items(), just for one specific asset
+        instead of the visible batch - on_thumbnail_ready() pushes the
+        result back into the preview panel once it's done.
+        """
+        if not self.thumbnails_enabled_checkbox.isChecked() or not self.folder_thumbnails_enabled_checkbox.isChecked():
+            return
+        if not hasattr(self, 'thumbnail_generator'):
+            return
+
+        file_path_str = str(asset.file_path)
+        if self.memory_cache.get(file_path_str) is not None:
+            return
+
+        cached_from_disk = self.disk_cache.get(file_path_str, asset.modified_time)
+        if cached_from_disk:
+            self.memory_cache.set(file_path_str, cached_from_disk)
+            self.on_thumbnail_ready(file_path_str, cached_from_disk)
+            return
+
+        self.thumbnail_generator.add_to_queue(file_path_str, asset.modified_time, priority=True, asset=asset)
+
     def on_cache_status(self, status):
         """Handle cache status updates"""
         if status == "cache":
@@ -3063,10 +3649,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if asset and asset.should_generate_thumbnail:
                 file_path_str = str(asset.file_path)
                 
-                # For sequences, check cache using pattern as key
+                # For sequences/texture sets, check cache using a stable key
                 cache_key = file_path_str
                 if asset.is_sequence and asset.sequence:
                     cache_key = str(asset.sequence.pattern)
+                elif getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                    cache_key = "texset::" + str(asset.texture_set.directory) + "::" + str(asset.texture_set.name)
                 
                 # OPTIMIZATION: Skip disk refresh check during scroll (too slow!)
                 # Only check memory cache - disk cache check happens on folder navigation
@@ -3224,9 +3812,9 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             event.accept()
             return
         
-        # Delete - Delete selected file(s)
+        # Delete - Move to Recycle Bin, Shift+Delete - permanent delete
         if key == Qt.Key_Delete:
-            self.delete_selected_files()
+            self.delete_selected_files(use_recycle_bin=not bool(modifiers & Qt.ShiftModifier))
             event.accept()
             return
         
@@ -3236,9 +3824,39 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             event.accept()
             return
         
-        # Ctrl+C - Copy path to clipboard
-        if key == Qt.Key_C and modifiers == Qt.ControlModifier:
+        # Ctrl+Shift+N - New folder
+        if key == Qt.Key_N and modifiers == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.create_new_folder()
+            event.accept()
+            return
+        
+        # Ctrl+Shift+C - Copy path to clipboard (text)
+        if key == Qt.Key_C and modifiers == (Qt.ControlModifier | Qt.ShiftModifier):
             self.copy_path_to_clipboard()
+            event.accept()
+            return
+        
+        # Ctrl+C - Copy selected files to clipboard (real files)
+        if key == Qt.Key_C and modifiers == Qt.ControlModifier:
+            self.copy_selected_files_to_clipboard()
+            event.accept()
+            return
+        
+        # Ctrl+X - Cut selected files to clipboard
+        if key == Qt.Key_X and modifiers == Qt.ControlModifier:
+            self.cut_selected_files_to_clipboard()
+            event.accept()
+            return
+        
+        # Ctrl+V - Paste files from clipboard
+        if key == Qt.Key_V and modifiers == Qt.ControlModifier:
+            self.paste_files_from_clipboard()
+            event.accept()
+            return
+        
+        # Ctrl+D - Duplicate selected files
+        if key == Qt.Key_D and modifiers == Qt.ControlModifier:
+            self.duplicate_selected_files()
             event.accept()
             return
         
@@ -3275,6 +3893,12 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         dialog = SettingsDialog(self.settings_manager, self)
         dialog.settings_changed.connect(self.apply_settings)
         dialog.exec_()
+
+    def show_texture_set_settings_dialog(self):
+        """Show the standalone Texture Set settings panel"""
+        dialog = TextureSetSettingsDialog(self.settings_manager, self)
+        dialog.settings_changed.connect(self.apply_settings)
+        dialog.exec_()
     
     def apply_settings(self):
         """Apply settings to the application"""
@@ -3304,14 +3928,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # Apply preview settings to PreviewPanel
         preview_resolution = self.settings_manager.get("preview", "resolution", 1024)
         hdr_cache_size = self.settings_manager.get("preview", "hdr_cache_size", 5)
+        sequence_cache_size_mb = self.settings_manager.get("preview", "sequence_cache_size_mb", 1024)
         if hasattr(self, 'preview_panel'):
             self.preview_panel.max_preview_size = preview_resolution
             self.preview_panel.hdr_cache_max_size = hdr_cache_size
             self.preview_panel.max_hdr_cache_size = hdr_cache_size  # Both attributes for compatibility
             # Clear and resize cache
             self.preview_panel.hdr_raw_cache.clear()
+            if hasattr(self.preview_panel, 'sequence_frame_cache'):
+                self.preview_panel.sequence_frame_cache.set_max_size_mb(sequence_cache_size_mb)
             if DEBUG_MODE:
-                print(f"[Browser] Preview resolution set to {preview_resolution}px, HDR cache size: {hdr_cache_size}")
+                print(f"[Browser] Preview resolution set to {preview_resolution}px, HDR cache size: {hdr_cache_size}, "
+                      f"sequence cache size: {sequence_cache_size_mb}MB")
         
         # Apply thumbnail generation size and quality from settings
         thumbnail_generation_size = self.settings_manager.get("thumbnails", "size", 128)
@@ -3337,6 +3965,22 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             if DEBUG_MODE:
                 print(f"[Browser] Updated file limits: recursive={max_recursive}, search={max_search}")
         
+        # Apply texture set detection settings to file model
+        group_tx_sets = self.settings_manager.get("smart_import", "group_tx_sets", False)
+        if hasattr(self, 'file_model'):
+            tx_setting_changed = self.file_model.group_tx_texture_sets != group_tx_sets
+            self.file_model.group_tx_texture_sets = group_tx_sets
+            # Only re-group if actively browsing (current_path set) in Texture
+            # Set mode - at startup nothing has loaded yet, so there's nothing
+            # to re-group.
+            if (tx_setting_changed and self.file_model.texture_set_mode
+                    and self.file_model.current_path is not None):
+                self.file_model.beginResetModel()
+                self.file_model.reapplySequenceGrouping()
+                self.file_model.endResetModel()
+                if DEBUG_MODE:
+                    print(f"[Browser] Re-grouped after 'Group TX-only texture sets' change: {group_tx_sets}")
+
         # Apply search/filter settings to file model
         case_sensitive = self.settings_manager.get("filters", "case_sensitive_search", False)
         regex_enabled = self.settings_manager.get("filters", "regex_search", False)
@@ -3713,7 +4357,19 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         # CLEAR thumbnail generator queue when refreshing
         if hasattr(self, 'thumbnail_generator'):
             self.thumbnail_generator.clear_queue()
-        
+
+        # Also drop the cached "does this subfolder have a *preview image"
+        # status so F5 re-checks it (not just the directory listing itself -
+        # the cache lives in the metadata DB, outside the directory cache
+        # that file_model.refresh(force=True) below already bypasses).
+        if self.file_model.current_path is not None:
+            try:
+                from .utils import invalidate_folder_previews
+                subfolders = [p for p in self.file_model.current_path.iterdir() if p.is_dir()]
+                invalidate_folder_previews(subfolders)
+            except OSError:
+                pass
+
         self.file_model.refresh(force=True)
         self.safe_show_status("Refreshed (cache bypassed)")
         QTimer.singleShot(100, self.request_thumbnails_for_visible_items)
@@ -3767,8 +4423,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             QtWidgets.QApplication.clipboard().setText(combined_filenames)
             self.safe_show_status(f"Copied {len(assets)} filenames to clipboard")
     
-    def delete_selected_files(self):
-        """Delete selected files and folders (Delete key)"""
+    def delete_selected_files(self, use_recycle_bin=True):
+        """Delete selected files/folders. Del → Recycle Bin, Shift+Del → permanent."""
         assets = self.get_selected_assets()
         if not assets:
             self.safe_show_status("No file selected")
@@ -3783,16 +4439,18 @@ class DDContentBrowser(QtWidgets.QMainWindow):
         file_count = sum(1 for a in assets if not a.is_folder)
         folder_count = sum(1 for a in assets if a.is_folder)
         
+        destination = "Recycle Bin" if use_recycle_bin else "permanently"
         if folder_count > 0 and file_count > 0:
-            msg = f"Are you sure you want to delete:\n{file_names}?\n\n({file_count} file(s) and {folder_count} folder(s))"
+            msg = f"Move to {destination}:\n{file_names}?\n\n({file_count} file(s) and {folder_count} folder(s))"
         elif folder_count > 0:
-            msg = f"Are you sure you want to delete:\n{file_names}?\n\n({folder_count} folder(s) and their contents)"
+            msg = f"Move to {destination}:\n{file_names}?\n\n({folder_count} folder(s) and their contents)"
         else:
-            msg = f"Are you sure you want to delete:\n{file_names}?"
+            msg = f"Move to {destination}:\n{file_names}?"
         
+        title = "Delete Files" if use_recycle_bin else "Permanently Delete Files"
         reply = QtWidgets.QMessageBox.question(
             self,
-            "Delete Files",
+            title,
             msg,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No
@@ -3811,23 +4469,29 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             deleted_count = 0
             failed_files = []
             
-            for asset in assets:
-                file_path = str(asset.file_path)
-                
-                try:
-                    if asset.is_folder:
-                        # Delete folder (with all contents if not empty)
-                        shutil.rmtree(file_path)
-                    else:
-                        # Delete file
-                        os.remove(file_path)
-                    deleted_count += 1
-                except Exception as e:
-                    failed_files.append((asset.name, str(e)))
+            if use_recycle_bin:
+                # Batch move to Recycle Bin via Windows Shell API
+                ok, error = self._send_to_recycle_bin([str(a.file_path) for a in assets])
+                if ok:
+                    deleted_count = len(assets)
+                else:
+                    failed_files.append(("Recycle Bin operation", error))
+            else:
+                for asset in assets:
+                    file_path = str(asset.file_path)
+                    try:
+                        if asset.is_folder:
+                            shutil.rmtree(file_path)
+                        else:
+                            os.remove(file_path)
+                        deleted_count += 1
+                    except Exception as e:
+                        failed_files.append((asset.name, str(e)))
             
             # Show results
             if deleted_count > 0:
-                self.safe_show_status(f"Deleted {deleted_count} item(s)")
+                where = "Recycle Bin" if use_recycle_bin else "deleted"
+                self.safe_show_status(f"Moved {deleted_count} item(s) to {where}" if use_recycle_bin else f"Deleted {deleted_count} item(s)")
                 self.refresh_current_folder()
             
             # Show detailed error if some files failed
@@ -3843,6 +4507,55 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     "Delete Errors",
                     error_msg
                 )
+    
+    def _send_to_recycle_bin(self, paths):
+        """Move paths to the Windows Recycle Bin via SHFileOperationW. Returns (success, error)."""
+        if sys.platform != 'win32':
+            # Non-Windows: no native trash here; report unsupported so caller can decide.
+            return False, "Recycle Bin only supported on Windows"
+        
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            class SHFILEOPSTRUCTW(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd", wintypes.HWND),
+                    ("wFunc", wintypes.UINT),
+                    ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", ctypes.c_uint16),
+                    ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", wintypes.LPCWSTR),
+                ]
+            
+            FO_DELETE = 0x0003
+            FOF_ALLOWUNDO = 0x0040
+            FOF_NOCONFIRMATION = 0x0010
+            FOF_SILENT = 0x0004
+            FOF_NOERRORUI = 0x0400
+            
+            # Use absolute paths; pFrom must be double-null terminated.
+            abs_paths = [os.path.abspath(p) for p in paths]
+            from_str = '\0'.join(abs_paths) + '\0\0'
+            
+            op = SHFILEOPSTRUCTW()
+            op.hwnd = None
+            op.wFunc = FO_DELETE
+            op.pFrom = from_str
+            op.pTo = None
+            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+            
+            result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+            if result != 0:
+                return False, f"SHFileOperation failed (code {result})"
+            if op.fAnyOperationsAborted:
+                return False, "Operation aborted"
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
     
     def rename_selected_file(self):
         """Rename selected file (F2)"""
@@ -3879,6 +4592,198 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     "Rename Error",
                     f"Could not rename file:\n{e}"
                 )
+    
+    def create_new_folder(self):
+        """Create a new folder in the current directory (Ctrl+Shift+N)."""
+        directory = self._get_current_directory()
+        if directory is None:
+            self.safe_show_status("No folder open")
+            return
+        
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Folder", "Folder name:", QtWidgets.QLineEdit.Normal, "New Folder"
+        )
+        if not ok or not name.strip():
+            return
+        
+        target = self._unique_path(directory, name.strip())
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+            self.safe_show_status(f"Created folder: {target.name}")
+            self.refresh_current_folder()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "New Folder Error", f"Could not create folder:\n{e}")
+    
+    def copy_selected_files_to_clipboard(self):
+        """Copy selected files/folders to the OS clipboard (Ctrl+C)."""
+        self._set_file_clipboard(cut=False)
+    
+    def cut_selected_files_to_clipboard(self):
+        """Cut selected files/folders to the OS clipboard (Ctrl+X)."""
+        self._set_file_clipboard(cut=True)
+    
+    def _set_file_clipboard(self, cut):
+        assets = self.get_selected_assets()
+        if not assets:
+            self.safe_show_status("No file selected")
+            return
+        
+        urls = [QtCore.QUrl.fromLocalFile(str(a.file_path)) for a in assets]
+        mime = QtCore.QMimeData()
+        mime.setUrls(urls)
+        
+        # Windows "Preferred DropEffect": 2 = move (cut), 5 = copy
+        effect = 2 if cut else 5
+        import struct
+        mime.setData("Preferred DropEffect", QtCore.QByteArray(struct.pack("<I", effect)))
+        
+        QtWidgets.QApplication.clipboard().setMimeData(mime)
+        self._file_clipboard_cut = cut
+        action = "Cut" if cut else "Copied"
+        self.safe_show_status(f"{action} {len(assets)} item(s) to clipboard")
+    
+    def paste_files_from_clipboard(self):
+        """Paste files/folders from the OS clipboard into the current directory (Ctrl+V)."""
+        directory = self._get_current_directory()
+        if directory is None:
+            self.safe_show_status("No folder open")
+            return
+        
+        paths, is_cut = self._read_clipboard_file_paths()
+        if not paths:
+            self.safe_show_status("Clipboard has no files to paste")
+            return
+        
+        pasted = 0
+        failed = []
+        for src in paths:
+            src_path = Path(src)
+            if not src_path.exists():
+                failed.append((src_path.name, "source not found"))
+                continue
+            try:
+                if is_cut:
+                    # Move; skip no-op move into same directory
+                    if src_path.parent.resolve() == directory.resolve():
+                        continue
+                    dest = self._unique_path(directory, src_path.name)
+                    shutil.move(str(src_path), str(dest))
+                else:
+                    dest = self._unique_path(directory, src_path.name)
+                    if src_path.is_dir():
+                        shutil.copytree(str(src_path), str(dest))
+                    else:
+                        shutil.copy2(str(src_path), str(dest))
+                pasted += 1
+            except Exception as e:
+                failed.append((src_path.name, str(e)))
+        
+        if is_cut and pasted > 0:
+            # Consume clipboard after a successful move
+            QtWidgets.QApplication.clipboard().clear()
+            self._file_clipboard_cut = False
+        
+        if pasted > 0:
+            self.safe_show_status(f"Pasted {pasted} item(s)")
+            self.refresh_current_folder()
+        
+        if failed:
+            error_msg = f"Failed to paste {len(failed)} item(s):\n\n"
+            for name, error in failed[:5]:
+                error_msg += f"• {name}: {error}\n"
+            if len(failed) > 5:
+                error_msg += f"\n...and {len(failed) - 5} more"
+            QtWidgets.QMessageBox.warning(self, "Paste Errors", error_msg)
+    
+    def duplicate_selected_files(self):
+        """Duplicate selected files/folders in place (Ctrl+D)."""
+        assets = self.get_selected_assets()
+        if not assets:
+            self.safe_show_status("No file selected")
+            return
+        
+        duplicated = 0
+        failed = []
+        for asset in assets:
+            src = Path(asset.file_path)
+            try:
+                dest = self._duplicate_destination(src)
+                if src.is_dir():
+                    shutil.copytree(str(src), str(dest))
+                else:
+                    shutil.copy2(str(src), str(dest))
+                duplicated += 1
+            except Exception as e:
+                failed.append((src.name, str(e)))
+        
+        if duplicated > 0:
+            self.safe_show_status(f"Duplicated {duplicated} item(s)")
+            self.refresh_current_folder()
+        
+        if failed:
+            error_msg = f"Failed to duplicate {len(failed)} item(s):\n\n"
+            for name, error in failed[:5]:
+                error_msg += f"• {name}: {error}\n"
+            QtWidgets.QMessageBox.warning(self, "Duplicate Errors", error_msg)
+    
+    def _get_current_directory(self):
+        """Return the currently displayed directory as a Path, or None."""
+        current = self.breadcrumb.current_path if hasattr(self, 'breadcrumb') else None
+        if not current:
+            current = getattr(self.file_model, 'current_path', None)
+        if not current:
+            return None
+        path = Path(current)
+        return path if path.is_dir() else None
+    
+    def _read_clipboard_file_paths(self):
+        """Read file paths and cut/copy intent from the OS clipboard. Returns (paths, is_cut)."""
+        mime = QtWidgets.QApplication.clipboard().mimeData()
+        if mime is None or not mime.hasUrls():
+            return [], False
+        
+        paths = [url.toLocalFile() for url in mime.urls() if url.isLocalFile() and url.toLocalFile()]
+        
+        is_cut = self._file_clipboard_cut
+        if mime.hasFormat("Preferred DropEffect"):
+            data = bytes(mime.data("Preferred DropEffect"))
+            if len(data) >= 1:
+                is_cut = (data[0] == 2)  # DROPEFFECT_MOVE
+        return paths, is_cut
+    
+    def _unique_path(self, directory, name):
+        """Return a non-colliding Path in directory for the given name."""
+        candidate = Path(directory) / name
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        counter = 2
+        while True:
+            candidate = Path(directory) / f"{stem} ({counter}){suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+    
+    def _duplicate_destination(self, src):
+        """Build a ' - Copy' style destination path for duplicating src in place."""
+        directory = src.parent
+        if src.is_dir():
+            base = f"{src.name} - Copy"
+            candidate = directory / base
+            counter = 2
+            while candidate.exists():
+                candidate = directory / f"{src.name} - Copy ({counter})"
+                counter += 1
+            return candidate
+        stem = src.stem
+        suffix = src.suffix
+        candidate = directory / f"{stem} - Copy{suffix}"
+        counter = 2
+        while candidate.exists():
+            candidate = directory / f"{stem} - Copy ({counter}){suffix}"
+            counter += 1
+        return candidate
     
     def show_context_menu(self, position):
         """Show context menu for file list"""
@@ -3939,9 +4844,23 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                     copy_path_text = "📋 Copy Path"
                     copy_filename_text = "📝 Copy Filename"
                 
+                copy_action = menu.addAction("📋 Copy")
+                copy_action.triggered.connect(self.copy_selected_files_to_clipboard)
+                copy_action.setShortcut("Ctrl+C")
+                
+                cut_action = menu.addAction("✂️ Cut")
+                cut_action.triggered.connect(self.cut_selected_files_to_clipboard)
+                cut_action.setShortcut("Ctrl+X")
+                
+                duplicate_action = menu.addAction("⧉ Duplicate")
+                duplicate_action.triggered.connect(self.duplicate_selected_files)
+                duplicate_action.setShortcut("Ctrl+D")
+                
+                menu.addSeparator()
+                
                 copy_path_action = menu.addAction(copy_path_text)
                 copy_path_action.triggered.connect(self.copy_path_to_clipboard)
-                copy_path_action.setShortcut("Ctrl+C")
+                copy_path_action.setShortcut("Ctrl+Shift+C")
                 
                 copy_filename_action = menu.addAction(copy_filename_text)
                 copy_filename_action.triggered.connect(self.copy_filename_to_clipboard)
@@ -3962,31 +4881,48 @@ class DDContentBrowser(QtWidgets.QMainWindow):
                 rename_action.triggered.connect(self.rename_selected_file)
                 rename_action.setShortcut("F2")
                 
-                delete_action = menu.addAction("🗑️ Delete")
-                delete_action.triggered.connect(self.delete_selected_files)
+                delete_action = menu.addAction("🗑️ Delete (Recycle Bin)")
+                delete_action.triggered.connect(lambda: self.delete_selected_files(use_recycle_bin=True))
                 delete_action.setShortcut("Del")
+                
+                delete_perm_action = menu.addAction("❌ Delete Permanently")
+                delete_perm_action.triggered.connect(lambda: self.delete_selected_files(use_recycle_bin=False))
+                delete_perm_action.setShortcut("Shift+Del")
                 
                 menu.addSeparator()
                 
-                # Regenerate thumbnail (only for files with thumbnails)
+                # Regenerate thumbnail - for files, or folders (re-checks for
+                # a *preview image, see regenerate_selected_thumbnails())
+                regen_thumb_text = f"🔄 Regenerate Thumbnail" if len(selected_assets) == 1 else f"🔄 Regenerate {len(selected_assets)} Thumbnails"
+                regen_thumb_action = menu.addAction(regen_thumb_text)
+                regen_thumb_action.triggered.connect(self.regenerate_selected_thumbnails)
+
                 if not asset.is_folder:
-                    regen_thumb_text = f"🔄 Regenerate Thumbnail" if len(selected_assets) == 1 else f"🔄 Regenerate {len(selected_assets)} Thumbnails"
-                    regen_thumb_action = menu.addAction(regen_thumb_text)
-                    regen_thumb_action.triggered.connect(self.regenerate_selected_thumbnails)
-                    
                     # Auto-detect Color Space (only for HDR/EXR/TX files)
                     hdr_files = [a for a in selected_assets if str(a.file_path).lower().endswith(('.exr', '.hdr', '.tx'))]
                     if hdr_files:
                         auto_tag_text = f"🎨 Auto-detect Color Space" if len(hdr_files) == 1 else f"🎨 Auto-detect Color Space ({len(hdr_files)} files)"
                         auto_tag_action = menu.addAction(auto_tag_text)
                         auto_tag_action.triggered.connect(self.auto_detect_colorspace_for_selected)
-                    
+
                     menu.addSeparator()
                 
                 properties_action = menu.addAction("ℹ️ Properties")
                 properties_action.triggered.connect(lambda: self.show_file_properties(asset))
         else:
             # Empty space context menu
+            new_folder_action = menu.addAction("📁 New Folder")
+            new_folder_action.triggered.connect(self.create_new_folder)
+            new_folder_action.setShortcut("Ctrl+Shift+N")
+            
+            paste_files_action = menu.addAction("📋 Paste")
+            paste_files_action.triggered.connect(self.paste_files_from_clipboard)
+            paste_files_action.setShortcut("Ctrl+V")
+            _clip_mime = QtWidgets.QApplication.clipboard().mimeData()
+            paste_files_action.setEnabled(bool(_clip_mime and _clip_mime.hasUrls()))
+            
+            menu.addSeparator()
+            
             refresh_action = menu.addAction("🔄 Refresh")
             refresh_action.triggered.connect(self.refresh_current_folder)
             refresh_action.setShortcut("F5")
@@ -4000,8 +4936,8 @@ class DDContentBrowser(QtWidgets.QMainWindow):
             
             menu.addSeparator()
             
-            paste_action = menu.addAction("📋 Paste Path and Navigate")
-            paste_action.triggered.connect(self.paste_path_from_clipboard)
+            paste_path_action = menu.addAction("🧭 Paste Path and Navigate")
+            paste_path_action.triggered.connect(self.paste_path_from_clipboard)
             
             add_current_fav_action = menu.addAction("⭐ Add Current Folder to Favorites")
             add_current_fav_action.triggered.connect(self.add_current_to_favorites)
@@ -4123,19 +5059,39 @@ class DDContentBrowser(QtWidgets.QMainWindow):
     def regenerate_selected_thumbnails(self):
         """Regenerate thumbnails for selected files by clearing their cache entries"""
         selected_assets = self.get_selected_assets()
-        
+
         if not selected_assets:
             return
-        
-        # Filter out folders - only regenerate for files
+
         file_assets = [asset for asset in selected_assets if not asset.is_folder]
-        
-        if not file_assets:
+        folder_assets = [asset for asset in selected_assets if asset.is_folder]
+
+        if not file_assets and not folder_assets:
             self.safe_show_status("No files selected for thumbnail regeneration")
             return
-        
-        # Clear thumbnail cache for each file (and all frames if sequence)
+
         cleared_count = 0
+
+        # Folders: re-check for a *preview image right now (the metadata
+        # cache is invalidated then immediately re-scanned, since a simple
+        # cache-clear doesn't recreate the AssetItem the way F5's directory
+        # rescan does - so folder_preview_path has to be refreshed here).
+        if folder_assets:
+            try:
+                from .utils import invalidate_folder_previews, resolve_folder_previews
+                folder_paths = [asset.file_path for asset in folder_assets]
+                invalidate_folder_previews(folder_paths)
+                previews = resolve_folder_previews(folder_paths)
+                for asset in folder_assets:
+                    preview = previews.get(asset.file_path)
+                    asset.folder_preview_path = preview
+                    asset.should_generate_thumbnail = bool(preview)
+                    self.disk_cache.clear_thumbnail(asset.file_path)
+                    cleared_count += 1
+            except Exception as e:
+                print(f"Failed to refresh folder preview for selection: {e}")
+
+        # Clear thumbnail cache for each file (and all frames if sequence)
         for asset in file_assets:
             try:
                 # If it's a sequence, clear cache for all frames
@@ -4571,11 +5527,17 @@ Type: {'Folder' if asset.is_folder else asset.extension.upper()[1:] + ' File'}
             return
         
         # Get file paths from assets (now includes folders too)
-        file_paths = [str(asset.file_path) for asset in assets]
-        
+        file_paths = []
+        for asset in assets:
+            if getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                # Add every file that makes up the set, not just the representative thumbnail
+                file_paths.extend(str(f) for f in asset.texture_set.files)
+            else:
+                file_paths.append(str(asset.file_path))
+
         if not file_paths:
             return
-        
+
         # Add files and folders to collection
         collection.add_files(file_paths)
         self.collection_manager.save()

@@ -36,6 +36,78 @@ from .utils import (
 # Debug flag - set to False to disable verbose logging
 DEBUG_MODE = False  # Set to True for debugging
 
+# Holds the last dragged texture set(s) so a Maya drop can build shader graphs.
+_PENDING_TEXTURE_SET_DROP = None
+
+
+def apply_pending_texture_set_drop():
+    """Build shader graph(s) from the last dragged texture set(s).
+
+    Called from Maya (via the MEL command set on drag) after a texture set is
+    dropped into the viewport/Script Editor.
+    """
+    global _PENDING_TEXTURE_SET_DROP
+    payload = _PENDING_TEXTURE_SET_DROP
+    _PENDING_TEXTURE_SET_DROP = None
+    if not payload or not payload.get('sets'):
+        print("[TextureSet] No pending texture set to build.")
+        return
+
+    # Resolve shader type / TIF-conversion settings (defaults if unavailable)
+    shader_type = 'aiStandardSurface'
+    convert_to_tif = False
+    try:
+        from .settings import SettingsManager
+        _settings = SettingsManager()
+        shader_type = _settings.get('smart_import', 'shader_type', 'aiStandardSurface')
+        convert_to_tif = _settings.get('smart_import', 'convert_to_tif', False)
+    except Exception as e:
+        print(f"[TextureSet] Could not read smart_import settings ({e}), using defaults.")
+
+    # payload['sets'][i]['channels'] is still the list-based dict (channel ->
+    # list[Path], every UDIM tile kept separate) at this point - collapse it
+    # to channel -> str(path) now, converting to TIF first if that setting
+    # is on (so every tile gets converted, not just the first per channel).
+    # One combined batch (not per-set) so a multi-set drop shows one
+    # accurate running count, reusing the browser's progress dialog if it's
+    # running (this is a free function invoked from a MEL callback, so
+    # there's no `self` to hang a dialog off of otherwise).
+    from .utils import channel_paths_from_channels, convert_texture_sets_to_tif
+    channels_list = [ts['channels'] for ts in payload['sets']]
+    if convert_to_tif:
+        try:
+            from . import browser as _browser_mod
+            browser_instance = getattr(_browser_mod, '_content_browser_instance', None)
+        except Exception:
+            browser_instance = None
+        if browser_instance is not None:
+            channels_list = browser_instance._convert_channels_with_progress(channels_list)
+        else:
+            channels_list = convert_texture_sets_to_tif(channels_list)
+    sets = [
+        {'name': ts['name'], 'channels': channel_paths_from_channels(channels)}
+        for ts, channels in zip(payload['sets'], channels_list)
+    ]
+
+    # Load the shader network generator module (standalone file, not a package)
+    try:
+        import importlib.util
+        gen_path = Path(__file__).parent / 'smart_imports' / 'ddShaderNetworkGenerator.py'
+        spec = importlib.util.spec_from_file_location('ddShaderNetworkGenerator', str(gen_path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        print(f"[TextureSet] Failed to load shader generator: {e}")
+        return
+
+    try:
+        mod.build_from_texture_sets(sets, shader_type=shader_type)
+    except Exception as e:
+        import traceback
+        print(f"[TextureSet] Shader build failed: {e}")
+        traceback.print_exc()
+
+
 
 def natural_sort_key(text):
     """
@@ -174,19 +246,93 @@ class ImageSequence:
         return len(self.files)
 
 
+class TextureSet:
+    """
+    Represents a PBR texture set: related textures whose suffixes map to
+    material channels (baseColor, roughness, normal, height, ...).
+
+    Attributes:
+        name: Set base name (shared filename prefix, e.g. 'TCom_Wall_Stone2_3x3_4K')
+        channels: dict[channel_key] -> list[Path] (UDIM tiles kept as list)
+        files: flat list of all Path objects in the set
+        directory: parent folder of the set
+        extra_formats: alternate/lower-priority duplicates demoted out of the
+            set (same channel+UDIM+LOD - e.g. a .png that lost to a .tif of
+            the same baseColor/UDIM, or a plain height that lost to a
+            higher-priority "PN" height export). Never shown as standalone
+            tiles - only counted on the set's badge as "+N" and listed in
+            its tooltip.
+    """
+
+    def __init__(self, name, channels, files, extra_formats=None):
+        self.name = name
+        self.channels = channels
+        self.files = list(files)
+        self.directory = self.files[0].parent if self.files else None
+        self.extra_formats = list(extra_formats) if extra_formats else []
+
+    def get_thumbnail_path(self):
+        """Representative file for the set's thumbnail (prefer baseColor)."""
+        from .utils import get_texture_set_thumbnail_path
+        return get_texture_set_thumbnail_path(self.channels)
+
+    def get_channel_path(self, channel):
+        """First file path for a channel, or None."""
+        files = self.channels.get(channel)
+        return files[0] if files else None
+
+    @property
+    def channel_paths(self):
+        """dict[channel_key] -> str(path) using the first tile per channel."""
+        out = {}
+        for channel, files in self.channels.items():
+            if files:
+                out[channel] = str(files[0])
+        return out
+
+    @property
+    def total_size(self) -> int:
+        total = 0
+        for file_path in self.files:
+            try:
+                total += file_path.stat().st_size
+            except Exception:
+                pass
+        return total
+
+    def __repr__(self):
+        return f"TextureSet('{self.name}', channels={sorted(self.channels.keys())})"
+
+    def __len__(self):
+        return len(self.files)
+
+
 class AssetItem:
     """Asset item representation with lazy stat loading"""
     
-    def __init__(self, file_path, lazy_load=False):
+    def __init__(self, file_path, lazy_load=False, is_dir=None):
         self.file_path = Path(file_path)
         self.name = self.file_path.name
-        self.is_folder = self.file_path.is_dir()
+        # Callers that already know this (e.g. from an os.scandir() DirEntry,
+        # which gets it for free) can pass is_dir directly to skip a second,
+        # separate stat() call here - doubly expensive over network drives.
+        self.is_folder = self.file_path.is_dir() if is_dir is None else is_dir
         self.extension = "" if self.is_folder else self.file_path.suffix.lower()
         
         # Image sequence support
         self.is_sequence = False
         self.sequence = None  # ImageSequence object if is_sequence=True
         
+        # Texture set support (PBR channel grouping)
+        self.is_texture_set = False
+        self.texture_set = None  # TextureSet object if is_texture_set=True
+
+        # Folder preview thumbnail (*preview.<ext> image inside a folder,
+        # resolved externally after construction - see
+        # utils.resolve_folder_previews() - since it needs a metadata DB
+        # cache lookup/scan that doesn't belong in a plain constructor)
+        self.folder_preview_path = None
+
         # Lazy loading - csak akkor töltjük be a stat infót, ha kell
         self._stat_loaded = False
         self._size = None
@@ -296,7 +442,17 @@ class AssetItem:
                 return f"{total_size / 1024:.1f} KB"
             else:
                 return f"{total_size / (1024 * 1024):.1f} MB"
-        
+
+        if self.is_texture_set and self.texture_set:
+            # Show total texture set size (all channel files combined)
+            total_size = self.texture_set.total_size
+            if total_size < 1024:
+                return f"{total_size} B"
+            elif total_size < 1024 * 1024:
+                return f"{total_size / 1024:.1f} KB"
+            else:
+                return f"{total_size / (1024 * 1024):.1f} MB"
+
         # Single file
         if self.size < 1024:
             return f"{self.size} B"
@@ -331,7 +487,13 @@ class FileSystemModel(QAbstractListModel):
         self._file_path_to_row = {}  # Fast lookup: file_path_str -> row_index
         self.current_path = None
         self.filter_text = ""
-        
+        # Mirrors the browser's "Thumbnails" / "Folder Thumbnails" checkboxes
+        # (pushed in from browser.py, since the model has no widget access
+        # of its own) - both skip folder-preview resolution entirely when
+        # off, see _resolve_folder_previews().
+        self.thumbnails_enabled = True
+        self.folder_thumbnails_enabled = True
+
         # Base supported formats - from central FILE_TYPE_REGISTRY
         from .utils import get_all_supported_extensions, get_extensions_by_category
         self.base_formats = get_all_supported_extensions()
@@ -345,6 +507,8 @@ class FileSystemModel(QAbstractListModel):
         # Search options
         self.case_sensitive_search = False
         self.regex_search = False
+        self.fuzzy_search = True  # fzf/VSCode-style subsequence match, see utils.fuzzy_match() - on by default
+        self.search_full_path = False  # Match against the full path, not just the filename
         self.search_in_subfolders = False  # Search in subfolders when search text is present
         
         # Advanced filters
@@ -370,6 +534,11 @@ class FileSystemModel(QAbstractListModel):
         self.sequence_mode = False  # When True, group image sequences into single items
         self._ungrouped_assets = []  # Store ungrouped assets for quick sequence mode toggle
         
+        # Texture set grouping (PBR channels grouped by shared base name)
+        self.texture_set_mode = False  # When True, group texture sets into single items
+        self.texture_sets_only = False  # When True (with texture_set_mode), hide non-set items
+        self.group_tx_texture_sets = False  # When False, .tx files never form their own set (see Texture Set Settings)
+
         # Recursive subfolder browsing
         self.include_subfolders = False
         self.max_recursive_files = 10000  # Limit for "Include Subfolders" (shows all files)
@@ -575,7 +744,12 @@ class FileSystemModel(QAbstractListModel):
                 
                 # Collect file paths as strings (memory efficient)
                 collected_paths = []
-                
+                # Path strings known to be directories (os.walk's own dirs
+                # list already tells us this for free) - lets AssetItem
+                # skip a redundant is_dir() stat call below, same as the
+                # non-recursive scandir() path.
+                collected_dirs = set()
+
                 for root, dirs, files in os.walk(self.current_path):
                     # Check for interrupt
                     if self._interrupt_search:
@@ -589,25 +763,30 @@ class FileSystemModel(QAbstractListModel):
                         for dir_name in dirs:
                             if not dir_name.startswith('.'):
                                 if self.filter_text:
-                                    if self._matches_search(dir_name, self.filter_text):
-                                        collected_paths.append(str(root_path / dir_name))
+                                    dir_path_str = str(root_path / dir_name)
+                                    if self._matches_search(dir_name, self.filter_text, full_path=dir_path_str):
+                                        collected_paths.append(dir_path_str)
+                                        collected_dirs.add(dir_path_str)
                                         loaded_count += 1
                                 else:
-                                    collected_paths.append(str(root_path / dir_name))
+                                    dir_path_str = str(root_path / dir_name)
+                                    collected_paths.append(dir_path_str)
+                                    collected_dirs.add(dir_path_str)
                                     loaded_count += 1
-                    
+
                     # Add files
                     for file_name in files:
                         ext = os.path.splitext(file_name)[1].lower()
-                        if ext in self.supported_formats:
+                        if is_extension_supported(ext):
                             if self.filter_file_types and ext not in self.filter_file_types:
                                 continue
-                            
+
                             file_count += 1
-                            
+
                             # Apply search filter if in search mode
                             if is_search_mode:
-                                if self._matches_search(file_name, self.filter_text):
+                                file_path_str = str(root_path / file_name)
+                                if self._matches_search(file_name, self.filter_text, full_path=file_path_str):
                                     collected_paths.append(str(root_path / file_name))
                                     match_count += 1
                                     loaded_count += 1
@@ -652,7 +831,7 @@ class FileSystemModel(QAbstractListModel):
                 self._current_display_limit = len(collected_paths)
                 
                 # Convert collected string paths to Path objects (lazy conversion)
-                all_items = [Path(p) for p in collected_paths]
+                all_items = [(Path(p), p in collected_dirs) for p in collected_paths]
                 
                 # Emit final progress
                 if is_search_mode:
@@ -698,7 +877,7 @@ class FileSystemModel(QAbstractListModel):
                                 continue
                             # Apply search filter to folders too
                             if self.filter_text:
-                                if not self._matches_search(asset.name, self.filter_text):
+                                if not self._matches_search(asset.name, self.filter_text, full_path=str(asset.file_path)):
                                     continue
                             filtered_assets.append(asset)
                             continue
@@ -709,11 +888,11 @@ class FileSystemModel(QAbstractListModel):
                             # Only specific types
                             if ext not in self.filter_file_types:
                                 continue
-                            if ext not in self.supported_formats:
+                            if not is_extension_supported(ext):
                                 continue
                         else:
-                            # All supported types
-                            if ext not in self.supported_formats:
+                            # All supported types (i.e. not individually disabled)
+                            if not is_extension_supported(ext):
                                 continue
                         
                         # Apply show_images filter
@@ -742,9 +921,9 @@ class FileSystemModel(QAbstractListModel):
                         
                         # Apply search filter
                         if self.filter_text:
-                            if not self._matches_search(asset.name, self.filter_text):
+                            if not self._matches_search(asset.name, self.filter_text, full_path=str(asset.file_path)):
                                 continue
-                        
+
                         filtered_assets.append(asset)
                     
                     self.assets = filtered_assets
@@ -770,20 +949,20 @@ class FileSystemModel(QAbstractListModel):
                         if is_directory:
                             # Add folder if folders are enabled
                             if self.show_folders:
-                                all_items.append(Path(entry.path))
+                                all_items.append((Path(entry.path), True))
                         else:
                             # Check file extension
                             ext = Path(entry.name).suffix.lower()
-                            
+
                             # Apply file type filters
                             if self.filter_file_types:
                                 # Only specific types
-                                if ext in self.filter_file_types and ext in self.supported_formats:
-                                    all_items.append(Path(entry.path))
+                                if ext in self.filter_file_types and is_extension_supported(ext):
+                                    all_items.append((Path(entry.path), False))
                             else:
-                                # All supported types
-                                if ext in self.supported_formats:
-                                    all_items.append(Path(entry.path))
+                                # All supported types (i.e. not individually disabled)
+                                if is_extension_supported(ext):
+                                    all_items.append((Path(entry.path), False))
             
             # Only process if we didn't use cache
             if cached_assets is None:
@@ -792,16 +971,20 @@ class FileSystemModel(QAbstractListModel):
                 
                 # Filter based on search text (applies to both folders and files)
                 if self.filter_text:
-                    all_items = [f for f in all_items if self._matches_search(f.name, self.filter_text)]
+                    all_items = [(f, d) for f, d in all_items if self._matches_search(f.name, self.filter_text, full_path=str(f))]
                     if DEBUG_MODE:
                         print(f"[Model] After search filter: {len(all_items)} items")
-                
-                # Convert to AssetItem objects with LAZY LOADING
-                self.assets = [AssetItem(f, lazy_load=True) for f in all_items]
-                
+
+                # Convert to AssetItem objects with LAZY LOADING - is_dir
+                # passed straight from the scandir() DirEntry above so the
+                # constructor doesn't need a second stat() call to re-derive it.
+                self.assets = [AssetItem(f, lazy_load=True, is_dir=d) for f, d in all_items]
+
                 if DEBUG_MODE:
                     print(f"[Model] Created {len(self.assets)} AssetItem objects")
-                
+
+                self._resolve_folder_previews(self.assets)
+
                 # Apply advanced filters
                 # Ellenőrizzük, hogy kell-e stat info (méret/dátum szűrés)
                 needs_stat_for_filter = (
@@ -852,8 +1035,15 @@ class FileSystemModel(QAbstractListModel):
             # Store ungrouped assets BEFORE sequence grouping for quick toggle
             self._ungrouped_assets = self.assets.copy()
             
-            # Group image sequences if sequence mode is enabled
-            if self.sequence_mode:
+            # Grouping: texture sets take precedence over sequences (mutually exclusive)
+            if self.texture_set_mode:
+                try:
+                    self._group_texture_sets()
+                except Exception as e:
+                    import traceback
+                    print(f"[ERROR] Texture set grouping failed: {e}")
+                    traceback.print_exc()
+            elif self.sequence_mode:
                 try:
                     # print(f"[DEBUG] Grouping sequences for {len(self.assets)} assets...")
                     self._group_sequences()
@@ -874,9 +1064,15 @@ class FileSystemModel(QAbstractListModel):
             
             # Add to cache AFTER filtering and sorting (only if we loaded from filesystem)
             # BUT: Don't cache if we have search filter or other filters applied
-            # because cache should only store the raw directory contents
+            # because cache should only store the raw directory contents.
+            # IMPORTANT: cache the pre-grouping (_ungrouped_assets) snapshot, not
+            # self.assets - self.assets may have just been replaced by texture-set/
+            # sequence grouping above. Caching the grouped result would "freeze in"
+            # whatever texture_set_mode/sequence_mode was active at cache time, so a
+            # later visit with the mode toggled OFF would still show grouped items
+            # (or vice versa) since nothing ever re-groups a cache hit from scratch.
             if cached_assets is None and not self.filter_text:
-                self._add_to_cache(path_str, self.assets, current_mtime)
+                self._add_to_cache(path_str, self._ungrouped_assets, current_mtime)
             
         except Exception as e:
             print(f"File loading error: {e}")
@@ -994,26 +1190,168 @@ class FileSystemModel(QAbstractListModel):
             # No image files to group
             self.assets = folders + other_files
     
-    def _matches_search(self, filename, search_text):
+    def _resolve_folder_previews(self, assets):
         """
-        Check if filename matches search text
-        Supports case-sensitive and regex search based on settings
+        Set .folder_preview_path / .should_generate_thumbnail on folder
+        AssetItems that contain a *preview image, so the delegate renders
+        that image instead of the generic folder icon and the normal
+        thumbnail pipeline (memory/disk cache, background generation)
+        picks it up. Batched over all folders in this listing at once -
+        cheap after the first visit (see utils.resolve_folder_previews(),
+        cached in the metadata DB).
         """
+        if not self.thumbnails_enabled or not self.folder_thumbnails_enabled:
+            # Nothing would be shown anyway - skip the DB/filesystem work
+            # entirely (this is exactly the case a user disables one of
+            # these for, to speed up browsing a folder with thousands of
+            # items).
+            return
+        folders = [a for a in assets if a.is_folder]
+        if not folders:
+            return
+        try:
+            from .utils import resolve_folder_previews
+            previews = resolve_folder_previews(a.file_path for a in folders)
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[Model] Folder preview resolution failed: {e}")
+            return
+        for asset in folders:
+            preview = previews.get(asset.file_path)
+            if preview:
+                asset.folder_preview_path = preview
+                asset.should_generate_thumbnail = True
+
+    def _group_texture_sets(self):
+        """
+        Group image files into PBR texture sets (per folder).
+        Replaces set members with a single AssetItem whose thumbnail is the
+        baseColor map. Non-image and unmatched files are kept as-is.
+        """
+        from .utils import group_texture_sets
+        from collections import defaultdict
+
+        folders = [asset for asset in self.assets if asset.is_folder]
+        files = [asset for asset in self.assets if not asset.is_folder]
+
+        image_files = [a for a in files if a.is_image_file]
+        other_files = [a for a in files if not a.is_image_file]
+
+        if not image_files:
+            self.assets = folders + other_files
+            return
+
+        # Group per folder
+        files_by_folder = defaultdict(list)
+        for asset in image_files:
+            files_by_folder[asset.file_path.parent].append(asset)
+
+        set_assets = []
+        for folder, folder_assets in files_by_folder.items():
+            path_to_asset = {a.file_path: a for a in folder_assets}
+            image_paths = [a.file_path for a in folder_assets]
+
+            sets, singles = group_texture_sets(image_paths, group_tx_sets=self.group_tx_texture_sets)
+
+            # Build a texture-set AssetItem per detected set
+            for set_name, data in sets.items():
+                texture_set = TextureSet(set_name, data['channels'], data['files'], extra_formats=data.get('extra_formats'))
+                thumb_path = texture_set.get_thumbnail_path() or data['files'][0]
+
+                asset = AssetItem(thumb_path, lazy_load=True)
+                asset.is_texture_set = True
+                asset.texture_set = texture_set
+                asset.name = set_name
+                asset.should_generate_thumbnail = True
+                set_assets.append(asset)
+
+            # Keep unmatched single files as their original AssetItems
+            for path in singles:
+                original = path_to_asset.get(path)
+                if original is not None:
+                    set_assets.append(original)
+
+        self.assets = folders + set_assets + other_files
+        
+        # "Only Sets" filter: hide loose files, keep folders (for navigation) + texture sets
+        if self.texture_sets_only:
+            self.assets = [a for a in self.assets if a.is_folder or getattr(a, 'is_texture_set', False)]
+    
+    def _matches_search(self, filename, search_text, full_path=None):
+        """
+        Check if filename (or full_path, in full-path search mode) matches
+        search text. Thin wrapper around _search_match_indices() - see that
+        method for the actual case-sensitive/regex/fuzzy matching logic
+        (shared with the highlight-drawing code in delegates.py, so both
+        always agree on what counts as a match).
+        """
+        return self._search_match_indices(filename, search_text, full_path) is not None
+
+    def _search_match_indices(self, filename, search_text, full_path=None):
+        """
+        Match filename against search_text (case-sensitive/regex/fuzzy per
+        current settings) and return the character indices in the matched
+        string to highlight, or None if it doesn't match at all.
+
+        - fuzzy mode: the exact (possibly scattered) matched positions from
+          utils.fuzzy_match().
+        - regex mode: every index covered by re.search()'s matched span.
+        - plain substring mode (default): every index covered by the
+          substring match.
+        Regex takes priority over fuzzy if both are somehow on (they're
+        meant to be mutually exclusive modes in the UI).
+
+        If self.search_full_path is on and the caller provided full_path,
+        matching happens against full_path instead of filename (indices
+        then refer to positions in full_path, not filename) - falls back
+        to filename if full_path wasn't supplied.
+        """
+        if not search_text:
+            return None
+
+        target = full_path if (getattr(self, 'search_full_path', False) and full_path) else filename
+
         if self.regex_search:
-            # Regex search
             try:
                 import re
                 flags = 0 if self.case_sensitive_search else re.IGNORECASE
-                return bool(re.search(search_text, filename, flags))
+                m = re.search(search_text, target, flags)
+                if m:
+                    return list(range(m.start(), m.end()))
+                return None
             except re.error:
-                # Invalid regex - fall back to plain text search
-                pass
-        
+                pass  # Invalid regex - fall back to plain text search
+
+        if getattr(self, 'fuzzy_search', False):
+            from .utils import fuzzy_match
+            result = fuzzy_match(search_text, target)
+            return result[1] if result else None
+
         # Plain text search
-        if self.case_sensitive_search:
-            return search_text in filename
-        else:
-            return search_text.lower() in filename.lower()
+        haystack = target if self.case_sensitive_search else target.lower()
+        needle = search_text if self.case_sensitive_search else search_text.lower()
+        idx = haystack.find(needle)
+        if idx == -1:
+            return None
+        return list(range(idx, idx + len(needle)))
+
+    def get_search_highlight_indices(self, filename):
+        """
+        Public entry point for delegates.py: the character indices in
+        `filename` matched by the CURRENT search (self.filter_text), for
+        highlighting - or None if there's no active search / no match.
+
+        In full-path search mode this always returns None: the delegate
+        only draws the filename, and a match found purely in the directory
+        portion of the path has no corresponding position to highlight in
+        it (translating path-relative indices back onto just the filename,
+        for the subset of matches that happen to land inside it, isn't
+        worth the complexity for a highlight - filtering itself is
+        unaffected either way).
+        """
+        if not self.filter_text or getattr(self, 'search_full_path', False):
+            return None
+        return self._search_match_indices(filename, self.filter_text)
     
     def setSortOrder(self, column, ascending=True):
         """Set sort order"""
@@ -1133,8 +1471,15 @@ class FileSystemModel(QAbstractListModel):
         if DEBUG_MODE:
             print(f"[Model] Restored {len(self.assets)} assets from ungrouped")
         
-        # Apply sequence grouping if enabled
-        if self.sequence_mode:
+        # Grouping: texture sets take precedence over sequences (mutually exclusive)
+        if self.texture_set_mode:
+            try:
+                self._group_texture_sets()
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] Texture set grouping failed: {e}")
+                traceback.print_exc()
+        elif self.sequence_mode:
             if DEBUG_MODE:
                 print(f"[Model] Sequence mode is ON - grouping sequences...")
             try:
@@ -1189,11 +1534,11 @@ class FileSystemModel(QAbstractListModel):
                             for file_name in files:
                                 item_path = root_path / file_name
                                 
-                                # Check if extension is supported
+                                # Check if extension is supported (not individually disabled)
                                 ext = item_path.suffix.lower()
-                                if ext not in self.supported_formats:
+                                if not is_extension_supported(ext):
                                     continue
-                                
+
                                 # Check file type filters
                                 if self.filter_file_types and ext not in self.filter_file_types:
                                     continue
@@ -1226,11 +1571,11 @@ class FileSystemModel(QAbstractListModel):
                 if not file_path.is_file():
                     continue
                 
-                # Check if extension is supported
+                # Check if extension is supported (not individually disabled)
                 ext = file_path.suffix.lower()
-                if ext not in self.supported_formats:
+                if not is_extension_supported(ext):
                     continue
-                
+
                 # Check file type filters
                 if self.filter_file_types and ext not in self.filter_file_types:
                     continue
@@ -1260,13 +1605,33 @@ class FileSystemModel(QAbstractListModel):
             
             # Apply search filter (applies to both folders and files)
             if self.filter_text:
-                self.assets = [asset for asset in all_assets if self._matches_search(asset.name, self.filter_text)]
+                self.assets = [asset for asset in all_assets
+                               if self._matches_search(asset.name, self.filter_text, full_path=str(asset.file_path))]
             else:
                 self.assets = all_assets
-            
+
+            # Store ungrouped assets BEFORE grouping (mirrors normal directory loading, enables fast regroup)
+            self._ungrouped_assets = self.assets.copy()
+
+            # Grouping: texture sets take precedence over sequences (mutually exclusive)
+            if self.texture_set_mode:
+                try:
+                    self._group_texture_sets()
+                except Exception as e:
+                    import traceback
+                    print(f"[ERROR] Texture set grouping failed (collection): {e}")
+                    traceback.print_exc()
+            elif self.sequence_mode:
+                try:
+                    self._group_sequences()
+                except Exception as e:
+                    import traceback
+                    print(f"[ERROR] Sequence grouping failed (collection): {e}")
+                    traceback.print_exc()
+
             # Apply sorting
             self._sort_assets()
-        
+
         except Exception as e:
             print(f"[Collection] Load error: {e}")
             import traceback
@@ -1311,24 +1676,58 @@ class FileSystemModel(QAbstractListModel):
                     return ""
         elif role == Qt.ToolTipRole and column == 0:
             # Rich HTML tooltip with dark theme
-            icon = "📁" if asset.is_folder else "📄"
-            
+            is_texture_set = getattr(asset, 'is_texture_set', False) and asset.texture_set
+
+            icon = "📁" if asset.is_folder else ("🧩" if is_texture_set else "📄")
+
             # Type and color
             if asset.is_folder:
                 file_type = "Folder"
                 color = "#FFA726"  # Orange
+            elif is_texture_set:
+                file_type = f"Texture Set ({len(asset.texture_set.files)} files)"
+                color = "#66BB6A"  # Green
             elif asset.is_maya_file:
                 file_type = f"{asset.extension.upper()[1:]} Maya Scene"
                 color = "#42A5F5"  # Light Blue
             else:
                 file_type = f"{asset.extension.upper()[1:]} File" if asset.extension else "Unknown"
                 color = "#aaa"  # Light Gray
-            
+
             # Truncate path if too long
-            path_str = str(asset.file_path.parent)
+            path_str = str(asset.texture_set.directory if is_texture_set else asset.file_path.parent)
             if len(path_str) > 50:
                 path_str = "..." + path_str[-47:]
-            
+
+            # For texture sets, list each channel and the file(s) that fill it
+            channels_html = ""
+            if is_texture_set:
+                rows = []
+                for channel_key in sorted(asset.texture_set.channels.keys()):
+                    files = asset.texture_set.channels[channel_key]
+                    names = ", ".join(f.name for f in files)
+                    rows.append(
+                        f'<div style="margin: 1px 0 1px 14px;">'
+                        f'<span style="color: #81C784;">{channel_key}:</span> '
+                        f'<span style="color: #ddd;">{names}</span></div>'
+                    )
+                extra_html = ""
+                if asset.texture_set.extra_formats:
+                    extra_names = ", ".join(f.name for f in asset.texture_set.extra_formats)
+                    extra_html = (
+                        f'<div style="margin: 4px 0 0 14px;">'
+                        f'<span style="color: #FFB74D;">+{len(asset.texture_set.extra_formats)} alt. format(s):</span> '
+                        f'<span style="color: #ddd;">{extra_names}</span></div>'
+                    )
+
+                channels_html = f"""
+                <div style="border-top: 1px solid #555; padding-top: 6px; margin-top: 6px;">
+                    <div style="color: #999; margin-bottom: 2px;">🧩 Channels:</div>
+                    {''.join(rows)}
+                    {extra_html}
+                </div>
+                """
+
             # Build HTML tooltip for dark background - single line layout
             html = f"""
             <div style="font-family: '{UI_FONT}', Arial, sans-serif; white-space: nowrap;">
@@ -1341,6 +1740,7 @@ class FileSystemModel(QAbstractListModel):
                     <div style="margin: 2px 0;"><span style="color: #999;">📊 Size:</span> <span style="color: #ddd; font-weight: bold;">{asset.get_size_string()}</span></div>
                     <div style="margin: 2px 0;"><span style="color: #999;">📅 Modified:</span> <span style="color: #ddd; font-weight: bold;">{asset.get_modified_string()}</span></div>
                 </div>
+                {channels_html}
             </div>
             """
             return html.strip()
@@ -1374,15 +1774,41 @@ class FileSystemModel(QAbstractListModel):
         urls = []
         paths = []
         assets = []
+        texture_set_assets = []
         
         for index in indexes:
             if index.isValid():
                 asset = self.data(index, Qt.UserRole)
-                if asset and not asset.is_folder:
+                if not asset:
+                    continue
+                # Texture set: build a shader graph on drop instead of importing files
+                if getattr(asset, 'is_texture_set', False) and asset.texture_set:
+                    texture_set_assets.append(asset)
+                    urls.append(QUrl.fromLocalFile(str(asset.file_path)))
+                    continue
+                if not asset.is_folder:
                     url = QUrl.fromLocalFile(str(asset.file_path))
                     urls.append(url)
                     paths.append(str(asset.file_path))
                     assets.append(asset)
+        
+        # Texture set drag -> generate shader network(s) from the dropped set(s)
+        if texture_set_assets:
+            global _PENDING_TEXTURE_SET_DROP
+            # List-based channels (not channel_paths) so
+            # apply_pending_texture_set_drop() can convert every UDIM tile
+            # to TIF if that setting is on, not just the first per channel.
+            _PENDING_TEXTURE_SET_DROP = {
+                'sets': [
+                    {'name': a.texture_set.name, 'channels': a.texture_set.channels}
+                    for a in texture_set_assets
+                ]
+            }
+            mel_cmd = 'python("import ddContentBrowser.models as _m; _m.apply_pending_texture_set_drop()");'
+            mime_data.setText(mel_cmd)
+            if urls:
+                mime_data.setUrls(urls)
+            return mime_data
         
         if paths:
             # For Maya: Generate MEL/Python command for batch import
@@ -1493,21 +1919,23 @@ class FileSystemModel(QAbstractListModel):
                     for dir_name in dirs:
                         if not dir_name.startswith('.'):
                             if self.filter_text:
-                                if self._matches_search(dir_name, self.filter_text):
-                                    all_paths.append(str(root_path / dir_name))
+                                dir_path_str = str(root_path / dir_name)
+                                if self._matches_search(dir_name, self.filter_text, full_path=dir_path_str):
+                                    all_paths.append(dir_path_str)
                             else:
                                 all_paths.append(str(root_path / dir_name))
-                
+
                 # Add files
                 for file_name in files:
                     ext = os.path.splitext(file_name)[1].lower()
-                    if ext in self.supported_formats:
+                    if is_extension_supported(ext):
                         if self.filter_file_types and ext not in self.filter_file_types:
                             continue
-                        
+
                         if is_search_mode:
-                            if self._matches_search(file_name, self.filter_text):
-                                all_paths.append(str(root_path / file_name))
+                            file_path_str = str(root_path / file_name)
+                            if self._matches_search(file_name, self.filter_text, full_path=file_path_str):
+                                all_paths.append(file_path_str)
                         else:
                             all_paths.append(str(root_path / file_name))
             
@@ -1529,6 +1957,7 @@ class FileSystemModel(QAbstractListModel):
         creation_start = time.time()
         additional_items = [Path(p) for p in additional_paths]
         additional_assets = [AssetItem(f, lazy_load=True) for f in additional_items]
+        self._resolve_folder_previews(additional_assets)
         creation_time = time.time() - creation_start
         print(f"   AssetItem creation took {creation_time:.2f}s")
         

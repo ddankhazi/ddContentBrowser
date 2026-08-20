@@ -4,11 +4,12 @@ Filter effects structure.
 
 import io
 import logging
+from typing import Any, BinaryIO, TypeVar
 
-import attr
+from attrs import define, field
 
 from psd_tools.psd.base import BaseElement, ListElement
-from psd_tools.utils import (
+from psd_tools.psd.bin_utils import (
     is_readable,
     read_fmt,
     read_length_block,
@@ -21,8 +22,13 @@ from psd_tools.utils import (
 
 logger = logging.getLogger(__name__)
 
+T_FilterEffects = TypeVar("T_FilterEffects", bound="FilterEffects")
+T_FilterEffect = TypeVar("T_FilterEffect", bound="FilterEffect")
+T_FilterEffectChannel = TypeVar("T_FilterEffectChannel", bound="FilterEffectChannel")
+T_FilterEffectExtra = TypeVar("T_FilterEffectExtra", bound="FilterEffectExtra")
 
-@attr.s(repr=False, slots=True)
+
+@define(repr=False)
 class FilterEffects(ListElement):
     """
     List-like FilterEffects structure. See :py:class:`FilterEffect`.
@@ -30,26 +36,28 @@ class FilterEffects(ListElement):
     .. py:attribute:: version
     """
 
-    version = attr.ib(default=1, type=int)
+    version: int = 1
 
     @classmethod
-    def read(cls, fp, **kwargs):
+    def read(
+        cls: type[T_FilterEffects], fp: BinaryIO, **kwargs: Any
+    ) -> T_FilterEffects:
         version = read_fmt("I", fp)[0]
         assert version in (1, 2, 3), "Invalid version %d" % (version)
         items = []
         while is_readable(fp, 8):
             with io.BytesIO(read_length_block(fp, fmt="Q", padding=4)) as f:
                 items.append(FilterEffect.read(f))
-        return cls(version=version, items=items)
+        return cls(version=version, items=items)  # type: ignore[arg-type]
 
-    def write(self, fp, **kwargs):
+    def write(self, fp: BinaryIO, **kwargs: Any) -> int:
         written = write_fmt(fp, "I", self.version)
         for item in self:
             written += write_length_block(fp, item.write, fmt="Q", padding=4)
         return written
 
 
-@attr.s(repr=False, slots=True)
+@define(repr=False)
 class FilterEffect(BaseElement):
     """
     FilterEffect structure.
@@ -68,16 +76,16 @@ class FilterEffect(BaseElement):
         See :py:class:`FilterEffectExtra`.
     """
 
-    uuid = attr.ib(default=None)
-    version = attr.ib(default=None)
-    rectangle = attr.ib(default=None)
-    depth = attr.ib(default=None)
-    max_channels = attr.ib(default=None)
-    channels = attr.ib(default=None)
-    extra = attr.ib(default=None)
+    uuid: str | None = None
+    version: int | None = None
+    rectangle: tuple | None = None
+    depth: int | None = None
+    max_channels: int | None = None
+    channels: list | None = None
+    extra: object | None = None
 
     @classmethod
-    def read(cls, fp, **kwargs):
+    def read(cls: type[T_FilterEffect], fp: BinaryIO, **kwargs: Any) -> T_FilterEffect:
         uuid = read_pascal_string(fp, encoding="ascii", padding=1)
         version = read_fmt("I", fp)[0]
         assert version <= 1, "Invalid version %d" % (version)
@@ -85,10 +93,18 @@ class FilterEffect(BaseElement):
             rectangle, depth, max_channels, channels = cls._read_body(f)
         # Documentation is incorrect here.
         extra = FilterEffectExtra.read(fp) if is_readable(fp) else None
-        return cls(uuid, version, rectangle, depth, max_channels, channels, extra)
+        return cls(
+            uuid=uuid,
+            version=version,
+            rectangle=rectangle,
+            depth=depth,
+            max_channels=max_channels,
+            channels=channels,
+            extra=extra,
+        )
 
     @classmethod
-    def _read_body(cls, fp):
+    def _read_body(cls, fp: BinaryIO) -> tuple[tuple, int, int, list]:
         rectangle = read_fmt("4i", fp)
         depth, max_channels = read_fmt("2I", fp)
         channels = []
@@ -96,20 +112,24 @@ class FilterEffect(BaseElement):
             channels.append(FilterEffectChannel.read(fp))
         return rectangle, depth, max_channels, channels
 
-    def write(self, fp, **kwargs):
-        written = write_pascal_string(fp, self.uuid, encoding="ascii", padding=1)
+    def write(self, fp: BinaryIO, **kwargs: Any) -> int:
+        written = write_pascal_string(fp, self.uuid or "", encoding="ascii", padding=1)
         written += write_fmt(fp, "I", self.version)
 
-        def writer(f):
+        def writer(f: BinaryIO) -> int:
             return self._write_body(f)
 
         written += write_length_block(fp, writer, fmt="Q")
 
-        if self.extra is not None:
-            written += self.extra.write(fp)
+        if self.extra is not None and hasattr(self.extra, "write"):
+            written += self.extra.write(fp)  # type: ignore[attr-defined]
         return written
 
-    def _write_body(self, fp):
+    def _write_body(self, fp: BinaryIO) -> int:
+        assert self.rectangle is not None
+        assert self.depth is not None
+        assert self.max_channels is not None
+        assert self.channels is not None
         written = write_fmt(fp, "4i", *self.rectangle)
         written += write_fmt(fp, "2I", self.depth, self.max_channels)
         for channel in self.channels:
@@ -117,7 +137,7 @@ class FilterEffect(BaseElement):
         return written
 
 
-@attr.s(repr=False, slots=True)
+@define(repr=False)
 class FilterEffectChannel(BaseElement):
     """
     FilterEffectChannel structure.
@@ -127,12 +147,14 @@ class FilterEffectChannel(BaseElement):
     .. py:attribute:: data
     """
 
-    is_written = attr.ib(default=0)
-    compression = attr.ib(default=None)
-    data = attr.ib(default=b"")
+    is_written: int = 0
+    compression: int | None = None
+    data: bytes = b""
 
     @classmethod
-    def read(cls, fp, **kwargs):
+    def read(
+        cls: type[T_FilterEffectChannel], fp: BinaryIO, **kwargs: Any
+    ) -> T_FilterEffectChannel:
         is_written = read_fmt("I", fp)[0]
         if is_written == 0:
             return cls(is_written=is_written)
@@ -144,12 +166,12 @@ class FilterEffectChannel(BaseElement):
             data = f.read()
         return cls(is_written, compression, data)
 
-    def write(self, fp, **kwargs):
+    def write(self, fp: BinaryIO, **kwargs: Any) -> int:
         written = write_fmt(fp, "I", self.is_written)
         if self.is_written == 0:
             return written
 
-        def writer(f):
+        def writer(f: BinaryIO) -> int:
             if self.compression is None:
                 return 0
             length = write_fmt(f, "H", self.compression)
@@ -160,7 +182,7 @@ class FilterEffectChannel(BaseElement):
         return written
 
 
-@attr.s(repr=False, slots=True)
+@define(repr=False)
 class FilterEffectExtra(BaseElement):
     """
     FilterEffectExtra structure.
@@ -171,13 +193,15 @@ class FilterEffectExtra(BaseElement):
     .. py:attribute:: data
     """
 
-    is_written = attr.ib(default=0)
-    rectangle = attr.ib(factory=lambda: [0, 0, 0, 0], converter=list)
-    compression = attr.ib(default=0, type=int)
-    data = attr.ib(default=b"", type=bytes)
+    is_written: int = 0
+    rectangle: list[int] = field(factory=lambda: [0, 0, 0, 0], converter=list)
+    compression: int = 0
+    data: bytes = b""
 
     @classmethod
-    def read(cls, fp):
+    def read(
+        cls: type[T_FilterEffectExtra], fp: BinaryIO, **kwargs: Any
+    ) -> T_FilterEffectExtra:
         is_written = read_fmt("B", fp)[0]
         if not is_written:
             return cls(is_written=is_written)
@@ -189,12 +213,17 @@ class FilterEffectExtra(BaseElement):
             compression = read_fmt("H", f)[0]
             data = f.read()
 
-        return cls(is_written, rectangle, compression, data)
+        return cls(
+            is_written=is_written,
+            rectangle=rectangle,
+            compression=compression,
+            data=data,
+        )
 
-    def write(self, fp):
+    def write(self, fp: BinaryIO, **kwargs: Any) -> int:
         written = write_fmt(fp, "B", self.is_written)
 
-        def writer(f):
+        def writer(f: BinaryIO) -> int:
             length = write_fmt(f, "H", self.compression)
             length += write_bytes(f, self.data)
             return length

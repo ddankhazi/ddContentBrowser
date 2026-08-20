@@ -13,6 +13,9 @@ from .. import color
 from ..color.colorconv import ycbcr_from_rgb
 
 
+__doctest_requires__ = {("denoise_wavelet", "estimate_sigma"): ["pywt"]}
+
+
 def _gaussian_weight(array, sigma_squared, *, dtype=float):
     """Helping function. Define a Gaussian weighting from array and
     sigma_square.
@@ -317,7 +320,7 @@ def denoise_tv_bregman(
         The algorithm stops when :math:`\|u_n - u_{n-1}\|_2 < \varepsilon`.
     max_num_iter : int, optional
         Maximal number of iterations used for the optimization.
-    isotropic : boolean, optional
+    isotropic : bool, optional
         Switch between isotropic and anisotropic TV denoising.
     channel_axis : int or None, optional
         If ``None``, the image is assumed to be grayscale (single-channel).
@@ -871,7 +874,7 @@ def denoise_wavelet(
         The noise standard deviation used when computing the wavelet detail
         coefficient threshold(s). When None (default), the noise standard
         deviation is estimated via the method in [2]_.
-    wavelet : string, optional
+    wavelet : str, optional
         The type of wavelet to perform and can be any of the options
         ``pywt.wavelist`` outputs. The default is `'db1'`. For example,
         ``wavelet`` can be any of ``{'db2', 'haar', 'sym9'}`` and many more.
@@ -961,9 +964,6 @@ def denoise_wavelet(
 
     Examples
     --------
-    .. testsetup::
-        >>> import pytest; _ = pytest.importorskip('pywt')
-
     >>> from skimage import color, data
     >>> img = img_as_float(data.astronaut())
     >>> img = color.rgb2gray(img)
@@ -1087,9 +1087,6 @@ def estimate_sigma(image, average_sigmas=False, *, channel_axis=None):
 
     Examples
     --------
-    .. testsetup::
-        >>> import pytest; _ = pytest.importorskip('pywt')
-
     >>> import skimage.data
     >>> from skimage import img_as_float
     >>> img = img_as_float(skimage.data.camera())

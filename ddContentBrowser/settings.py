@@ -68,6 +68,7 @@ class SettingsManager:
             "preview": {
                 "resolution": 1024,
                 "hdr_cache_size": 5,
+                "sequence_cache_size_mb": 1024,
                 "default_exposure": 0.0,
                 "auto_fit": True,
                 "background_mode": "dark_gray"  # dark_gray, light_gray, checkered, black, white
@@ -88,6 +89,15 @@ class SettingsManager:
             # Advanced Filters - saved filter presets
             "advanced_filters": {
                 "saved_presets": []  # List of saved filter preset configurations
+            },
+            # Smart import / shader generation
+            "smart_import": {
+                "group_tx_sets": False,  # Group .tx-only files into their own texture set
+                "shader_type": "aiStandardSurface",  # aiStandardSurface, openPBRSurface, or dGecko
+                "preferred_resolution": "4K",  # 1K/2K/4K/8K - wins when a geo-import match has multiple resolutions
+                "var_import_displacement": False,  # Displacement for VarN-matched (Megascans plant) assets
+                "convert_to_tif": False,  # Convert jpg/png/tga channel textures to TIF (LZW) before building
+                "import_lod_proxy": False  # Also import a lower-detail LODN proxy next to a high/untagged geo import
             }
         }
     
@@ -619,17 +629,23 @@ class PreviewSettingsTab(QWidget):
         res_layout = QHBoxLayout()
         res_layout.addWidget(QLabel("Resolution:"))
         self.resolution_combo = QComboBox()
-        self.resolution_combo.addItems(["512 px (Fast)", "1024 px (Balanced)", 
-                                       "2048 px (High Quality)", "4096 px (Maximum)"])
+        self.resolution_combo.addItems(["512 px (Fast)", "1024 px (Balanced)",
+                                       "2048 px (High Quality)", "4096 px (Maximum)",
+                                       "8192 px (8K)", "Off (Full Resolution)"])
         current_res = self.settings.get("preview", "resolution", 1024)
-        res_map = {512: 0, 1024: 1, 2048: 2, 4096: 3}
+        res_map = {512: 0, 1024: 1, 2048: 2, 4096: 3, 8192: 4, 0: 5}
         self.resolution_combo.setCurrentIndex(res_map.get(current_res, 1))
         res_layout.addWidget(self.resolution_combo)
         res_layout.addStretch()
         resolution_layout.addLayout(res_layout)
-        
-        res_info = QLabel("⚠ Higher resolution = slower HDR/EXR processing")
+
+        res_info = QLabel(
+            "⚠ Higher resolution = slower HDR/EXR processing. \"Off\" loads at the "
+            "file's native resolution with no downsampling - can be very slow for "
+            "large (8K+) files. Applies to both the preview panel and Quick View."
+        )
         res_info.setStyleSheet("color: #888; font-size: 10px;")
+        res_info.setWordWrap(True)
         resolution_layout.addWidget(res_info)
         
         resolution_group.setLayout(resolution_layout)
@@ -665,7 +681,34 @@ class PreviewSettingsTab(QWidget):
         
         hdr_group.setLayout(hdr_layout)
         layout.addWidget(hdr_group)
-        
+
+        # Sequence playback cache group
+        sequence_group = QGroupBox("Sequence Playback")
+        sequence_layout = QVBoxLayout()
+
+        seq_cache_layout = QHBoxLayout()
+        seq_cache_layout.addWidget(QLabel("Frame Cache Size:"))
+        self.sequence_cache_spin = QSpinBox()
+        self.sequence_cache_spin.setRange(128, 16384)
+        self.sequence_cache_spin.setSingleStep(128)
+        self.sequence_cache_spin.setValue(self.settings.get("preview", "sequence_cache_size_mb", 1024))
+        self.sequence_cache_spin.setSuffix(" MB")
+        seq_cache_layout.addWidget(self.sequence_cache_spin)
+        seq_cache_layout.addStretch()
+        sequence_layout.addLayout(seq_cache_layout)
+
+        seq_cache_info = QLabel(
+            "ℹ Background-decoded, ready-to-display frames (EXR/HDR/TX/TIFF) kept "
+            "in RAM around the current playhead, like RV's frame cache. Larger = "
+            "more of the sequence stays instantly playable once cached."
+        )
+        seq_cache_info.setStyleSheet("color: #888; font-size: 10px;")
+        seq_cache_info.setWordWrap(True)
+        sequence_layout.addWidget(seq_cache_info)
+
+        sequence_group.setLayout(sequence_layout)
+        layout.addWidget(sequence_group)
+
         # Display settings group
         display_group = QGroupBox("Display")
         display_layout = QVBoxLayout()
@@ -681,9 +724,10 @@ class PreviewSettingsTab(QWidget):
     
     def save_settings(self):
         """Save settings from UI to settings manager"""
-        res_map = {0: 512, 1: 1024, 2: 2048, 3: 4096}
+        res_map = {0: 512, 1: 1024, 2: 2048, 3: 4096, 4: 8192, 5: 0}
         self.settings.set("preview", "resolution", res_map[self.resolution_combo.currentIndex()])
         self.settings.set("preview", "hdr_cache_size", self.hdr_cache_spin.value())
+        self.settings.set("preview", "sequence_cache_size_mb", self.sequence_cache_spin.value())
         self.settings.set("preview", "default_exposure", float(self.exposure_spin.value()))
         self.settings.set("preview", "auto_fit", self.auto_fit_cb.isChecked())
 
@@ -877,17 +921,23 @@ class FileFormatEditDialog(QDialog):
         ext_layout.addWidget(self.ext_input)
         layout.addLayout(ext_layout)
         
-        # Category
+        # Category - pulled from FILE_TYPE_REGISTRY so this list can't drift
+        # out of sync with the categories the rest of the app actually knows.
+        from .utils import FILE_TYPE_REGISTRY
         cat_layout = QHBoxLayout()
         cat_layout.addWidget(QLabel("Category:"))
         self.category_combo = QComboBox()
-        self.category_combo.addItems([
-            "maya", "models", "images", "scripts", "pdf", "text", "other"
-        ])
+        self.category_combo.addItems(sorted(FILE_TYPE_REGISTRY.keys()))
         current_category = self.config_data.get('category', 'other')
         index = self.category_combo.findText(current_category)
         if index >= 0:
             self.category_combo.setCurrentIndex(index)
+        else:
+            # Not a known registry category (e.g. "unknown", or a stale value
+            # from an older config) - keep it instead of silently switching
+            # the category out from under the user.
+            self.category_combo.addItem(current_category)
+            self.category_combo.setCurrentIndex(self.category_combo.count() - 1)
         cat_layout.addWidget(self.category_combo)
         layout.addLayout(cat_layout)
         
@@ -938,59 +988,12 @@ class FileFormatEditDialog(QDialog):
         thumb_config = self.config_data.get('thumbnail', {})
         self.thumb_generate_cb.setChecked(thumb_config.get('generate', False))
         thumb_layout.addWidget(self.thumb_generate_cb)
-        
-        # Thumbnail method
-        method_layout = QHBoxLayout()
-        method_layout.addWidget(QLabel("Method:"))
-        self.thumb_method_combo = QComboBox()
-        
-        # Add methods with tooltips
-        methods = [
-            ("none", "No thumbnail generation (show icon only)"),
-            ("qimage", "Standard Qt image loader (JPG, PNG, BMP, GIF)"),
-            ("qimage_optimized", "⭐ RECOMMENDED for JPG/PNG/GIF - Fast scaled loading (4-5× faster)"),
-            ("opencv", "OpenCV loader (TIFF, HDR, TGA, advanced formats)"),
-            ("opencv_optimized", "⭐ RECOMMENDED for TIFF - DCT subsampling (2-8× faster)"),
-            ("openexr", "OpenEXR loader (EXR files with HDR)"),
-            ("pymupdf", "PyMuPDF loader (PDF first page)"),
-            ("oiio", "⭐ RECOMMENDED for .tx - OpenImageIO (RenderMan textures, all compressions)"),
-            ("video", "Video frame extractor (MP4, MOV, AVI, MKV - extracts middle frame)")
-        ]
-        
-        for method, tooltip in methods:
-            self.thumb_method_combo.addItem(method)
-            self.thumb_method_combo.setItemData(
-                self.thumb_method_combo.count() - 1, 
-                tooltip, 
-                Qt.ToolTipRole
-            )
-        
-        current_method = thumb_config.get('method', 'none')
-        index = self.thumb_method_combo.findText(current_method)
-        if index >= 0:
-            self.thumb_method_combo.setCurrentIndex(index)
-        
-        # Set tooltip for the combo itself
-        self.thumb_method_combo.setToolTip(
-            "Thumbnail generation method:\n"
-            "• qimage_optimized - Best for JPG/PNG/GIF (fast)\n"
-            "• opencv_optimized - Best for TIFF (fast)\n"
-            "• oiio - Best for .tx RenderMan textures\n"
-            "• video - Best for video files (MP4, MOV, AVI, MKV)\n"
-            "• none - No thumbnails (show colored icon only)"
-        )
-        
-        method_layout.addWidget(self.thumb_method_combo)
-        
-        # Help button for method info
-        help_btn = QPushButton("?")
-        help_btn.setMaximumWidth(30)
-        help_btn.setToolTip("Show detailed method recommendations")
-        help_btn.clicked.connect(self.show_method_help)
-        method_layout.addWidget(help_btn)
-        
-        thumb_layout.addLayout(method_layout)
-        
+
+        # NOTE: the specific generation method (qimage/opencv/oiio/...) is chosen
+        # automatically per extension by the thumbnail pipeline (cache.py) - there
+        # used to be a "Method" dropdown here, but it wasn't actually wired to
+        # anything, so it was removed. This checkbox is the only real control.
+
         # Max size MB
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("Max Size (MB):"))
@@ -1006,16 +1009,23 @@ class FileFormatEditDialog(QDialog):
         thumb_group.setLayout(thumb_layout)
         layout.addWidget(thumb_group)
         
-        # Maya import type
+        # Maya import type - pulled from MAYA_IMPORT_TYPES so this list can't
+        # drift out of sync with the values the app actually generates/expects.
+        from .utils import MAYA_IMPORT_TYPES
         maya_layout = QHBoxLayout()
         maya_layout.addWidget(QLabel("Maya Import Type:"))
         self.maya_import_combo = QComboBox()
-        self.maya_import_combo.addItems(["None", "OBJ", "FBX", "Alembic", "USD"])
+        self.maya_import_combo.addItems(["None"] + sorted(set(MAYA_IMPORT_TYPES.values())))
         current_maya = self.config_data.get('maya_import_type')
         if current_maya:
             index = self.maya_import_combo.findText(current_maya)
             if index >= 0:
                 self.maya_import_combo.setCurrentIndex(index)
+            else:
+                # Custom/unrecognized value (e.g. hand-edited config) - keep it
+                # instead of silently resetting it to "None" on save.
+                self.maya_import_combo.addItem(current_maya)
+                self.maya_import_combo.setCurrentIndex(self.maya_import_combo.count() - 1)
         maya_layout.addWidget(self.maya_import_combo)
         layout.addLayout(maya_layout)
         
@@ -1053,50 +1063,6 @@ class FileFormatEditDialog(QDialog):
                 self.secondary_color = color
                 self.update_color_button(self.secondary_btn, color)
     
-    def show_method_help(self):
-        """Show detailed help for thumbnail methods"""
-        help_text = """
-<h3>Thumbnail Generation Methods</h3>
-
-<p><b>Recommended Methods:</b></p>
-
-<table border="1" cellpadding="5" cellspacing="0">
-<tr><th>Format</th><th>Best Method</th><th>Speed Gain</th></tr>
-<tr><td>JPG, PNG, GIF</td><td><b>qimage_optimized</b></td><td>4-5× faster</td></tr>
-<tr><td>TIFF</td><td><b>opencv_optimized</b></td><td>2-8× faster</td></tr>
-<tr><td>RenderMan .tx</td><td><b>oiio</b></td><td>All compressions</td></tr>
-<tr><td>EXR</td><td><b>openexr</b></td><td>HDR support</td></tr>
-<tr><td>PDF</td><td><b>pymupdf</b></td><td>First page</td></tr>
-</table>
-
-<p><b>Method Details:</b></p>
-
-<ul>
-<li><b>none</b> - No thumbnail, show colored icon only (fastest, no preview)</li>
-<li><b>qimage</b> - Standard Qt loader (works for most images, slower)</li>
-<li><b>qimage_optimized</b> ⭐ - Fast scaled loading using Qt (JPG DCT subsampling, PNG progressive decode)</li>
-<li><b>opencv</b> - OpenCV loader (16/32-bit TIFF, HDR, advanced formats)</li>
-<li><b>opencv_optimized</b> ⭐ - OpenCV with IMREAD_REDUCED_* flags (2-8× faster for TIFF)</li>
-<li><b>openexr</b> - Native EXR loader with HDR tone mapping</li>
-<li><b>pymupdf</b> - PDF renderer (first page only)</li>
-<li><b>oiio</b> ⭐ - OpenImageIO (RenderMan .tx with all compressions, mipmaps, HDR)</li>
-</ul>
-
-<p><b>Performance Tips:</b></p>
-<ul>
-<li>Use <b>optimized</b> methods when available (huge speed boost!)</li>
-<li>Set <b>max_size_mb</b> limit for large files (skip thumbnails > limit)</li>
-<li>Use <b>none</b> for 3D models (they need special rendering)</li>
-</ul>
-        """
-        
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Thumbnail Method Help")
-        msg.setTextFormat(Qt.RichText)
-        msg.setText(help_text)
-        msg.setIcon(QMessageBox.Information)
-        msg.exec_()
-    
     def validate_and_accept(self):
         """Validate input and accept dialog"""
         # Validate extension
@@ -1128,7 +1094,10 @@ class FileFormatEditDialog(QDialog):
             "icon_color_secondary": [self.secondary_color.red(), self.secondary_color.green(), self.secondary_color.blue()],
             "thumbnail": {
                 "generate": self.thumb_generate_cb.isChecked(),
-                "method": self.thumb_method_combo.currentText(),
+                # The actual loader (qimage/opencv/oiio/...) is chosen automatically
+                # per extension by the thumbnail pipeline - "auto" just marks
+                # generation as on; "none" is what get_thumbnail_method() checks for off.
+                "method": "auto" if self.thumb_generate_cb.isChecked() else "none",
                 "max_size_mb": max_size_mb if max_size_mb > 0 else None
             },
             "maya_import_type": maya_import if maya_import != "None" else None
@@ -1466,55 +1435,55 @@ class FileFormatsSettingsTab(QWidget):
 
 class SettingsDialog(QDialog):
     """Main settings dialog with tabs"""
-    
+
     settings_changed = Signal()
-    
+
     def __init__(self, settings_manager, parent=None):
         super().__init__(parent)
         self.settings = settings_manager
         self.setWindowTitle("ddContentBrowser Settings")
         self.resize(600, 500)
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout(self)
-        
+
         # Tab widget
         self.tab_widget = QTabWidget()
-        
+
         # Create tabs
         self.general_tab = GeneralSettingsTab(self.settings)
         self.thumbnail_tab = ThumbnailSettingsTab(self.settings)
         self.preview_tab = PreviewSettingsTab(self.settings)
         self.filters_tab = FiltersSettingsTab(self.settings)
         self.file_formats_tab = FileFormatsSettingsTab(self.settings)
-        
+
         self.tab_widget.addTab(self.general_tab, "General")
         self.tab_widget.addTab(self.thumbnail_tab, "Thumbnails")
         self.tab_widget.addTab(self.preview_tab, "Preview")
         self.tab_widget.addTab(self.filters_tab, "Filters")
         self.tab_widget.addTab(self.file_formats_tab, "File Formats")
-        
+
         # Connect tab changed signal to refresh Filters tab when switching to it
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
-        
+
         layout.addWidget(self.tab_widget)
-        
+
         # Dialog buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | 
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel |
                                       QDialogButtonBox.RestoreDefaults)
         button_box.accepted.connect(self.accept_settings)
         button_box.rejected.connect(self.reject)
         button_box.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.restore_defaults)
-        
+
         layout.addWidget(button_box)
-    
+
     def on_tab_changed(self, index):
         """Handle tab change - refresh Filters tab if switching to it"""
         # Index 3 is Filters tab (0=General, 1=Thumbnails, 2=Preview, 3=Filters, 4=File Formats)
         if index == 3:
             self.filters_tab.refresh_formats_display()
-    
+
     def accept_settings(self):
         """Save all settings and close dialog"""
         # Save settings from all tabs
@@ -1523,10 +1492,10 @@ class SettingsDialog(QDialog):
         self.preview_tab.save_settings()
         self.filters_tab.save_settings()
         self.file_formats_tab.save_settings()
-        
+
         # Refresh Filters tab display with updated file formats
         self.filters_tab.refresh_formats_display()
-        
+
         # Save to disk
         if self.settings.save():
             self.settings_changed.emit()
@@ -1542,6 +1511,167 @@ class SettingsDialog(QDialog):
         if reply == QMessageBox.Yes:
             self.settings.reset_to_defaults()
             self.settings_changed.emit()
-            QMessageBox.information(self, "Success", 
+            QMessageBox.information(self, "Success",
                                    "Settings restored to defaults. Please restart the browser.")
             self.accept()
+
+
+class TextureSetSettingsDialog(QDialog):
+    """
+    Standalone settings panel for the Texture Set feature.
+
+    Kept separate from the main SettingsDialog on purpose - texture sets are
+    an independent feature (grouping, shader building, collections, filters)
+    and are expected to grow their own settings over time (channel aliases,
+    format priority, etc.), so they get their own dedicated panel/window
+    instead of another tab buried in the general Settings dialog.
+    """
+
+    settings_changed = Signal()
+
+    def __init__(self, settings_manager, parent=None):
+        super().__init__(parent)
+        self.settings = settings_manager
+        self.setWindowTitle("Texture Set Settings")
+        self.resize(440, 520)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        detection_group = QGroupBox("Texture Set Detection")
+        detection_layout = QVBoxLayout()
+
+        self.group_tx_sets_cb = QCheckBox("Show .tx files as Texture Sets")
+        self.group_tx_sets_cb.setChecked(self.settings.get("smart_import", "group_tx_sets", False))
+        detection_layout.addWidget(self.group_tx_sets_cb)
+
+        detection_info = QLabel(
+            "ℹ When on, .tx files that share a base name are grouped and shown as their own "
+            "Texture Set (separate from any source-file set), and count toward \"Show Only "
+            "Sets\". Turn off to stop .tx files from ever being shown as a Texture Set - "
+            "they'll appear as plain loose files instead."
+        )
+        detection_info.setStyleSheet("color: #888; font-size: 10px;")
+        detection_info.setWordWrap(True)
+        detection_layout.addWidget(detection_info)
+
+        detection_group.setLayout(detection_layout)
+        layout.addWidget(detection_group)
+
+        shader_group = QGroupBox("Shader Generation")
+        shader_layout = QVBoxLayout()
+
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Shader Type:"))
+        self.shader_type_combo = QComboBox()
+        self.shader_type_combo.addItems(["aiStandardSurface", "openPBRSurface", "dGecko"])
+        current_shader = self.settings.get("smart_import", "shader_type", "aiStandardSurface")
+        idx = self.shader_type_combo.findText(current_shader)
+        self.shader_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        type_layout.addWidget(self.shader_type_combo)
+        type_layout.addStretch()
+        shader_layout.addLayout(type_layout)
+
+        shader_info = QLabel("ℹ Used when a texture set is dropped into the Maya viewport to auto-build its shader network")
+        shader_info.setStyleSheet("color: #888; font-size: 10px;")
+        shader_info.setWordWrap(True)
+        shader_layout.addWidget(shader_info)
+
+        shader_group.setLayout(shader_layout)
+        layout.addWidget(shader_group)
+
+        auto_import_group = QGroupBox("Auto Material Build on Geo Import")
+        auto_import_layout = QVBoxLayout()
+
+        res_layout = QHBoxLayout()
+        res_layout.addWidget(QLabel("Preferred Resolution:"))
+        self.preferred_resolution_combo = QComboBox()
+        self.preferred_resolution_combo.addItems(["1K", "2K", "4K", "8K"])
+        current_res = self.settings.get("smart_import", "preferred_resolution", "4K")
+        idx = self.preferred_resolution_combo.findText(current_res)
+        self.preferred_resolution_combo.setCurrentIndex(idx if idx >= 0 else 2)
+        res_layout.addWidget(self.preferred_resolution_combo)
+        res_layout.addStretch()
+        auto_import_layout.addLayout(res_layout)
+
+        res_info = QLabel(
+            "ℹ When a matching asset has more than one resolution available (e.g. both a 2K "
+            "and a 4K texture set), this is the one that wins. Falls back to whatever "
+            "resolution exists if the preferred one isn't there."
+        )
+        res_info.setStyleSheet("color: #888; font-size: 10px;")
+        res_info.setWordWrap(True)
+        auto_import_layout.addWidget(res_info)
+
+        self.var_displacement_cb = QCheckBox("Import displacement for VarN-style assets (Megascans plants, etc.)")
+        self.var_displacement_cb.setChecked(self.settings.get("smart_import", "var_import_displacement", False))
+        auto_import_layout.addWidget(self.var_displacement_cb)
+
+        var_info = QLabel(
+            "ℹ Applies when a geo sits in a \"VarN\" folder (Var1, Var2, ...) with textures in a "
+            "sibling Textures folder - e.g. Megascans 3D plants. These mostly don't need "
+            "displacement, so it's off by default."
+        )
+        var_info.setStyleSheet("color: #888; font-size: 10px;")
+        var_info.setWordWrap(True)
+        auto_import_layout.addWidget(var_info)
+
+        self.import_lod_proxy_cb = QCheckBox("Also import a lower-detail LODN proxy geo next to the import")
+        self.import_lod_proxy_cb.setChecked(self.settings.get("smart_import", "import_lod_proxy", False))
+        auto_import_layout.addWidget(self.import_lod_proxy_cb)
+
+        lod_proxy_info = QLabel(
+            "ℹ Useful when building an asset library and a lightweight stand-in geo is needed "
+            "alongside the full asset. Only applies when importing a \"High\" or untagged geo "
+            "(a LODN import never needs one); looks in the same folder as the imported geo for "
+            "another LODN file with a matching name and picks the highest LOD number (the most "
+            "decimated one) as the proxy, assigning it the same material just built."
+        )
+        lod_proxy_info.setStyleSheet("color: #888; font-size: 10px;")
+        lod_proxy_info.setWordWrap(True)
+        auto_import_layout.addWidget(lod_proxy_info)
+
+        auto_import_group.setLayout(auto_import_layout)
+        layout.addWidget(auto_import_group)
+
+        format_group = QGroupBox("Texture Format")
+        format_layout = QVBoxLayout()
+
+        self.convert_to_tif_cb = QCheckBox("Convert JPG/PNG/TGA inputs to TIF (LZW) before building")
+        self.convert_to_tif_cb.setChecked(self.settings.get("smart_import", "convert_to_tif", False))
+        format_layout.addWidget(self.convert_to_tif_cb)
+
+        format_info = QLabel(
+            "ℹ Converts non-EXR raster channel textures to a sibling .tif next to the source "
+            "(skipped if an up-to-date .tif already exists) so they can be layer-edited in "
+            "Photoshop. EXR is left untouched."
+        )
+        format_info.setStyleSheet("color: #888; font-size: 10px;")
+        format_info.setWordWrap(True)
+        format_layout.addWidget(format_info)
+
+        format_group.setLayout(format_layout)
+        layout.addWidget(format_group)
+
+        layout.addStretch()
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept_settings)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def accept_settings(self):
+        """Save settings and close dialog"""
+        self.settings.set("smart_import", "group_tx_sets", self.group_tx_sets_cb.isChecked())
+        self.settings.set("smart_import", "shader_type", self.shader_type_combo.currentText())
+        self.settings.set("smart_import", "preferred_resolution", self.preferred_resolution_combo.currentText())
+        self.settings.set("smart_import", "var_import_displacement", self.var_displacement_cb.isChecked())
+        self.settings.set("smart_import", "convert_to_tif", self.convert_to_tif_cb.isChecked())
+        self.settings.set("smart_import", "import_lod_proxy", self.import_lod_proxy_cb.isChecked())
+
+        if self.settings.save():
+            self.settings_changed.emit()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", "Failed to save settings!")

@@ -6,14 +6,15 @@ import contextlib
 import io
 import logging
 import os
-from typing import BinaryIO, Iterator, Optional
+from typing import BinaryIO, Iterator
 
+from psd_tools.api.protocols import LayerProtocol
 from psd_tools.constants import Tag
 
 logger = logging.getLogger(__name__)
 
 
-class SmartObject(object):
+class SmartObject:
     """
     Smart object that represents embedded or external file.
 
@@ -21,7 +22,7 @@ class SmartObject(object):
     :py:class:`~psd_tools.api.layers.SmartObjectLayer`.
     """
 
-    def __init__(self, layer):  # TODO: Circular import
+    def __init__(self, layer: LayerProtocol):
         self._config = None
         for key in (Tag.SMART_OBJECT_LAYER_DATA1, Tag.SMART_OBJECT_LAYER_DATA2):
             if key in layer.tagged_blocks:
@@ -35,33 +36,38 @@ class SmartObject(object):
                 break
 
         self._data = None
-        for key in (
-            Tag.LINKED_LAYER1,
-            Tag.LINKED_LAYER2,
-            Tag.LINKED_LAYER3,
-            Tag.LINKED_LAYER_EXTERNAL,
-        ):
-            if key in layer._psd.tagged_blocks:
-                data = layer._psd.tagged_blocks.get_data(key)
-                for item in data:
-                    if item.uuid == self.unique_id:
-                        self._data = item
+        if layer._psd is not None and layer._psd.tagged_blocks is not None:
+            for key in (
+                Tag.LINKED_LAYER1,
+                Tag.LINKED_LAYER2,
+                Tag.LINKED_LAYER3,
+                Tag.LINKED_LAYER_EXTERNAL,
+            ):
+                if key in layer._psd.tagged_blocks:
+                    data = layer._psd.tagged_blocks.get_data(key)
+                    for item in data:
+                        if item.uuid == self.unique_id:
+                            self._data = item
+                            break
+                    if self._data:
                         break
-                if self._data:
-                    break
 
     @property
     def kind(self) -> str:
         """Kind of the link, 'data', 'alias', or 'external'."""
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         return self._data.kind.name.lower()
 
     @property
     def filename(self) -> str:
         """Original file name of the object."""
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         return self._data.filename.strip("\x00")
 
     @contextlib.contextmanager
-    def open(self, external_dir: Optional[str] = None) -> Iterator[BinaryIO]:
+    def open(self, external_dir: str | None = None) -> Iterator[BinaryIO]:
         """
         Open the smart object as binary IO.
 
@@ -72,6 +78,8 @@ class SmartObject(object):
             with layer.smart_object.open() as f:
                 data = f.read()
         """
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         if self.kind == "data":
             with io.BytesIO(self._data.data) as f:
                 yield f
@@ -93,6 +101,8 @@ class SmartObject(object):
     @property
     def data(self) -> bytes:
         """Embedded file content, or empty if kind is `external` or `alias`"""
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         if self.kind == "data":
             return self._data.data
         else:
@@ -102,11 +112,15 @@ class SmartObject(object):
     @property
     def unique_id(self) -> str:
         """UUID of the object."""
+        if self._config is None:
+            raise ValueError("Smart object config not found")
         return self._config.data.get(b"Idnt").value.strip("\x00")
 
     @property
     def filesize(self) -> int:
         """File size of the object."""
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         if self.kind == "data":
             return len(self._data.data)
         return self._data.filesize
@@ -114,6 +128,8 @@ class SmartObject(object):
     @property
     def filetype(self) -> str:
         """Preferred file extension, such as `jpg`."""
+        if self._data is None:
+            raise ValueError("Smart object data not found")
         return self._data.filetype.lower().strip().decode("ascii")
 
     def is_psd(self) -> bool:
@@ -121,17 +137,23 @@ class SmartObject(object):
         return self.filetype in ("8bpb", "8bps")
 
     @property
-    def warp(self):
+    def warp(self) -> object | None:
         """Warp parameters."""
+        if self._config is None:
+            raise ValueError("Smart object config not found")
         return self._config.data.get(b"warp")
 
     @property
-    def resolution(self):
+    def resolution(self) -> float:
         """Resolution of the object."""
+        if self._config is None:
+            raise ValueError("Smart object config not found")
         return self._config.data.get(b"Rslt").value
 
     @property
-    def transform_box(self):
+    def transform_box(
+        self,
+    ) -> tuple[float, float, float, float, float, float, float, float] | None:
         """
         A tuple representing the coordinates of the smart objects's transformed box. This box is the result of one or more transformations such as scaling, rotation, translation, or skewing to the original bounding box of the smart object.
 
@@ -145,7 +167,7 @@ class SmartObject(object):
         else:
             return None
 
-    def save(self, filename: Optional[str] = None) -> None:
+    def save(self, filename: str | None = None) -> None:
         """
         Save the smart object to a file.
 

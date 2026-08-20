@@ -8,7 +8,8 @@ stylized.
 """
 
 import logging
-from typing import Literal, Union
+import math
+from typing import Any, Literal
 
 from psd_tools.psd.descriptor import Descriptor, DescriptorBlock2
 from psd_tools.psd.vector import (
@@ -37,17 +38,18 @@ class VectorMask(object):
         self._data = data
         self._build()
 
-    def _build(self):
+    def _build(self) -> None:
         self._paths = []
         self._clipboard_record = None
         self._initial_fill_rule = None
-        for x in self._data.path:
-            if isinstance(x, InitialFillRule):
-                self._initial_fill_rule = x
-            elif isinstance(x, ClipboardRecord):
-                self._clipboard_record = x
-            elif isinstance(x, Subpath):
-                self._paths.append(x)
+        if self._data.path:
+            for x in self._data.path:
+                if isinstance(x, InitialFillRule):
+                    self._initial_fill_rule = x
+                elif isinstance(x, ClipboardRecord):
+                    self._clipboard_record = x
+                elif isinstance(x, Subpath):
+                    self._paths.append(x)
 
     @property
     def inverted(self) -> bool:
@@ -99,15 +101,19 @@ class VectorMask(object):
 
         :return: `int`
         """
+        if self._initial_fill_rule is None:
+            return 0
         return self._initial_fill_rule.value
 
     @initial_fill_rule.setter
     def initial_fill_rule(self, value: Literal[0, 1]) -> None:
-        assert value in (0, 1)
-        self._initial_fill_rule.value = value
+        if value not in (0, 1):
+            raise ValueError(f"Initial fill rule must be 0 or 1, got {value}")
+        if self._initial_fill_rule is not None:
+            self._initial_fill_rule.value = value
 
     @property
-    def clipboard_record(self) -> Union[ClipboardRecord, None]:
+    def clipboard_record(self) -> ClipboardRecord | None:
         """
         Clipboard record containing bounding box information.
 
@@ -121,17 +127,71 @@ class VectorMask(object):
         Bounding box tuple (left, top, right, bottom) in relative coordinates,
         where top-left corner is (0., 0.) and bottom-right corner is (1., 1.).
 
+        The bounding box accounts for the full extent of all cubic Bezier
+        curves, not just the anchor points.
+
         :return: `tuple`
         """
-        from itertools import chain
 
-        knots = [
-            (knot.anchor[1], knot.anchor[0]) for knot in chain.from_iterable(self.paths)
-        ]
-        if len(knots) == 0:
+        def _bezier_extrema(p0: float, p1: float, p2: float, p3: float) -> list[float]:
+            """Return t values in (0, 1) where the cubic Bezier has extrema."""
+            a = -p0 + 3 * p1 - 3 * p2 + p3
+            b = 2 * (p0 - 2 * p1 + p2)
+            c = p1 - p0
+            ts = []
+            if abs(a) < 1e-12:
+                if abs(b) > 1e-12:
+                    t = -c / b
+                    if 0.0 < t < 1.0:
+                        ts.append(t)
+            else:
+                disc = b * b - 4 * a * c
+                if disc >= -1e-12:
+                    sq = math.sqrt(max(0.0, disc))
+                    for t in ((-b + sq) / (2 * a), (-b - sq) / (2 * a)):
+                        if 0.0 < t < 1.0:
+                            ts.append(t)
+            return ts
+
+        def _bezier_eval(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
+            u = 1.0 - t
+            return u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
+
+        xs: list[float] = []
+        ys: list[float] = []
+
+        for path in self.paths:
+            knots = list(path)
+            if len(knots) == 0:
+                continue
+            # For a single-knot open path there are no segments, but we still
+            # need to include the anchor point in the bounding box.
+            if len(knots) == 1 and not path.is_closed():
+                xs.append(knots[0].anchor[1])
+                ys.append(knots[0].anchor[0])
+                continue
+            pairs = (
+                zip(knots, knots[1:] + knots[:1])
+                if path.is_closed()
+                else zip(knots, knots[1:])
+            )
+            for k0, k1 in pairs:
+                # anchor = (y, x); leaving/preceding = (y, x)
+                x0, y0 = k0.anchor[1], k0.anchor[0]
+                x1, y1 = k0.leaving[1], k0.leaving[0]
+                x2, y2 = k1.preceding[1], k1.preceding[0]
+                x3, y3 = k1.anchor[1], k1.anchor[0]
+
+                xs.extend([x0, x3])
+                ys.extend([y0, y3])
+                for t in _bezier_extrema(x0, x1, x2, x3):
+                    xs.append(_bezier_eval(x0, x1, x2, x3, t))
+                for t in _bezier_extrema(y0, y1, y2, y3):
+                    ys.append(_bezier_eval(y0, y1, y2, y3, t))
+
+        if not xs:
             return (0.0, 0.0, 1.0, 1.0)
-        x, y = zip(*knots)
-        return (min(x), min(y), max(x), max(y))
+        return (min(xs), min(ys), max(xs), max(ys))
 
     def __repr__(self) -> str:
         bbox = self.bbox
@@ -213,7 +273,7 @@ class Stroke(object):
         return self._data.get(b"strokeStyleLineDashOffset")
 
     @property
-    def miter_limit(self):
+    def miter_limit(self) -> Any:
         """Miter limit in float."""
         return self._data.get(b"strokeStyleMiterLimit")
 
@@ -236,26 +296,26 @@ class Stroke(object):
         return self.STROKE_STYLE_LINE_ALIGNMENTS.get(key, str(key))
 
     @property
-    def scale_lock(self):
+    def scale_lock(self) -> Any:
         return self._data.get(b"strokeStyleScaleLock")
 
     @property
-    def stroke_adjust(self):
+    def stroke_adjust(self) -> Any:
         """Stroke adjust"""
         return self._data.get(b"strokeStyleStrokeAdjust")
 
     @property
-    def blend_mode(self):
+    def blend_mode(self) -> Any:
         """Blend mode."""
         return self._data.get(b"strokeStyleBlendMode").enum
 
     @property
-    def opacity(self):
+    def opacity(self) -> Any:
         """Opacity value."""
         return self._data.get(b"strokeStyleOpacity")
 
     @property
-    def content(self):
+    def content(self) -> Any:
         """
         Fill effect.
         """
@@ -276,14 +336,14 @@ class Origination(object):
     @classmethod
     def create(
         kls, data: DescriptorBlock2
-    ) -> Union["Invalidated", "Rectangle", "RoundedRectangle", "Line", "Ellipse"]:
+    ) -> "Invalidated | Rectangle | RoundedRectangle | Line | Ellipse":
         if data.get(b"keyShapeInvalidated"):
             return Invalidated(data)
         origin_type = data.get(b"keyOriginType")
         types = {1: Rectangle, 2: RoundedRectangle, 4: Line, 5: Ellipse}
         return types.get(origin_type, kls)(data)  # type: ignore
 
-    def __init__(self, data):
+    def __init__(self, data: Descriptor) -> None:
         self._data = data
 
     @property
@@ -385,7 +445,7 @@ class RoundedRectangle(Origination):
     """Rounded rectangle live shape."""
 
     @property
-    def radii(self):
+    def radii(self) -> Any:
         """
         Corner radii of rounded rectangles.
         The order is top-left, top-right, bottom-left, bottom-right.

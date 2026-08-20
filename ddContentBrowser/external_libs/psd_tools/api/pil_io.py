@@ -4,15 +4,17 @@ PIL IO module.
 
 import io
 import logging
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, cast
 
-from PIL import Image
-from PIL.Image import Image as PILImage
+from PIL import Image, ImageChops, ImageMath
 
-from psd_tools.api.numpy_io import get_transparency_index, has_transparency
+from psd_tools.api.utils import get_transparency_index, has_transparency
 from psd_tools.constants import ChannelID, ColorMode, Resource
 from psd_tools.psd.image_resources import ThumbnailResource, ThumbnailResourceV4
 from psd_tools.psd.patterns import Pattern
+
+if TYPE_CHECKING:
+    from psd_tools.api.protocols import LayerProtocol, PSDProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +75,17 @@ def get_pil_depth(pil_mode: str) -> int:
 
 
 def convert_image_data_to_pil(
-    psd: Any, channel: Optional[int], apply_icc: bool
-) -> Optional[PILImage]:
-    """Convert ImageData to PIL Image."""
+    psd: "PSDProtocol", channel: int | None, apply_icc: bool
+) -> Image.Image | None:
+    """Convert ImageData to PIL Image.
 
-    assert channel is None or channel < psd.channels, (
-        "Invalid channel specified: %s" % channel
-    )
+    :raises ValueError: If an invalid channel is specified
+    """
+
+    if channel is not None and channel >= psd.channels:
+        raise ValueError(
+            f"Invalid channel specified: {channel} (max {psd.channels - 1})"
+        )
 
     # Support alpha channel via ChannelID enum.
     if channel == ChannelID.TRANSPARENCY_MASK:
@@ -92,6 +98,10 @@ def convert_image_data_to_pil(
     channel_data = psd._record.image_data.get_data(psd._record.header)
     size = (psd.width, psd.height)
     if channel is None:
+        if not isinstance(channel_data, list):
+            raise TypeError(
+                f"Expected list of channel data, got {type(channel_data).__name__}"
+            )
         channels = [_create_image(size, c, psd.depth) for c in channel_data]
 
         if has_transparency(psd):
@@ -109,6 +119,10 @@ def convert_image_data_to_pil(
         if apply_icc and (Resource.ICC_PROFILE in psd.image_resources):
             icc = psd.image_resources.get_data(Resource.ICC_PROFILE)
     else:
+        if not isinstance(channel_data, list):
+            raise TypeError(
+                f"Expected list of channel data, got {type(channel_data).__name__}"
+            )
         image = _create_image(size, channel_data[channel], psd.depth)
 
     if not image:
@@ -118,10 +132,9 @@ def convert_image_data_to_pil(
     return _remove_white_background(image)
 
 
-# TODO: Type hint for layer.
 def convert_layer_to_pil(
-    layer: Any, channel: Optional[int], apply_icc: bool
-) -> Optional[PILImage]:
+    layer: "LayerProtocol", channel: int | None, apply_icc: bool
+) -> Image.Image | None:
     """Convert Layer to PIL Image."""
     alpha = None
     icc = None
@@ -129,7 +142,11 @@ def convert_layer_to_pil(
     if channel is None:
         image = _merge_channels(layer)
         alpha = _get_channel(layer, ChannelID.TRANSPARENCY_MASK)
-        if apply_icc and (Resource.ICC_PROFILE in layer._psd.image_resources):
+        if (
+            apply_icc
+            and layer._psd is not None
+            and (Resource.ICC_PROFILE in layer._psd.image_resources)
+        ):
             icc = layer._psd.image_resources.get_data(Resource.ICC_PROFILE)
     else:
         image = _get_channel(layer, channel)
@@ -141,12 +158,12 @@ def convert_layer_to_pil(
 
 
 def post_process(
-    image: PILImage, alpha: Optional[PILImage], icc_profile: Optional[bytes] = None
-) -> PILImage:
+    image: Image.Image,
+    alpha: Image.Image | None,
+    icc_profile: bytes | None = None,
+) -> Image.Image:
     # Fix inverted CMYK.
     if image.mode == "CMYK":
-        from PIL import ImageChops
-
         image = ImageChops.invert(image)
 
     if icc_profile:
@@ -158,13 +175,13 @@ def post_process(
     return image
 
 
-def convert_pattern_to_pil(pattern: Pattern) -> PILImage:
+def convert_pattern_to_pil(pattern: Pattern) -> Image.Image:
     """Convert Pattern to PIL Image."""
     mode = get_pil_mode(pattern.image_mode)
     # The order is different here.
     size = pattern.data.rectangle[3], pattern.data.rectangle[2]
     channels = [
-        _create_image(size, c.get_data(), c.pixel_depth).convert("L")
+        _create_image(size, c.get_data() or b"", c.pixel_depth or 8).convert("L")
         for c in pattern.data.channels
         if c.is_written
     ]
@@ -182,8 +199,8 @@ def convert_pattern_to_pil(pattern: Pattern) -> PILImage:
 
 
 def convert_thumbnail_to_pil(
-    thumbnail: Union[ThumbnailResource, ThumbnailResourceV4],
-) -> PILImage:
+    thumbnail: ThumbnailResource | ThumbnailResourceV4,
+) -> Image.Image:
     """Convert thumbnail resource."""
     if thumbnail.fmt == 0:
         image = Image.frombytes(
@@ -203,26 +220,38 @@ def convert_thumbnail_to_pil(
     return image
 
 
-def _merge_channels(layer: Any) -> Optional[PILImage]:
+def _merge_channels(layer: "LayerProtocol") -> Image.Image | None:
+    if layer._psd is None:
+        return None
     mode = get_pil_mode(layer._psd.color_mode)
-    channels = [
+    channel_images = [
         _get_channel(layer, info.id)
         for info in layer._record.channel_info
         if info.id >= 0
     ]
-    if any(image is None for image in channels):
+    if any(image is None for image in channel_images):
         return None
-    channels = _check_channels(channels, layer._psd.color_mode)
+    channels = _check_channels(
+        [img for img in channel_images if img is not None], layer._psd.color_mode
+    )
     return Image.merge(mode, channels)  # type: ignore
 
 
-def _get_channel(layer: Any, channel: int) -> Optional[PILImage]:
+def _get_channel(layer: "LayerProtocol", channel: int) -> Image.Image | None:
+    if layer._psd is None:
+        return None
     if channel == ChannelID.USER_LAYER_MASK:
-        width = layer.mask._data.right - layer.mask._data.left
-        height = layer.mask._data.bottom - layer.mask._data.top
+        if layer.mask is None:
+            logger.info("Layer has no mask.")
+            return None
+        width = layer.mask.data.width
+        height = layer.mask.data.height
     elif channel == ChannelID.REAL_USER_LAYER_MASK:
-        width = layer.mask._data.real_right - layer.mask._data.real_left
-        height = layer.mask._data.real_bottom - layer.mask._data.real_top
+        if layer.mask is None:
+            logger.info("Layer has no real mask.")
+            return None
+        width = layer.mask.data.real_width
+        height = layer.mask.data.real_height
     else:
         width, height = layer.width, layer.height
 
@@ -230,14 +259,14 @@ def _get_channel(layer: Any, channel: int) -> Optional[PILImage]:
     if channel not in index:
         return None
     depth = layer._psd.depth
-    channel_data = layer._channels[index[channel]]
+    channel_data = layer._channels[index[cast(ChannelID, channel)]]
     if width == 0 or height == 0 or len(channel_data.data) == 0:
         return None
     channel_bytes = channel_data.get_data(width, height, depth, layer._psd.version)
     return _create_image((width, height), channel_bytes, depth)
 
 
-def _create_image(size: tuple[int, int], data: bytes, depth: int) -> PILImage:
+def _create_image(size: tuple[int, int], data: bytes, depth: int) -> Image.Image:
     if depth == 8:
         return Image.frombytes("L", size, data, "raw")
     elif depth == 16:
@@ -253,7 +282,9 @@ def _create_image(size: tuple[int, int], data: bytes, depth: int) -> PILImage:
         raise ValueError("Unsupported depth: %g" % depth)
 
 
-def _check_channels(channels, color_mode):
+def _check_channels(
+    channels: list[Image.Image], color_mode: ColorMode
+) -> list[Image.Image]:
     expected_channels = ColorMode.channels(color_mode)
     if len(channels) > expected_channels:
         # Seems possible when FilterMask is attached.
@@ -270,10 +301,10 @@ def _check_channels(channels, color_mode):
     return channels
 
 
-def _apply_icc(image: PILImage, icc_profile: bytes) -> PILImage:
+def _apply_icc(image: Image.Image, icc_profile: bytes) -> Image.Image:
     """Apply ICC Color profile."""
     try:
-        from PIL import ImageCms
+        from PIL import ImageCms  # noqa: PLC0415
     except ImportError:
         logger.warning("ICC profile found but not supported. Install little-cms.")
         return image
@@ -297,10 +328,8 @@ def _apply_icc(image: PILImage, icc_profile: bytes) -> PILImage:
     return result
 
 
-def _remove_white_background(image: PILImage) -> PILImage:
+def _remove_white_background(image: Image.Image) -> Image.Image:
     """Remove white background in the preview image."""
-    from PIL import ImageMath
-
     if image.mode == "RGBA":
         bands = image.split()
         a = bands[3]

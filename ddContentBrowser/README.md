@@ -1,24 +1,35 @@
 
-# DD Content Browser v1.6.0
+# DD Content Browser v2.4.0
 
 Content Browser for Maya by Denes Dankhazi
-Modern Maya Asset Browser for Autodesk Maya 2025+ (PySide6, Python 3.11+)
+Modern Maya Asset Browser for Autodesk Maya 2025+ (PySide6, Python 3.11 & 3.13)
 
 ---
 
 ## ✨ Overview
 
-DD Content Browser is a high-performance, feature-rich asset browser for Maya, designed for large production environments. It replaces the built-in browser with a fast, intuitive, and visually advanced interface with advanced features like video support, collections, tags, Quick View, and more.
+DD Content Browser is a high-performance, feature-rich asset browser for Maya, designed for large production environments. It replaces the built-in browser with a fast, intuitive, and visually advanced interface with advanced features like video support, texture sets, collections, tags, Quick View, and more.
 
 ---
 
+## 🔧 Maya & Python Compatibility
+
+DD Content Browser auto-detects the running Python interpreter and loads the matching set of bundled binary libraries (numpy, Pillow, OpenEXR, OpenImageIO, scikit-image, scipy, psd-tools, aggdraw) — no manual setup needed:
+
+- **Maya 2025 / 2026** (Python 3.11) → uses `external_libs_py311/`
+- **Maya 2027+** (Python 3.13) → uses `external_libs/`
+
+`get_external_libs_dir()` (in `utils.py`) picks the matching folder at import time based on `sys.version_info`. If a future Maya ships a different Python, add a new `external_libs_py3XX/` folder with matching wheels and it will be picked up automatically; otherwise it falls back to the default `external_libs/`.
+
+---
 
 ## 🚀 How to Install and Launch
 
 ### Installation
 
-1. Copy the full content into your Maya scripts folder:  
-	 `C:/Users/%USERPROFILE%/Documents/maya/2026/scripts/ddContentBrowser`
+1. Copy the full content into your Maya scripts folder, matching your Maya version:  
+	 `C:/Users/%USERPROFILE%/Documents/maya/2026/scripts/ddContentBrowser` (Maya 2025/2026)  
+	 `C:/Users/%USERPROFILE%/Documents/maya/2027/scripts/ddContentBrowser` (Maya 2027+)
 
 ### Launch from Maya (Python):
 
@@ -29,10 +40,12 @@ launch_no_reload()
 
 ### Portable Launcher
 
-- Install Python 3.11 if you don't have it yet.
+- Install Python 3.11 or 3.13 if you don't have it yet. `launch_standalone_portable.bat` specifically looks for 3.13 (via the `py -3.13` launcher, `python313`/`python` in PATH, or common install locations), but 3.11 works too as long as PySide6 and the other dependencies are available for it.
 - For the first launch use: `launch_standalone_portable.bat`  
-	(This will install PySide6 if you don't have it.)
+	(This checks for PySide6 and tells you to `pip install PySide6` if it's missing.)
 - After that you can use the silent launcher: `ddContentBrowser.pyw`
+
+This README is also available inside the tool itself, any time, via `Help > Documentation...` in the menu bar.
 
 Cheers, D
 
@@ -47,10 +60,15 @@ Cheers, D
 - **Back/forward navigation** with history (Alt+Left/Right)
 - **Multi-select favorites** - Batch add/remove, persistent storage
 - **Include subfolders** - Recursive directory browsing
+- **Up-navigation re-selects origin folder** - Backspace or clicking an ancestor breadcrumb segment re-selects the folder you just came from in the new listing
 
 ### File Operations
 - **Import & Reference** - Maya file operations with drag & drop
-- **Delete, Rename** - Single & batch operations with confirmation
+- **Delete, Rename** - Single & batch operations with confirmation (Recycle Bin or permanent via Shift+Delete)
+- **New Folder** - Create folders in place (Ctrl+Shift+N)
+- **Cut / Copy / Paste** - Standard clipboard file operations (Ctrl+X/C/V)
+- **Duplicate** - Copy selected files in place (Ctrl+D)
+- **Copy path to clipboard** - Text path copy (Ctrl+Shift+C)
 - **Batch Rename Dialog** - 7 rename rule types (Find/Replace, Prefix, Suffix, Numbering, Case, Regex, New Name)
 - **Multi-rule chains** - Apply sequential rename operations
 - **Open with default program** - Windows default app integration
@@ -74,6 +92,27 @@ Cheers, D
 - **Sort options** - Name, Size, Date, Type with ascending/descending toggle
 - **Visual indicators** - ▲▼ sort direction arrows
 
+### Texture Sets 🧩 ✨ **NEW!**
+- **Automatic PBR grouping** - Detects texture channels (baseColor, roughness, metalness, normal, height, displacement, emission, opacity, transmission, ao) sharing a base filename and groups them into a single set item
+- **UDIM-aware** - Multiple UDIM tiles per channel are counted and cached correctly
+- **"Texture Sets" toggle** - Grouped-set view vs. individual files (mutually exclusive with Sequences mode)
+- **"Show Only Sets" filter** - Hide loose/unmatched files, show only complete sets
+- **Advanced Filters integration** - Filter by "Texture Set" category (Set member / Loose file)
+- **Set badge & thumbnail** - File-count badge on the thumbnail, base-color image used as the set's preview
+- **Rich tooltip & metadata panel** - Lists every channel and the file(s) filling it, plus total set size
+- **Drag to build shader** - Drop a set into the Maya viewport to auto-generate a shader network (aiStandardSurface by default) wired to the set's channels
+- **Collections support** - Dragging a set into a Collection (or "Add to Collection") adds every file in the set; Collection view re-groups sets when Texture Sets mode is on
+- **Per-folder isolation** - Same-named sets in different folders stay fully separate (thumbnails, cache)
+
+### Smart Import - Auto Material Build ✨ **NEW!**
+- **Automatic on geo import** - Importing a 3D file (own folder first, then subfolders) looks for a matching texture set and, if found, auto-builds and assigns a shader network to it - no manual drag-to-build needed
+- **Megascans "3D plant" support** - Recognizes the `VarN` folder layout (geo in `Var1`/`Var2`/... with textures in a sibling `Textures`/`Textures/Atlas` folder); handles assets that ship multiple resolution variants (e.g. both a 2K and 4K set) in the same Atlas folder
+- **LOD proxy auto-import** *(opt-in)* - When importing a "High" or untagged geo, also imports a lower-detail `LODN` file from the same folder (highest LOD number = lightest proxy) and assigns it the exact same material - handy for building asset libraries that need a lightweight stand-in geo
+- **Preferred resolution** - Picks the configured resolution (1K/2K/4K/8K) when a match has more than one available, falling back to whatever exists otherwise
+- **Shader type choice** - aiStandardSurface, openPBRSurface, or dGecko
+- **TIF conversion** - Optional auto-convert of JPG/PNG/TGA channel textures to TIF (LZW) before building
+- **Texture Set Settings dialog** (`Settings > Texture Set Settings...`) - Dedicated panel for all of the above, plus VarN displacement toggle and `.tx`-as-Texture-Set grouping
+
 ### Quick View System ✨ **NEW!**
 - **Space to open** - macOS Quick Look-style floating preview
 - **Frameless window** - Custom title bar with close button (Space/Escape)
@@ -88,6 +127,7 @@ Cheers, D
 - **Manual Collections** - Drag & drop file management with SQLite backend
 - **Virtual folder view** - Display files from multiple folders
 - **Middle-button drag** - Maya-style file adding to collections
+- **Texture set aware** - Dragging a texture set adds all its files; Collection view can re-group them back into sets
 - **Collection mode** - Blue breadcrumb indicator, exit button
 - **Context menus** - "Add to Collection >", "Remove from Collection"
 - **Export to folder** - Copy files with conflict handling (overwrite/skip/rename)
@@ -109,13 +149,24 @@ Cheers, D
 ### Preview System
 - **Preview panel** - Image (JPG, PNG, TIF, HDR, EXR, PSD), PDF (page navigation), text files
 - **HDR/EXR support** - Exposure slider (-5 to +5 stops), ACES tone mapping
-- **16/32-bit TIFF** - OpenCV integration with proper normalization
-- **Video thumbnails** - Middle frame extraction for 8 formats (.mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv)
+- **`.tx` color management** - Auto-detects ACEScg / Linear sRGB / DCI-P3 from the Megascans/maketx filename suffix convention (defaults to ACEScg when unmarked), with the correct view transform per space
+- **16/32-bit TIFF** - Fast OpenImageIO-based decoding with proper normalization for uncommon pixel formats (e.g. LZW-compressed float32)
+- **Video thumbnails** - Middle frame extraction for 8 formats (.mp4, .mov, .avi, .mkv, .webm, .m4v, .flv, .wmv), decoded via a separate ffmpeg process so a problematic video can't destabilize Maya
 - **Zoom mode** - Double-click for 1:1 pixel zoom, mouse-centered scroll zoom
 - **Pan & scroll** - Drag to pan, scrollbars when zoomed
 - **Background modes** - Dark, light, checkerboard
 - **Password-protected PDFs** - User-friendly lock message
 - **Multi-file summary** - Resolution, size, date display
+- **Folder thumbnail preview** - Selecting a folder with its own preview image (a `*preview.<ext>` file inside it) shows that image full-size in the preview panel instead of the small grid thumbnail
+
+### Image Sequence Playback ✨ **NEW!**
+- **Auto-detected sequences** - Frame-numbered files (e.g. `render.0001.exr` … `render.0500.exr`) are grouped into a single playable sequence item
+- **Transport controls** - Play/Pause, Stop, First/Previous/Next/Last frame, FPS selector (24/25/30/60)
+- **Timeline scrubbing** - Click-to-jump or drag the timeline slider; cached frames are marked with green dots for at-a-glance feedback, RV-style
+- **Background frame cache** - EXR/HDR/`.tx`/TIFF frames are decoded and tone-mapped ahead of the playhead, so a cached frame displays in ~5-10ms instead of re-decoding on every frame - the difference between a slideshow and actual playback
+- **Process-isolated decoding** - The decode/tone-map work runs in dedicated `mayapy.exe` worker subprocesses rather than inside Maya itself, so a problematic frame can't destabilize Maya
+- **Exposure-aware caching** - Adjusting exposure during playback re-renders the current frame and the cached window at the new value
+- **Configurable cache budget** - `Settings > Preview > Sequence Playback` (128MB-16GB, default 1GB), applied live
 
 ### Batch Operations
 - **Batch Import** - Middle mouse drag to Maya viewport
@@ -145,7 +196,7 @@ Cheers, D
 - **JSON persistence** - Auto-save to `~/.ddContentBrowser/settings.json`
 - **General settings** - Startup dir, window size, UI font (5 fonts), confirm delete, auto-refresh
 - **Thumbnail settings** - Discrete sizes [32-512px], quality presets (Low/Med/High), cache limit
-- **Preview settings** - HDR resolution [512-4096px], cache size (1-20 files), default exposure
+- **Preview settings** - Preview resolution [512px-8192px, or Off for native resolution] (applies to both the preview panel and Quick View), raw HDR cache size (1-20 files), sequence playback frame cache (128MB-16GB), default exposure
 - **Filter settings** - Custom extensions, show hidden, case-sensitive search, recursive limits
 - **Cache management** - Visual cache size display, one-click clear
 - **Restore defaults** - Reset all settings button
@@ -153,22 +204,25 @@ Cheers, D
 
 ### File Type Registry ✨ **NEW!**
 - **Centralized definitions** - Single source in FILE_TYPE_REGISTRY (utils.py)
-- **9 categories** - maya, 3d_models, blender, houdini, substance, images, videos, pdf, scripts, text
+- **11 categories** - maya, 3d_models, blender, houdini, substance, images, pdf, scripts, text, video, other
 - **Config version system** - Automatic updates with user customization preservation
 - **Video support** - 8 formats with custom color schemes
 - **Helper functions** - get_extensions_by_category(), get_default_icon_colors()
 
 ### Supported Formats
 - **Maya**: `.ma`, `.mb`
-- **3D Models**: `.obj`, `.fbx`, `.abc`, `.usd`, `.usda`, `.usdc`, `.vdb`
+- **3D Models**: `.obj`, `.fbx`, `.abc`, `.usd`, `.vdb`, `.dae`, `.stl`
 - **Blender**: `.blend`
-- **Houdini**: `.hda`, `.hip`, `.hipnc`
-- **Substance**: `.sbs`, `.sbsar`
-- **Images**: `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.tga`, `.bmp`, `.exr`, `.hdr`, `.psd`
+- **Houdini**: `.hda`
+- **Substance**: `.sbsar`
+- **Images**: `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.tga`, `.exr`, `.hdr`, `.psd`, `.tx`, `.gif`
 - **Videos** ✨ **NEW!**: `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, `.m4v`, `.flv`, `.wmv`
 - **Documents**: `.pdf`
 - **Scripts**: `.py`, `.mel`
-- **Text**: `.txt`, `.md`, `.json`, `.xml`
+- **Text**: `.txt`
+- **Other**: `.abr`
+
+*(Central definition lives in `FILE_TYPE_REGISTRY`, `utils.py` — extend via Settings → Filters, no code changes needed.)*
 
 ### External Libraries
 - **PySide6** - Qt for Python (UI framework)
@@ -176,9 +230,13 @@ Cheers, D
 - **OpenCV (cv2)** - Advanced image ops, 16/32-bit TIFF, video frames
 - **PyMuPDF** - PDF rendering
 - **OpenEXR** - HDR/EXR support with multi-channel
-- **NumPy** - Float processing (Maya 2025+)
+- **OpenImageIO** - `.tx` (RenderMan texture) loading, EXR fallback
+- **NumPy** - Float processing
 - **scikit-image** - Advanced image analysis
 - **psd-tools** - Photoshop PSD file support
+- **aggdraw** - Anti-aliased gradient icon rendering
+
+*(Bundled per Python version - see "Maya & Python Compatibility" above.)*
 
 ---
 
@@ -189,10 +247,16 @@ Cheers, D
 | **Space**          | Quick View (floating preview)                    |
 | **F**              | Fit to view (in Quick View)                      |
 | **F5**             | Refresh current folder (force cache bypass)      |
-| **Delete**         | Delete selected files (with confirmation)        |
+| **Delete**         | Delete selected files to Recycle Bin             |
+| **Shift+Delete**   | Permanently delete selected files                |
 | **F2**             | Rename selected file                             |
 | **Ctrl+F**         | Focus search box                                 |
-| **Ctrl+C**         | Copy path to clipboard                           |
+| **Ctrl+Shift+N**   | Create new folder                                |
+| **Ctrl+C**         | Copy selected files to clipboard                 |
+| **Ctrl+Shift+C**   | Copy path to clipboard                           |
+| **Ctrl+X**         | Cut selected files to clipboard                  |
+| **Ctrl+V**         | Paste files from clipboard                       |
+| **Ctrl+D**         | Duplicate selected files                         |
 | **Enter**          | Import selected file                             |
 | **Backspace**      | Go to parent folder                              |
 | **Ctrl+Scroll**    | Zoom thumbnails                                  |
@@ -254,6 +318,11 @@ Cheers, D
 - Image thumbnails: 50-200ms (with caching)
 - Video thumbnails: 100-300ms (middle frame extraction)
 - HDR/EXR: 100-200ms (1024px, first time), 35-45ms (exposure adjust from cache)
+- `.tx` (RenderMan texture): auto-selects the closest built-in mip level for the target thumbnail size instead of always decoding full resolution - up to ~15x faster on high-res textures
+
+**Sequence Playback:**
+- Cached frame display: ~5-10ms (vs. ~250-450ms decoding a full-res EXR frame from disk)
+- Background decode+tone-map: runs in separate worker processes, ahead of the playhead, while you scrub or watch
 
 **UI Performance:**
 - Frame time: ~16ms (60fps)
@@ -288,28 +357,28 @@ Commercial redistribution is not permitted without the author's permission.
 ## 🙏 Credits
 
 **Author:** Denes Dankhazi (ddankhazi)  
-**Version:** 1.6.0  
+**Version:** 2.4.0  
 **Maya Version:** 2025+ (PySide6)  
-**Python:** 3.11+  
+**Python:** 3.11 (Maya 2025/2026) & 3.13 (Maya 2027+)  
 **Blog & Portfolio:** [ddankhazi.com](https://ddankhazi.com)
 
 ---
 
-##  Planned Features (v2.0)
+## 🔮 Planned Features (Future)
+
+*Smart Material Generator (auto-shader from texture sets) shipped in v2.0 — see "Texture Sets" above. Automatic material build & LOD proxy import on geo import (incl. Megascans "3D plant" VarN/Atlas layouts) has since shipped too — see "Smart Import" above.*
 
 ### High Priority:
-1. **Smart Material Generator** - Auto-generate aiStandardSurface from texture sets
-2. **Quixel Megascans Importer** - One-click optimized import with UDIM/LOD
-3. **SkyDome Auto-Linker** - Drag HDR → update aiSkyDomeLight path
-4. **Star/Color Rating** - Adobe Bridge-style organization (0-5 stars, 8 colors)
-5. **Enhanced Tag System** - Tag hierarchies, bulk operations, import/export
+1. **SkyDome Auto-Linker** - Drag HDR → update aiSkyDomeLight path
+2. **Star/Color Rating** - Adobe Bridge-style organization (0-5 stars, 8 colors)
+3. **Enhanced Tag System** - Tag hierarchies, bulk operations, import/export
 
 ### Medium Priority:
-6. **Texture Converter** - Batch format conversion with color space management
-7. **Real Maya Playblast** - Safe thumbnail generation (subprocess isolation)
-8. **Asset Metadata** - Scene stats (poly count, shader info)
-9. **Theme Support** - Dark/Light themes, custom colors
-10. **Version Control** - Git/Perforce integration
+5. **Texture Converter** - Batch format conversion with color space management
+6. **Real Maya Playblast** - Safe thumbnail generation (subprocess isolation)
+7. **Asset Metadata** - Scene stats (poly count, shader info)
+8. **Theme Support** - Dark/Light themes, custom colors
+9. **Version Control** - Git/Perforce integration
 
 ---
 
